@@ -5,14 +5,35 @@
 import { IPC } from '@shared/ipc-channels';
 import type {
   AppStats,
+  CoverageMatrix,
   Platform,
+  PlatformId,
   Scenario,
   ScenarioExport,
   ScenarioImportResult,
   ScanResult,
   Skill,
   SkillFilter,
+  SyncExecuteResult,
+  SyncPlan,
 } from '@shared/types';
+
+export interface SyncHistoryRow {
+  id: number;
+  skill_id: string;
+  action: string;
+  from_path: string | null;
+  to_path: string | null;
+  platform_id: string | null;
+  before_hash: string | null;
+  after_hash: string | null;
+  backup_path: string | null;
+  conflict_resolution: string | null;
+  rolled_back_at: number | null;
+  success: number;
+  message: string | null;
+  created_at: number;
+}
 
 interface BridgeApi {
   invoke: (channel: string, payload?: unknown) => Promise<unknown>;
@@ -66,6 +87,19 @@ export const api = {
     set: (key: string, value: string) =>
       bridge().invoke(IPC.settings.set, { key, value }) as Promise<{ ok: true }>,
     stats: () => bridge().invoke(IPC.settings.stats) as Promise<AppStats>,
+  },
+  coverage: {
+    matrix: () => bridge().invoke(IPC.coverage.matrix) as Promise<CoverageMatrix>,
+  },
+  sync: {
+    plan: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[] }>) =>
+      bridge().invoke(IPC.sync.plan, { requests }) as Promise<SyncPlan>,
+    execute: (plan: SyncPlan) =>
+      bridge().invoke(IPC.sync.execute, { plan }) as Promise<SyncExecuteResult>,
+    history: (skillId?: string, limit = 50) =>
+      bridge().invoke(IPC.sync.history, { skillId, limit }) as Promise<SyncHistoryRow[]>,
+    rollback: (historyId: number) =>
+      bridge().invoke(IPC.sync.rollback, { historyId }) as Promise<{ ok: true }>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

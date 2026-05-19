@@ -27,6 +27,15 @@ export const IPC = {
     run: 'scan:run',
     lastResult: 'scan:lastResult',
   },
+  coverage: {
+    matrix: 'coverage:matrix',
+  },
+  sync: {
+    plan: 'sync:plan',
+    execute: 'sync:execute',
+    history: 'sync:history',
+    rollback: 'sync:rollback',
+  },
   settings: {
     get: 'settings:get',
     set: 'settings:set',
@@ -43,7 +52,9 @@ export type IpcChannel =
   | typeof IPC.skills[keyof typeof IPC.skills]
   | typeof IPC.scenarios[keyof typeof IPC.scenarios]
   | typeof IPC.scan[keyof typeof IPC.scan]
-  | typeof IPC.settings[keyof typeof IPC.settings];
+  | typeof IPC.settings[keyof typeof IPC.settings]
+  | typeof IPC.coverage[keyof typeof IPC.coverage]
+  | typeof IPC.sync[keyof typeof IPC.sync];
 
 export type IpcEventChannel = typeof IPC.events[keyof typeof IPC.events];
 
@@ -53,6 +64,8 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.scenarios),
   ...Object.values(IPC.scan),
   ...Object.values(IPC.settings),
+  ...Object.values(IPC.coverage),
+  ...Object.values(IPC.sync),
 ]);
 
 export const ALL_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>(Object.values(IPC.events));

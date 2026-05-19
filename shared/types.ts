@@ -126,6 +126,96 @@ export interface ScenarioImportResult {
 }
 
 /**
+ * Per-platform cell in the coverage matrix.
+ *   missing       — skill not present on this platform
+ *   present       — real directory exists on this platform
+ *   symlink       — symlink whose realpath matches a location on another platform
+ *   symlink_other — symlink whose realpath does NOT match any tracked location
+ *                   (e.g. points outside the configured roots)
+ *   broken        — symlink target missing
+ *   disabled      — present but moved to .disabled/ on that platform
+ */
+export type CoverageCellState =
+  | 'missing'
+  | 'present'
+  | 'symlink'
+  | 'symlink_other'
+  | 'broken'
+  | 'disabled';
+
+export interface CoverageCell {
+  state: CoverageCellState;
+  installPath?: string;
+  realPath?: string;
+  /** Platform id of the location this symlink resolves to (when state=symlink). */
+  resolvesToPlatformId?: PlatformId;
+}
+
+export interface CoverageRow {
+  skillId: string;
+  skillName: string;
+  sourceKey: string;
+  description: string | null;
+  /** Keyed by PlatformId. */
+  cells: Record<string, CoverageCell>;
+  /** Convenience: which platforms are missing this skill (for "sync gaps" action). */
+  missingOn: PlatformId[];
+  /** True if the skill has a `present` cell on the shared pool, the canonical source. */
+  hasSharedSource: boolean;
+}
+
+export interface CoverageMatrix {
+  platforms: PlatformId[];
+  rows: CoverageRow[];
+}
+
+export type CoverageFilter =
+  | 'all'
+  | 'gaps'                 // any platform missing
+  | 'shared_not_propagated' // present in shared but missing on at least one of the other platforms
+  | 'orphan'               // present on exactly one platform
+  | 'broken';              // has at least one broken-link cell
+
+/* ---------------------------------------------------------------------------
+ * MVP-B sync types
+ * ------------------------------------------------------------------------- */
+
+export type SyncMode = 'symlink' | 'copy';
+export type SyncAction = 'create' | 'skip' | 'replace' | 'conflict';
+export type SyncConflictReason =
+  | 'target_exists_dir'
+  | 'target_exists_symlink_other'
+  | 'target_exists_file'
+  | 'source_outside_roots'
+  | 'target_outside_root'
+  | 'shared_pool_missing'
+  | 'unreadable';
+
+export interface SyncPlanItem {
+  skillId: string;
+  skillName: string;
+  sourcePlatformId: PlatformId;
+  sourceRealPath: string;
+  targetPlatformId: PlatformId;
+  targetPath: string;
+  mode: SyncMode;
+  action: SyncAction;
+  /** Filled when action is 'conflict' or 'skip' so the UI can explain why. */
+  reason?: SyncConflictReason | 'already_linked' | 'same_hash';
+}
+
+export interface SyncPlan {
+  generatedAt: number;
+  items: SyncPlanItem[];
+}
+
+export interface SyncExecuteResult {
+  applied: SyncPlanItem[];
+  skipped: SyncPlanItem[];
+  failed: Array<{ item: SyncPlanItem; message: string }>;
+}
+
+/**
  * IPC error envelope. Main always rejects with this shape on handler error
  * so the renderer can render structured errors instead of raw Error objects.
  */
