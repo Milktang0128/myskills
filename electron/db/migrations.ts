@@ -55,6 +55,32 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 5,
+    name: 'ai_scenario_suggestions',
+    up: (db) => {
+      // Pending / accepted / dismissed AI suggestions for (skill, scenario)
+      // pairs. Idempotent — fresh installs that already created the table via
+      // SCHEMA_V1 skip silently.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_scenario_suggestions (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          skill_id      TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+          scenario_key  TEXT NOT NULL,
+          reason        TEXT,
+          suggested_at  INTEGER NOT NULL,
+          accepted_at   INTEGER,
+          dismissed_at  INTEGER,
+          UNIQUE(skill_id, scenario_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_suggestions_skill ON ai_scenario_suggestions(skill_id);
+      `);
+      // Rate-limit between auto-categorize batches (ms). 10s default.
+      db.prepare(
+        "INSERT INTO settings (key, value) VALUES ('ai.categorize.minIntervalMs', '10000') ON CONFLICT(key) DO NOTHING",
+      ).run();
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

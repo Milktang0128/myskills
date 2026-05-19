@@ -60,6 +60,12 @@ export const IPC = {
     getFeatures: 'llm:getFeatures',
     setFeatures: 'llm:setFeatures',
   },
+  ai: {
+    getSuggestionsForSkill: 'ai:getSuggestionsForSkill',
+    acceptSuggestion: 'ai:acceptSuggestion',
+    dismissSuggestion: 'ai:dismissSuggestion',
+    queueStatus: 'ai:queueStatus',
+  },
   events: {
     scanStarted: 'event:scanStarted',
     scanFinished: 'event:scanFinished',
@@ -76,7 +82,8 @@ export type IpcChannel =
   | typeof IPC.coverage[keyof typeof IPC.coverage]
   | typeof IPC.sync[keyof typeof IPC.sync]
   | typeof IPC.catalog[keyof typeof IPC.catalog]
-  | typeof IPC.llm[keyof typeof IPC.llm];
+  | typeof IPC.llm[keyof typeof IPC.llm]
+  | typeof IPC.ai[keyof typeof IPC.ai];
 
 export type IpcEventChannel = typeof IPC.events[keyof typeof IPC.events];
 
@@ -90,6 +97,7 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.sync),
   ...Object.values(IPC.catalog),
   ...Object.values(IPC.llm),
+  ...Object.values(IPC.ai),
 ]);
 
 export const ALL_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>(Object.values(IPC.events));

@@ -394,3 +394,23 @@ export interface LlmFeatureToggles {
   autoCategorize: boolean;
   recommend: boolean;
 }
+
+/**
+ * AI-generated scenario suggestion for a skill. Rendered as a chip in the
+ * skill-detail drawer; user can accept (creates a skill_scenarios link) or
+ * dismiss. Only pending suggestions (accepted_at IS NULL AND dismissed_at
+ * IS NULL) are returned to the renderer.
+ *
+ * scenarioName / scenarioColor are joined from the scenarios table for UI
+ * convenience. They will be undefined if the scenario_key no longer maps to
+ * an existing scenario (e.g. user deleted it after the suggestion was made).
+ */
+export interface AiScenarioSuggestion {
+  id: number;
+  skillId: string;
+  scenarioKey: string;
+  scenarioName?: string;
+  scenarioColor?: string | null;
+  reason: string | null;
+  suggestedAt: number;
+}

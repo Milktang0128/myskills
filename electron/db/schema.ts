@@ -120,4 +120,16 @@ CREATE TABLE IF NOT EXISTS scan_runs (
   duration_ms     INTEGER,
   errors_json     TEXT NOT NULL DEFAULT '[]'
 );
+
+CREATE TABLE IF NOT EXISTS ai_scenario_suggestions (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id      TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  scenario_key  TEXT NOT NULL,
+  reason        TEXT,
+  suggested_at  INTEGER NOT NULL,
+  accepted_at   INTEGER,
+  dismissed_at  INTEGER,
+  UNIQUE(skill_id, scenario_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_suggestions_skill ON ai_scenario_suggestions(skill_id);
 `;

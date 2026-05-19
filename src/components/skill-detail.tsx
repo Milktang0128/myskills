@@ -1,8 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload } from 'lucide-react';
-import type { Scenario, Skill, SkillLocation, SyncExecuteResult, SyncPlan } from '@shared/types';
+import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload, Sparkles, X } from 'lucide-react';
+import type {
+  AiScenarioSuggestion,
+  Scenario,
+  Skill,
+  SkillLocation,
+  SyncExecuteResult,
+  SyncPlan,
+} from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -25,6 +32,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
   const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<AiScenarioSuggestion[]>([]);
 
   async function fetchAll() {
     setLoading(true);
@@ -42,18 +50,30 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
     }
   }
 
+  async function refreshSuggestions() {
+    try {
+      const s = await api.ai.getSuggestionsForSkill(skillId);
+      setAiSuggestions(s);
+    } catch {
+      setAiSuggestions([]);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setAiSuggestions([]);
     (async () => {
       try {
-        const [s, c] = await Promise.all([
+        const [s, c, ai] = await Promise.all([
           api.skills.get(skillId),
           api.settings.get('canonical_platform'),
+          api.ai.getSuggestionsForSkill(skillId).catch(() => [] as AiScenarioSuggestion[]),
         ]);
         if (cancelled) return;
         setSkill(s);
         if (c) setCanonicalPlatform(c);
+        setAiSuggestions(ai);
       } catch {
         if (!cancelled) setSkill(null);
       } finally {
@@ -134,6 +154,66 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                 Scenarios
               </h3>
             </div>
+
+            {/* AI suggestions — visually distinct (dashed border, sparkle icon).
+                A click accepts the suggestion (creates the scenario link); the
+                × dismisses it. Both refresh the underlying skill so the chip
+                migrates to the regular list below. */}
+            {aiSuggestions.length > 0 && (
+              <div className="mb-3 rounded-md border border-dashed border-primary/40 bg-primary/5 p-2">
+                <div className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary/80">
+                  <Sparkles className="h-3 w-3" />
+                  AI 建议
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {aiSuggestions.map((sg) => {
+                    const label = sg.scenarioName ?? sg.scenarioKey;
+                    return (
+                      <div
+                        key={sg.id}
+                        className="group inline-flex items-center overflow-hidden rounded-md border border-dashed border-primary/50 bg-background text-xs"
+                        title={sg.reason ?? undefined}
+                      >
+                        <button
+                          onClick={async () => {
+                            try {
+                              await api.ai.acceptSuggestion(sg.id);
+                            } catch {
+                              // If accept failed (e.g. scenario deleted), just
+                              // refresh and let the suggestion list reconcile.
+                            }
+                            await refreshSuggestions();
+                            const refreshed = await api.skills.get(skill.id);
+                            setSkill(refreshed);
+                            onMutated();
+                          }}
+                          className="inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/10"
+                        >
+                          <span
+                            className="inline-block h-2 w-2 rounded-full"
+                            style={{ backgroundColor: sg.scenarioColor ?? '#888' }}
+                          />
+                          <span>{label}</span>
+                          <span className="text-primary/70">+</span>
+                        </button>
+                        <button
+                          onClick={async () => {
+                            await api.ai.dismissSuggestion(sg.id);
+                            await refreshSuggestions();
+                          }}
+                          className="border-l border-dashed border-primary/30 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                          title="Dismiss suggestion"
+                          aria-label="Dismiss suggestion"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-1.5">
               {scenarios.length === 0 ? (
                 <span className="text-xs text-muted-foreground">No scenarios defined yet.</span>

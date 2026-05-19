@@ -34,7 +34,7 @@ const DEFAULT_SCENARIOS: SeedScenario[] = [
 ];
 
 const DEFAULT_SETTINGS: Array<[string, string]> = [
-  ['schema_version', '4'],
+  ['schema_version', '5'],
   ['theme', 'system'],
   ['auto_scan_on_launch', '1'],
   ['default_sync_mode', 'symlink'],
@@ -50,6 +50,8 @@ const DEFAULT_SETTINGS: Array<[string, string]> = [
   ['llm.feature.search', '0'],
   ['llm.feature.autoCategorize', '0'],
   ['llm.feature.recommend', '0'],
+  // Rate-limit between auto-categorize LLM batches (ms).
+  ['ai.categorize.minIntervalMs', '10000'],
 ];
 
 export function seedDefaults(db: Database): void {

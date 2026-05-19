@@ -7,6 +7,7 @@ import { registerCoverageHandlers } from './coverage';
 import { registerSyncHandlers } from './sync';
 import { registerCatalogHandlers } from './catalog';
 import { registerLlmHandlers } from './llm';
+import { registerAiHandlers } from './ai';
 
 export function registerAllHandlers(): void {
   registerPlatformHandlers();
@@ -18,4 +19,5 @@ export function registerAllHandlers(): void {
   registerSyncHandlers();
   registerCatalogHandlers();
   registerLlmHandlers();
+  registerAiHandlers();
 }

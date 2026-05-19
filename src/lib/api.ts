@@ -4,6 +4,7 @@
  */
 import { IPC } from '@shared/ipc-channels';
 import type {
+  AiScenarioSuggestion,
   AppStats,
   CatalogPreview,
   CatalogSearchResponse,
@@ -161,6 +162,16 @@ export const api = {
     getFeatures: () => bridge().invoke(IPC.llm.getFeatures) as Promise<LlmFeatureToggles>,
     setFeatures: (toggles: Partial<LlmFeatureToggles>) =>
       bridge().invoke(IPC.llm.setFeatures, toggles) as Promise<LlmFeatureToggles>,
+  },
+  ai: {
+    getSuggestionsForSkill: (skillId: string) =>
+      bridge().invoke(IPC.ai.getSuggestionsForSkill, { skillId }) as Promise<AiScenarioSuggestion[]>,
+    acceptSuggestion: (suggestionId: number) =>
+      bridge().invoke(IPC.ai.acceptSuggestion, { suggestionId }) as Promise<{ ok: true }>,
+    dismissSuggestion: (suggestionId: number) =>
+      bridge().invoke(IPC.ai.dismissSuggestion, { suggestionId }) as Promise<{ ok: true }>,
+    queueStatus: () =>
+      bridge().invoke(IPC.ai.queueStatus) as Promise<{ pending: number; schedulerRunning: boolean }>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

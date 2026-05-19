@@ -7,6 +7,9 @@ import { IPC } from '../../shared/ipc-channels';
 import type { ScanError, ScanResult } from '../../shared/types';
 import { parseSkill, SkillParseError } from './parser';
 import { checkPlatformRoot, isDisabledContainer, listPlatforms } from './platforms';
+import { enqueueSkill } from '../ai/categorize';
+import { hasSecret } from '../secrets/safe-storage';
+import { isExternalNetworkAllowed } from '../secrets/network-gate';
 
 interface DiscoveredSkill {
   parsed: NonNullable<ReturnType<typeof parseSkill>>;
@@ -93,6 +96,18 @@ async function doScan(sender?: WebContents): Promise<ScanResult> {
     durationMs,
     JSON.stringify(errors),
   );
+
+  // Auto-categorize: queue newly added skills for LLM-suggested scenarios.
+  // Cheap gate first so we don't even import the module path unnecessarily
+  // when the feature is off or there's no key. The categorize module's own
+  // scheduler re-checks these flags at tick time.
+  if (
+    reconcileResult.addedSkillIds.length > 0 &&
+    isExternalNetworkAllowed() &&
+    hasSecret('llm.apiKey')
+  ) {
+    for (const id of reconcileResult.addedSkillIds) enqueueSkill(id);
+  }
 
   const result: ScanResult = {
     totalFound: discovered.length,
@@ -239,6 +254,10 @@ interface ReconcileResult {
   added: number;
   updated: number;
   removed: number;
+  /** IDs of skills inserted on this scan (not updates). Used by the AI
+   *  auto-categorize service to know which skills are candidates for
+   *  scenario suggestions. */
+  addedSkillIds: string[];
 }
 
 function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
@@ -246,6 +265,7 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
   const now = Date.now();
   let added = 0;
   let updated = 0;
+  const addedSkillIds: string[] = [];
 
   const findSkill = db.prepare(
     'SELECT id, content_hash FROM skills WHERE name = ? AND source_key = ?',
@@ -305,6 +325,7 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
           now,
         );
         added += 1;
+        addedSkillIds.push(skillId);
       } else {
         skillId = existing.id;
         if (existing.content_hash !== d.parsed.contentHash) {
@@ -386,7 +407,7 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
     }
   }
 
-  return { added, updated, removed };
+  return { added, updated, removed, addedSkillIds };
 }
 
 function safeIsDir(p: string): boolean {
