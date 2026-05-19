@@ -33,23 +33,39 @@ The app window opens automatically. On first launch it scans `~/.claude/skills`,
 | `npm run package` | Build, then `electron-builder --mac` → DMG in `release/`. |
 | `npm run rebuild` | `electron-rebuild -f -w better-sqlite3`. Run after `npm install` or Electron upgrade. |
 
-## What you can do in MVP-A
+## What you can do
 
-- See every skill across Claude, Codex, and the shared pool, deduped by `(name, source_key)`.
-- Highlight broken symlinks, duplicates, and unscenarized skills via the left scope sidebar.
-- Search by name, description, or body excerpt.
-- Filter by platform or scenario.
-- Open a skill to see its frontmatter, locations (with realpath + symlink flags), file count, size, and content hash.
-- Tag skills into scenarios. Default scenarios (写作 / 编码 / 运维 / 创意 / 数据 / 知识) are seeded with stable keys.
-- Export scenario assignments to JSON keyed by `scenario.key` and `(skill.name, sourceKey)` — import on another machine merges by key.
-- Rescan on demand from sidebar or Settings; auto-rescan on launch (toggleable).
+### Local management
+- See every skill across Claude, Codex, Shared, and any custom platforms you add. Deduped by `(name, source_key)`.
+- **Coverage matrix** view (default): rows = unique skills, columns = platforms. Canonical column on the far left with a crown icon; per-cell drift (in_sync / stale / only_here) and `mtime` indicators.
+- **List view** with scope filters (All / Duplicates / Unscenarized), platform filters, scenario filters, and full-text search.
+- **Detail drawer**: per-location view with platform badge, content hash, mtime, and a per-row "Adopt as canonical" button (sets that version as the source of truth, symlinks the others).
+- **Scenarios**: tag skills into 6 default scenarios (写作 / 编码 / 运维 / 创意 / 数据 / 知识) or create your own. Export/import as JSON keyed by stable `scenario.key`.
 
-## What MVP-A does NOT do
+### Safe sync
+- **Plan → confirm → execute** for every write. Atomic via temp + rename, TOCTOU-defended via inode pinning, sender-validated IPC, server-issued plan tokens.
+- Per-row **"Fill N gap" / "Replace N stale" / "Promote orphan"** actions on the matrix. Bulk versions at the top.
+- All replace operations back the target up under `~/Library/Application Support/MySkills/backups/` first. Every write is recorded in **Sync history** with a one-click rollback that restores from backup.
 
-- **No writes to skill directories.** No copy, no symlink, no enable/disable, no rename. That is MVP-B.
-- No external network calls — everything is local.
-- No AI features.
+### Discover (catalog)
+- Built-in **Discover** view searches [skills.sh](https://skills.sh) — 395k+ community SKILL.md skills, no account needed.
+- Preview the SKILL.md from GitHub raw before installing.
+- Install to any combination of platforms via the same plan→confirm→execute pipeline (with backup + rollback).
+- Master "Allow external network" toggle in Settings — turn off to keep MySkills fully local.
+
+### AI (optional, your key)
+- Bring your own OpenAI / Anthropic / OpenRouter / Ollama / custom-baseURL key (stored in macOS Keychain via Electron `safeStorage`).
+- **AI search** in Discover: re-rank catalog results by your natural-language need.
+- **Auto-categorize**: scanner queues newly-found skills; an LLM suggests which scenarios they fit; user accepts via chip in the detail drawer.
+- **Recommend missing**: open any scenario page to see catalog suggestions that complement what you already have.
+- Each AI feature has its own on/off toggle. All AI calls go from your machine directly to your chosen provider — never via our servers.
+
+## What this app does NOT do
+
 - No plugin or project-level skill scanning yet (see SPEC §12.2 Q1/Q2).
+- No skill editor — use VS Code on the realpath.
+- No remote SSH browsing of other machines' skills.
+- No enable/disable action on skill locations yet (planned; scanner already recognizes `.disabled/`).
 
 ## Architecture, very briefly
 
