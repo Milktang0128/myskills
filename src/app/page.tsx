@@ -9,6 +9,7 @@ import { SkillList } from '@/components/skill-list';
 import { SkillDetail } from '@/components/skill-detail';
 import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
+import { DiscoverView } from '@/components/discover-view';
 
 export default function Workspace() {
   const [platforms, setPlatforms] = useState<Platform[]>([]);
@@ -125,6 +126,10 @@ export default function Workspace() {
           setView('matrix');
           setSelectedId(null);
         }}
+        onSelectDiscover={() => {
+          setView('discover');
+          setSelectedId(null);
+        }}
         filter={filter}
         onFilterChange={(f) => {
           setView('list');
@@ -145,14 +150,24 @@ export default function Workspace() {
           <div className="w-[68px]" />
           <div className="titlebar-no-drag flex flex-1 items-center gap-3">
             <h1 className="text-sm font-semibold">
-              {view === 'matrix' ? 'Coverage matrix' : titleForListFilter(filter, platforms, scenarios)}
+              {view === 'matrix'
+                ? 'Coverage matrix'
+                : view === 'discover'
+                ? 'Discover'
+                : titleForListFilter(filter, platforms, scenarios)}
             </h1>
             <div className="relative ml-auto max-w-md flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder={view === 'matrix' ? 'Search the matrix…' : 'Search skills…'}
+                placeholder={
+                  view === 'matrix'
+                    ? 'Search the matrix…'
+                    : view === 'discover'
+                    ? 'Search skills.sh…'
+                    : 'Search skills…'
+                }
                 className="h-7 w-full rounded-md border bg-background pl-8 pr-2 text-xs"
               />
             </div>
@@ -167,6 +182,8 @@ export default function Workspace() {
             selectedSkillId={selectedId}
             onMutated={refreshMeta}
           />
+        ) : view === 'discover' ? (
+          <DiscoverView query={search} onToast={showToast} />
         ) : (
           <SkillList
             skills={skills}

@@ -14,17 +14,19 @@ import {
   RefreshCw,
   History as HistoryIcon,
   Grid3x3,
+  Globe,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
-export type WorkspaceView = 'list' | 'matrix';
+export type WorkspaceView = 'list' | 'matrix' | 'discover';
 
 interface Props {
   view: WorkspaceView;
   onSelectCoverage: () => void;
+  onSelectDiscover: () => void;
   filter: SkillFilter;
   onFilterChange: (f: SkillFilter) => void;
   platforms: Platform[];
@@ -46,6 +48,7 @@ interface ScopeItem {
 export function Sidebar({
   view,
   onSelectCoverage,
+  onSelectDiscover,
   filter,
   onFilterChange,
   platforms,
@@ -109,6 +112,13 @@ export function Sidebar({
             icon={<Grid3x3 className="h-4 w-4" />}
           >
             Coverage matrix
+          </SidebarRow>
+          <SidebarRow
+            active={view === 'discover'}
+            onClick={onSelectDiscover}
+            icon={<Globe className="h-4 w-4" />}
+          >
+            Discover
           </SidebarRow>
           {scopes.map((s) => (
             <SidebarRow
