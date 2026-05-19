@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Download, Globe, Loader2 } from 'lucide-react';
+import { Download, Globe, Loader2, Sparkles } from 'lucide-react';
 import type {
   CatalogPreview,
   CatalogSearchResult,
@@ -26,11 +26,25 @@ interface Props {
 const DEBOUNCE_MS = 300;
 const MIN_QUERY_LEN = 2;
 
+/** Search mode the user has picked in the top-bar segmented control. */
+type SearchMode = 'keyword' | 'ai';
+
+/** AI rerank candidate pool — broader than the default keyword view (30). */
+const AI_CANDIDATE_LIMIT = 50;
+/** Max items we ask the LLM to return. The prompt mirrors this. */
+const AI_RESULT_LIMIT = 10;
+
 export function DiscoverView({ query, onToast }: Props) {
   const [bridgeReady, setBridgeReady] = useState(false);
   const [results, setResults] = useState<CatalogSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Which phase of an in-flight search is currently running (drives the spinner copy). */
+  const [loadingPhase, setLoadingPhase] = useState<'keyword' | 'ai-ranking' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Map of skillId → one-sentence LLM rationale. Populated only in AI mode. */
+  const [aiWhy, setAiWhy] = useState<Record<string, string>>({});
+  /** True when the currently-rendered results were produced by an AI rerank. */
+  const [aiRanked, setAiRanked] = useState(false);
 
   const [selectedResult, setSelectedResult] = useState<CatalogSearchResult | null>(null);
   const [preview, setPreview] = useState<CatalogPreview | null>(null);
@@ -46,6 +60,11 @@ export function DiscoverView({ query, onToast }: Props) {
 
   // Master kill-switch from settings — when off, skip every network call.
   const [networkAllowed, setNetworkAllowed] = useState<boolean | null>(null);
+
+  // AI search gating. `null` while loading so we don't flicker the segmented
+  // control's disabled state on first render.
+  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
+  const [mode, setMode] = useState<SearchMode>('keyword');
 
   // Used to ignore stale search responses (the user typed faster than the API).
   const searchSeqRef = useRef(0);
@@ -66,16 +85,19 @@ export function DiscoverView({ query, onToast }: Props) {
     return () => clearInterval(iv);
   }, []);
 
-  // Load one-shot meta on mount: platforms, canonical, network gate.
+  // Load one-shot meta on mount: platforms, canonical, network gate, LLM availability.
   useEffect(() => {
     if (!bridgeReady) return;
     let cancelled = false;
     (async () => {
       try {
-        const [pls, canon, gate] = await Promise.all([
+        const [pls, canon, gate, llmCfg, llmFeatures] = await Promise.all([
           api.platforms.list(),
           api.settings.get('canonical_platform'),
           api.settings.get('allow_external_network'),
+          // Tolerate LLM IPC failure — AI search simply stays disabled.
+          api.llm.getConfig().catch(() => null),
+          api.llm.getFeatures().catch(() => null),
         ]);
         if (cancelled) return;
         setPlatforms(pls);
@@ -86,6 +108,8 @@ export function DiscoverView({ query, onToast }: Props) {
         setSelectedPlatforms(new Set([canonId]));
         // '0' means explicitly disabled; missing key / '1' means allowed.
         setNetworkAllowed(gate !== '0');
+        // AI search needs BOTH the feature toggle on AND a stored API key.
+        setAiAvailable(Boolean(llmFeatures?.search && llmCfg?.hasApiKey));
       } catch (e) {
         if (!cancelled) console.error('discover meta load failed', e);
       }
@@ -95,39 +119,96 @@ export function DiscoverView({ query, onToast }: Props) {
     };
   }, [bridgeReady]);
 
+  // If AI becomes unavailable after the user has already picked it (e.g. settings
+  // change in another window), force the mode back to Keyword so we don't sit in
+  // a broken state.
+  useEffect(() => {
+    if (aiAvailable === false && mode === 'ai') setMode('keyword');
+  }, [aiAvailable, mode]);
+
   const trimmedQuery = query.trim();
   const queryReady = trimmedQuery.length >= MIN_QUERY_LEN;
 
-  // Debounced search.
+  // Debounced search. Both Keyword and AI modes share the same 300ms debounce —
+  // the LLM call is the same kind of cost as a network hop, so we should never
+  // fire it on each keystroke.
   useEffect(() => {
     if (!bridgeReady) return;
     if (networkAllowed === false) return;
     if (!queryReady) {
       setResults([]);
       setLoading(false);
+      setLoadingPhase(null);
       setError(null);
+      setAiWhy({});
+      setAiRanked(false);
       return;
     }
     const mySeq = ++searchSeqRef.current;
     setLoading(true);
+    setLoadingPhase('keyword');
     setError(null);
     const t = setTimeout(async () => {
       try {
-        const resp = await api.catalog.search(trimmedQuery);
+        // Phase 1: keyword. In AI mode we widen the pool so the reranker has
+        // more candidates to choose from.
+        const limit = mode === 'ai' ? AI_CANDIDATE_LIMIT : undefined;
+        const resp = await api.catalog.search(trimmedQuery, limit);
         if (searchSeqRef.current !== mySeq) return;
-        setResults(resp.skills);
+
+        if (mode !== 'ai' || resp.skills.length === 0) {
+          setResults(resp.skills);
+          setAiWhy({});
+          setAiRanked(false);
+          return;
+        }
+
+        // Phase 2: AI rerank. The LLM returns the top-N ids + a "why" each.
+        setLoadingPhase('ai-ranking');
+        try {
+          const ranked = await aiRerank(trimmedQuery, resp.skills);
+          if (searchSeqRef.current !== mySeq) return;
+          if (ranked.length === 0) {
+            // Model returned nothing — fall back to the keyword pool rather
+            // than show an empty list. This isn't an error; the query may
+            // simply not match anything well.
+            setResults(resp.skills);
+            setAiWhy({});
+            setAiRanked(false);
+          } else {
+            setResults(ranked.map((r) => r.skill));
+            setAiWhy(
+              Object.fromEntries(
+                ranked.map((r) => [r.skill.skillId, r.why]),
+              ),
+            );
+            setAiRanked(true);
+          }
+        } catch (llmErr) {
+          if (searchSeqRef.current !== mySeq) return;
+          console.error('AI rerank failed', llmErr);
+          setResults(resp.skills);
+          setAiWhy({});
+          setAiRanked(false);
+          onToast('AI rerank failed, showing keyword results');
+        }
       } catch (err) {
         if (searchSeqRef.current !== mySeq) return;
         const friendly = friendlyCatalogError(err, 'search');
         setError(friendly);
         setResults([]);
+        setAiWhy({});
+        setAiRanked(false);
         onToast(friendly);
       } finally {
-        if (searchSeqRef.current === mySeq) setLoading(false);
+        if (searchSeqRef.current === mySeq) {
+          setLoading(false);
+          setLoadingPhase(null);
+        }
       }
     }, DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [bridgeReady, networkAllowed, queryReady, trimmedQuery, onToast]);
+  }, [bridgeReady, networkAllowed, queryReady, trimmedQuery, mode, onToast]);
 
   const openPreview = useCallback(
     async (result: CatalogSearchResult) => {
@@ -221,7 +302,9 @@ export function DiscoverView({ query, onToast }: Props) {
   const statusLine = !queryReady
     ? 'Type a query to search the catalog'
     : loading
-    ? `Searching ${trimmedQuery}…`
+    ? loadingPhase === 'ai-ranking'
+      ? 'AI is ranking…'
+      : `Searching catalog…`
     : error
     ? error
     : `${results.length} result${results.length === 1 ? '' : 's'}`;
@@ -230,7 +313,14 @@ export function DiscoverView({ query, onToast }: Props) {
     <div className="flex h-full min-w-0 flex-1">
       <div className="flex h-full flex-1 flex-col">
         <div className="flex items-center justify-between gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
-          <span className="truncate">{statusLine}</span>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="truncate">{statusLine}</span>
+            <ModeSegmented
+              mode={mode}
+              aiAvailable={aiAvailable ?? false}
+              onChange={setMode}
+            />
+          </div>
           <span className="shrink-0">via skills.sh</span>
         </div>
 
@@ -241,27 +331,36 @@ export function DiscoverView({ query, onToast }: Props) {
             ) : loading && results.length === 0 ? (
               <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Searching…
+                {loadingPhase === 'ai-ranking' ? 'AI is ranking…' : 'Searching catalog…'}
               </div>
             ) : results.length === 0 && !error ? (
               <div className="px-3 py-6 text-sm text-muted-foreground">
                 No skills matched “{trimmedQuery}”.
               </div>
             ) : (
-              <ul className="space-y-1.5">
-                {results.map((r) => (
-                  <li key={`${r.source}/${r.skillId}/${r.id}`}>
-                    <ResultRow
-                      result={r}
-                      selected={
-                        selectedResult?.source === r.source &&
-                        selectedResult?.skillId === r.skillId
-                      }
-                      onClick={() => openPreview(r)}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <>
+                {aiRanked && (
+                  <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-medium text-violet-600 dark:text-violet-300">
+                    <Sparkles className="h-3 w-3" />
+                    AI ranked
+                  </div>
+                )}
+                <ul className="space-y-1.5">
+                  {results.map((r) => (
+                    <li key={`${r.source}/${r.skillId}/${r.id}`}>
+                      <ResultRow
+                        result={r}
+                        why={aiWhy[r.skillId]}
+                        selected={
+                          selectedResult?.source === r.source &&
+                          selectedResult?.skillId === r.skillId
+                        }
+                        onClick={() => openPreview(r)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </div>
         </ScrollArea>
@@ -307,10 +406,13 @@ function EmptyHint() {
 
 function ResultRow({
   result,
+  why,
   selected,
   onClick,
 }: {
   result: CatalogSearchResult;
+  /** LLM-generated rationale, only present in AI mode. */
+  why?: string;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -337,7 +439,68 @@ function ResultRow({
         {result.description?.trim() ||
           '(no description in catalog — open to fetch SKILL.md)'}
       </div>
+      {why && (
+        <div className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80">
+          {why}
+        </div>
+      )}
     </button>
+  );
+}
+
+/**
+ * Segmented "Keyword" | "AI" toggle. The AI half is disabled (with a tooltip)
+ * when the LLM feature toggle is off or no API key is stored.
+ */
+function ModeSegmented({
+  mode,
+  aiAvailable,
+  onChange,
+}: {
+  mode: SearchMode;
+  aiAvailable: boolean;
+  onChange: (m: SearchMode) => void;
+}) {
+  const aiTitle = aiAvailable
+    ? 'AI-ranked search using your configured LLM'
+    : 'Enable AI search in Settings + configure LLM key';
+  return (
+    <div
+      role="tablist"
+      aria-label="Search mode"
+      className="flex shrink-0 items-center rounded-md border bg-background p-0.5 text-[11px]"
+    >
+      <button
+        role="tab"
+        aria-selected={mode === 'keyword'}
+        onClick={() => onChange('keyword')}
+        className={cn(
+          'rounded px-2 py-0.5 transition-colors',
+          mode === 'keyword'
+            ? 'bg-accent text-foreground'
+            : 'text-muted-foreground hover:text-foreground',
+        )}
+      >
+        Keyword
+      </button>
+      <button
+        role="tab"
+        aria-selected={mode === 'ai'}
+        disabled={!aiAvailable}
+        title={aiTitle}
+        onClick={() => aiAvailable && onChange('ai')}
+        className={cn(
+          'flex items-center gap-1 rounded px-2 py-0.5 transition-colors',
+          mode === 'ai' && aiAvailable
+            ? 'bg-accent text-foreground'
+            : 'text-muted-foreground hover:text-foreground',
+          !aiAvailable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
+        )}
+      >
+        <Sparkles className="h-3 w-3" />
+        AI
+      </button>
+    </div>
   );
 }
 
@@ -483,6 +646,86 @@ function PreviewDrawer({
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Ask the configured LLM to rerank a keyword-derived candidate pool by how
+ * well each candidate matches the user's natural-language query, returning up
+ * to AI_RESULT_LIMIT results paired with a one-sentence rationale.
+ *
+ * Throws on transport failure or unparseable JSON — the caller falls back to
+ * keyword results in that case.
+ */
+async function aiRerank(
+  query: string,
+  candidates: CatalogSearchResult[],
+): Promise<Array<{ skill: CatalogSearchResult; why: string }>> {
+  // Truncate descriptions so the prompt stays bounded regardless of catalog payloads.
+  const candidateLines = candidates
+    .map((c) => {
+      const desc = (c.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      return `- id=${c.skillId} name=${c.name} installs=${c.installs} description=${desc}`;
+    })
+    .join('\n');
+
+  const systemPrompt =
+    "You are a skill catalog ranker. Given a user's natural-language need and a list of candidate skills (each with id, name, description, installs), return the top 10 most relevant in JSON. For each, include a one-sentence \"why\" explaining the match. Return ONLY valid JSON with this shape:\n" +
+    '{ "results": [ { "id": string, "why": string } ] }\n' +
+    "Do not include skills that don't match the user's intent. If fewer than 10 are clearly relevant, return fewer. If none match, return an empty results array.";
+
+  const userPrompt = `${query}\nCandidates:\n${candidateLines}`;
+
+  const resp = await api.llm.chat({
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    jsonMode: true,
+    temperature: 0.2,
+    maxTokens: 1024,
+  });
+
+  const parsed = parseRerankJson(resp.text);
+  if (!parsed) throw new Error('LLM returned malformed JSON');
+
+  // Map ids → original candidate. Unknown ids (model hallucinated) are skipped silently.
+  const byId = new Map(candidates.map((c) => [c.skillId, c]));
+  const out: Array<{ skill: CatalogSearchResult; why: string }> = [];
+  const seen = new Set<string>();
+  for (const r of parsed.results) {
+    if (seen.has(r.id)) continue;
+    const skill = byId.get(r.id);
+    if (!skill) continue;
+    out.push({ skill, why: r.why });
+    seen.add(r.id);
+    if (out.length >= AI_RESULT_LIMIT) break;
+  }
+  return out;
+}
+
+interface RerankPayload {
+  results: Array<{ id: string; why: string }>;
+}
+
+/** Tolerantly parse the rerank JSON — returns null on any structural problem. */
+function parseRerankJson(text: string): RerankPayload | null {
+  try {
+    const obj = JSON.parse(text) as unknown;
+    if (!obj || typeof obj !== 'object') return null;
+    const results = (obj as { results?: unknown }).results;
+    if (!Array.isArray(results)) return null;
+    const clean: Array<{ id: string; why: string }> = [];
+    for (const item of results) {
+      if (!item || typeof item !== 'object') continue;
+      const id = (item as { id?: unknown }).id;
+      const why = (item as { why?: unknown }).why;
+      if (typeof id !== 'string' || typeof why !== 'string') continue;
+      clean.push({ id, why });
+    }
+    return { results: clean };
+  } catch {
+    return null;
+  }
+}
 
 function formatInstalls(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0';
