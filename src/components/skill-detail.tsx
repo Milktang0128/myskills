@@ -16,6 +16,7 @@ import { Separator } from '@/components/ui/separator';
 import { PlatformBadge } from './platform-badge';
 import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { cn, formatBytes, formatRelative } from '@/lib/utils';
 
 interface Props {
@@ -26,6 +27,7 @@ interface Props {
 }
 
 export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
+  const t = useT();
   const [skill, setSkill] = useState<Skill | null>(null);
   const [loading, setLoading] = useState(true);
   const [canonicalPlatform, setCanonicalPlatform] = useState<string>('shared');
@@ -90,7 +92,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
       <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
         <div className="titlebar-drag h-9 shrink-0 border-b" />
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          {loading ? 'Loading…' : 'Not found'}
+          {loading ? t('detail.loading') : t('detail.notFound')}
         </div>
       </aside>
     );
@@ -123,7 +125,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
           onClick={onClose}
           className="titlebar-no-drag text-xs text-muted-foreground hover:text-foreground"
         >
-          Close
+          {t('common.close')}
         </button>
       </div>
 
@@ -139,10 +141,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
             {skill.description && <p className="text-sm text-muted-foreground">{skill.description}</p>}
             <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
               {skill.version && <span>v{skill.version}</span>}
-              {skill.author && <span>by {skill.author}</span>}
+              {skill.author && <span>{t('detail.subtitle.by', { author: skill.author })}</span>}
               <span>{formatBytes(skill.sizeBytes)}</span>
-              <span>{skill.fileCount} files</span>
-              <span>scanned {formatRelative(skill.lastScannedAt)}</span>
+              <span>{t('detail.subtitle.files', { count: skill.fileCount })}</span>
+              <span>{t('detail.subtitle.scanned', { when: formatRelative(skill.lastScannedAt) })}</span>
             </div>
           </header>
 
@@ -151,7 +153,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
           <section>
             <div className="mb-2 flex items-center justify-between">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Scenarios
+                {t('detail.section.scenarios')}
               </h3>
             </div>
 
@@ -163,7 +165,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               <div className="mb-3 rounded-md border border-dashed border-primary/40 bg-primary/5 p-2">
                 <div className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary/80">
                   <Sparkles className="h-3 w-3" />
-                  AI 建议
+                  {t('detail.aiSuggestions.heading')}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {aiSuggestions.map((sg) => {
@@ -202,8 +204,8 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                             await refreshSuggestions();
                           }}
                           className="border-l border-dashed border-primary/30 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
-                          title="Dismiss suggestion"
-                          aria-label="Dismiss suggestion"
+                          title={t('detail.aiSuggestions.dismissAria')}
+                          aria-label={t('detail.aiSuggestions.dismissAria')}
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -216,7 +218,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
             <div className="flex flex-wrap gap-1.5">
               {scenarios.length === 0 ? (
-                <span className="text-xs text-muted-foreground">No scenarios defined yet.</span>
+                <span className="text-xs text-muted-foreground">{t('detail.scenarios.noneDefined')}</span>
               ) : (
                 scenarios.map((sc) => {
                   const active = inScenarioIds.has(sc.id);
@@ -257,10 +259,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
           <section>
             <div className="mb-2 flex items-center justify-between">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Locations ({skill.locations.length})
+                {t('detail.section.locations', { count: skill.locations.length })}
               </h3>
               <span className="text-[10px] text-muted-foreground">
-                Canonical: <span className="font-medium">{canonicalPlatform}</span>
+                {t('detail.section.locations.canonicalLabel')} <span className="font-medium">{canonicalPlatform}</span>
               </span>
             </div>
             <div className="space-y-2">
@@ -281,7 +283,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Frontmatter
+              {t('detail.section.frontmatter')}
             </h3>
             <dl className="grid grid-cols-[80px_1fr] gap-y-1 text-xs">
               <Meta label="name" value={skill.name} />
@@ -298,7 +300,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               <Separator />
               <section>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  SKILL.md
+                  {t('detail.section.skillmd')}
                 </h3>
                 <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
                   {skill.bodyExcerpt}
@@ -333,6 +335,7 @@ function LocationRow({
   onAdopt: () => void;
   busy: boolean;
 }) {
+  const t = useT();
   // Decide what status to show + whether Adopt makes sense.
   let statusIcon: React.ReactNode = null;
   let statusLabel = '';
@@ -341,34 +344,34 @@ function LocationRow({
 
   if (loc.isBrokenSymlink) {
     statusIcon = <AlertTriangle className="h-3 w-3" />;
-    statusLabel = 'Broken';
+    statusLabel = t('detail.loc.broken');
     statusTone = 'text-destructive';
     canAdopt = false; // can't adopt content we can't read
   } else if (loc.isDisabled) {
     statusIcon = <EyeOff className="h-3 w-3" />;
-    statusLabel = 'Disabled';
+    statusLabel = t('detail.loc.disabled');
   } else if (isCanonical) {
     statusIcon = <Crown className="h-3 w-3" />;
-    statusLabel = 'Canonical — source of truth';
+    statusLabel = t('detail.loc.canonical');
     statusTone = 'text-amber-600';
   } else if (loc.isSymlink) {
     statusIcon = <Link2 className="h-3 w-3" />;
-    statusLabel = 'Symlink';
+    statusLabel = t('detail.loc.symlink');
   } else {
     // Real dir, non-canonical → compare to canonical
     if (canonicalHash && loc.contentHash && loc.contentHash === canonicalHash) {
       statusIcon = <Check className="h-3 w-3" />;
-      statusLabel = 'In sync';
+      statusLabel = t('detail.loc.inSync');
       statusTone = 'text-emerald-600';
     } else if (canonicalHash && loc.contentHash) {
       statusIcon = <AlertTriangle className="h-3 w-3" />;
-      statusLabel = 'Stale — content differs from canonical';
+      statusLabel = t('detail.loc.stale');
       statusTone = 'text-amber-600';
       canAdopt = true;
     } else {
       // No canonical to compare against → this IS the only version
       statusIcon = <Check className="h-3 w-3" />;
-      statusLabel = 'Only version (canonical missing this skill)';
+      statusLabel = t('detail.loc.onlyVersion');
       statusTone = 'text-blue-600';
       canAdopt = true;
     }
@@ -385,7 +388,7 @@ function LocationRow({
         <div className="ml-auto flex items-center gap-1.5">
           {loc.mtime && (
             <span className="text-[10px] text-muted-foreground" title={new Date(loc.mtime).toLocaleString()}>
-              modified {formatRelative(loc.mtime)}
+              {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
             </span>
           )}
           {canAdopt && (
@@ -395,18 +398,18 @@ function LocationRow({
               className="h-6 px-2 text-[11px]"
               onClick={onAdopt}
               disabled={busy}
-              title="Copy this version into canonical (with backup) and symlink every other platform to it"
+              title={t('detail.loc.adoptTitle')}
             >
               <Upload className="mr-1 h-3 w-3" />
-              Adopt as canonical
+              {t('detail.loc.adoptBtn')}
             </Button>
           )}
         </div>
       </div>
       <div className="mt-2 space-y-0.5 font-mono text-[10px] text-muted-foreground">
-        <div className="break-all">install: {loc.installPath}</div>
+        <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
         {loc.isSymlink && <div className="break-all">→ {loc.realPath}</div>}
-        {loc.contentHash && <div>hash: {loc.contentHash.slice(0, 12)}…</div>}
+        {loc.contentHash && <div>{t('detail.loc.hashPrefix')} {loc.contentHash.slice(0, 12)}…</div>}
       </div>
     </div>
   );

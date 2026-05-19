@@ -30,15 +30,18 @@ import type {
   ScanResult,
 } from '@shared/types';
 import { PlatformBadge } from '@/components/platform-badge';
+import { LangToggle } from '@/components/lang-toggle';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { formatRelative } from '@/lib/utils';
 
 export default function SettingsPage() {
+  const t = useT();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
   const [lastScan, setLastScan] = useState<ScanResult | null>(null);
@@ -132,13 +135,13 @@ export default function SettingsPage() {
       setBridgeReady(true);
       return;
     }
-    const t = setInterval(() => {
+    const iv = setInterval(() => {
       if (window.myskills) {
         setBridgeReady(true);
-        clearInterval(t);
+        clearInterval(iv);
       }
     }, 50);
-    return () => clearInterval(t);
+    return () => clearInterval(iv);
   }, []);
 
   useEffect(() => {
@@ -183,7 +186,7 @@ export default function SettingsPage() {
 
   async function deletePlatform(p: Platform) {
     if (p.isBuiltin) return;
-    if (!confirm(`Remove "${p.label}" from MySkills? Existing skills under this platform must be removed first.`)) return;
+    if (!confirm(t('settings.platforms.removeConfirm', { label: p.label }))) return;
     setDeletingId(p.id);
     try {
       await api.platforms.delete(p.id);
@@ -278,7 +281,7 @@ export default function SettingsPage() {
   }
 
   async function clearLlmKey() {
-    if (!confirm('Remove the stored API key from macOS Keychain?')) return;
+    if (!confirm(t('settings.ai.removeKeyConfirm'))) return;
     await api.llm.deleteApiKey();
     const cfg = await api.llm.getConfig();
     setLlmConfig(cfg);
@@ -310,16 +313,19 @@ export default function SettingsPage() {
 
   return (
     <main className="flex h-screen w-screen flex-col overflow-hidden">
-      <header className="titlebar-drag flex h-12 shrink-0 items-center border-b pl-[88px] pr-4">
+      <header className="titlebar-drag flex h-12 shrink-0 items-center justify-between border-b pl-[88px] pr-4">
         <div className="titlebar-no-drag flex items-center gap-2">
           <Link
             href="/"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
-            aria-label="Back"
+            aria-label={t('settings.back')}
           >
             <ArrowLeft className="h-4 w-4" />
           </Link>
-          <h1 className="text-sm font-semibold">Settings</h1>
+          <h1 className="text-sm font-semibold">{t('settings.title')}</h1>
+        </div>
+        <div className="titlebar-no-drag">
+          <LangToggle />
         </div>
       </header>
 
@@ -328,11 +334,10 @@ export default function SettingsPage() {
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Crown className="h-4 w-4 text-amber-500" />
-              Canonical platform
+              {t('settings.canonical.header')}
             </h2>
             <p className="text-xs text-muted-foreground">
-              MySkills treats one platform as the source of truth. Sync creates symlinks on
-              other platforms pointing at the canonical copy; promote moves orphans into it.
+              {t('settings.canonical.help')}
             </p>
             <div className="flex flex-wrap items-center gap-2">
               {platforms.map((p) => {
@@ -365,22 +370,21 @@ export default function SettingsPage() {
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Wifi className="h-4 w-4" />
-              Allow external network requests
+              {t('settings.network.header')}
             </h2>
             <div className="flex items-start gap-3 rounded-md border bg-card px-3 py-3">
               <ToggleSwitch
                 checked={networkAllowed}
                 onChange={toggleNetwork}
                 disabled={savingNetwork}
-                label="Allow external network requests"
+                label={t('settings.network.header')}
               />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">
-                  {networkAllowed ? 'Network enabled' : 'Offline mode'}
+                  {networkAllowed ? t('settings.network.enabled') : t('settings.network.offline')}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  When off, MySkills works fully offline. Catalog search, AI features, and remote
-                  skill content are disabled.
+                  {t('settings.network.bodyHelp')}
                 </p>
               </div>
             </div>
@@ -389,16 +393,15 @@ export default function SettingsPage() {
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Sparkles className="h-4 w-4 text-violet-500" />
-              AI integration
+              {t('settings.ai.header')}
             </h2>
             <p className="text-xs text-muted-foreground">
-              Connect a language model to enable smart search, scenario auto-categorization, and
-              skill recommendations. Disabled when the master network toggle is off.
+              {t('settings.ai.intro')}
             </p>
 
             <div className={`space-y-3 ${!networkAllowed ? 'opacity-60' : ''}`}>
               <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
-                <Label htmlFor="llm-provider">Provider</Label>
+                <Label htmlFor="llm-provider">{t('settings.ai.providerLabel')}</Label>
                 <select
                   id="llm-provider"
                   value={llmDraft.provider}
@@ -408,14 +411,15 @@ export default function SettingsPage() {
                   disabled={!networkAllowed}
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="openrouter">OpenRouter</option>
-                  <option value="ollama">Ollama (local)</option>
-                  <option value="custom">Custom (OpenAI-compatible)</option>
+                  <option value="openai">{t('settings.ai.providerOpt.openai')}</option>
+                  <option value="anthropic">{t('settings.ai.providerOpt.anthropic')}</option>
+                  <option value="deepseek">{t('settings.ai.providerOpt.deepseek')}</option>
+                  <option value="openrouter">{t('settings.ai.providerOpt.openrouter')}</option>
+                  <option value="ollama">{t('settings.ai.providerOpt.ollama')}</option>
+                  <option value="custom">{t('settings.ai.providerOpt.custom')}</option>
                 </select>
 
-                <Label htmlFor="llm-model">Model</Label>
+                <Label htmlFor="llm-model">{t('settings.ai.modelLabel')}</Label>
                 <Input
                   id="llm-model"
                   value={llmDraft.model}
@@ -427,15 +431,15 @@ export default function SettingsPage() {
 
                 {(llmDraft.provider === 'custom' || llmDraft.provider === 'ollama') && (
                   <>
-                    <Label htmlFor="llm-base-url">Base URL</Label>
+                    <Label htmlFor="llm-base-url">{t('settings.ai.baseUrl.label')}</Label>
                     <Input
                       id="llm-base-url"
                       value={llmDraft.baseUrl}
                       onChange={(e) => setLlmDraft({ ...llmDraft, baseUrl: e.target.value })}
                       placeholder={
                         llmDraft.provider === 'ollama'
-                          ? 'http://localhost:11434/v1'
-                          : 'https://your-host/v1'
+                          ? t('settings.ai.baseUrl.placeholder.ollama')
+                          : t('settings.ai.baseUrl.placeholder.custom')
                       }
                       disabled={!networkAllowed}
                       className="font-mono text-xs"
@@ -445,7 +449,7 @@ export default function SettingsPage() {
 
                 <Label htmlFor="llm-key" className="flex items-center gap-1.5">
                   <KeyRound className="h-3.5 w-3.5" />
-                  API Key
+                  {t('settings.ai.key.label')}
                 </Label>
                 <div className="flex gap-2">
                   <Input
@@ -456,10 +460,10 @@ export default function SettingsPage() {
                     onChange={(e) => setLlmApiKeyDraft(e.target.value)}
                     placeholder={
                       llmConfig?.hasApiKey
-                        ? 'saved in macOS Keychain — paste to replace'
+                        ? t('settings.ai.key.placeholder.saved')
                         : llmDraft.provider === 'ollama'
-                        ? 'not required for Ollama'
-                        : 'Paste your key...'
+                        ? t('settings.ai.key.placeholder.ollama')
+                        : t('settings.ai.key.placeholder.default')
                     }
                     disabled={!networkAllowed || llmDraft.provider === 'ollama'}
                     className="font-mono text-xs"
@@ -470,7 +474,7 @@ export default function SettingsPage() {
                       variant="outline"
                       onClick={clearLlmKey}
                       disabled={!networkAllowed}
-                      title="Remove the stored API key"
+                      title={t('settings.ai.key.removeTitle')}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -485,7 +489,7 @@ export default function SettingsPage() {
                     onClick={saveLlmConfig}
                     disabled={!networkAllowed || savingLlm}
                   >
-                    {savingLlm ? 'Saving…' : 'Save'}
+                    {savingLlm ? t('settings.ai.saving') : t('settings.ai.save')}
                   </Button>
                   {llmApiKeyDraft.trim() && (
                     <Button
@@ -494,7 +498,7 @@ export default function SettingsPage() {
                       onClick={saveLlmKey}
                       disabled={!networkAllowed || savingLlmKey}
                     >
-                      {savingLlmKey ? 'Storing…' : 'Save API key'}
+                      {savingLlmKey ? t('settings.ai.storing') : t('settings.ai.saveKey')}
                     </Button>
                   )}
                   <Button
@@ -503,7 +507,7 @@ export default function SettingsPage() {
                     onClick={testLlm}
                     disabled={!networkAllowed || testingLlm || !llmDraft.model.trim()}
                   >
-                    {testingLlm ? 'Testing…' : 'Test connection'}
+                    {testingLlm ? t('settings.ai.test.testing') : t('settings.ai.test.label')}
                   </Button>
                 </div>
                 {llmTestResult && (
@@ -512,39 +516,38 @@ export default function SettingsPage() {
                       llmTestResult.ok ? 'text-emerald-600' : 'text-destructive'
                     }`}
                   >
-                    {llmTestResult.ok ? 'OK' : 'Failed'}
+                    {llmTestResult.ok ? t('settings.ai.test.ok.short') : t('settings.ai.test.fail.short')}
                     {llmTestResult.message ? `: ${llmTestResult.message}` : ''}
                   </span>
                 )}
               </div>
 
               <div className="space-y-2 rounded-md border bg-card px-3 py-3">
-                <div className="text-xs font-medium text-muted-foreground">Use AI for…</div>
+                <div className="text-xs font-medium text-muted-foreground">{t('settings.ai.featuresHeading')}</div>
                 <FeatureToggleRow
                   checked={llmFeatures.search}
                   onChange={(v) => toggleFeature('search', v)}
                   disabled={!networkAllowed}
-                  label="Use AI for catalog search (Discover)"
+                  label={t('settings.ai.feature.searchLong')}
                 />
                 <FeatureToggleRow
                   checked={llmFeatures.autoCategorize}
                   onChange={(v) => toggleFeature('autoCategorize', v)}
                   disabled={!networkAllowed}
-                  label="Suggest scenarios for new skills (auto-categorize)"
+                  label={t('settings.ai.feature.autoCategorizeLong')}
                 />
                 <FeatureToggleRow
                   checked={llmFeatures.recommend}
                   onChange={(v) => toggleFeature('recommend', v)}
                   disabled={!networkAllowed}
-                  label="Recommend missing skills for active scenarios"
+                  label={t('settings.ai.feature.recommendLong')}
                 />
               </div>
 
               <div className="flex items-start gap-2 text-[11px] text-muted-foreground">
                 <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <p>
-                  Your API key is stored in macOS Keychain via Electron safeStorage. It never
-                  leaves your device except in direct calls to your chosen provider.
+                  {t('settings.ai.security')}
                 </p>
               </div>
             </div>
@@ -554,35 +557,35 @@ export default function SettingsPage() {
 
           <section className="space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold">Last scan</h2>
+              <h2 className="text-base font-semibold">{t('settings.scan.lastHeader')}</h2>
               <Button variant="outline" size="sm" onClick={runScan} disabled={scanning}>
                 <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${scanning ? 'animate-spin' : ''}`} />
-                {scanning ? 'Scanning…' : 'Rescan now'}
+                {scanning ? t('settings.scan.scanningNow') : t('settings.scan.rescanNow')}
               </Button>
             </div>
             {lastScan ? (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Stat label="Total found" value={lastScan.totalFound} />
-                <Stat label="New" value={lastScan.newSkills} />
-                <Stat label="Updated" value={lastScan.updatedSkills} />
-                <Stat label="Removed" value={lastScan.removedSkills} />
-                <Stat label="Duration" value={`${lastScan.durationMs} ms`} />
-                <Stat label="Errors" value={lastScan.errors.length} tone={lastScan.errors.length ? 'warn' : undefined} />
-                <Stat label="Finished" value={formatRelative(lastScan.scannedAt)} />
+                <Stat label={t('settings.scan.stat.totalFound')} value={lastScan.totalFound} />
+                <Stat label={t('settings.scan.stat.new')} value={lastScan.newSkills} />
+                <Stat label={t('settings.scan.stat.updated')} value={lastScan.updatedSkills} />
+                <Stat label={t('settings.scan.stat.removed')} value={lastScan.removedSkills} />
+                <Stat label={t('settings.scan.stat.duration')} value={`${lastScan.durationMs} ms`} />
+                <Stat label={t('settings.scan.stat.errors')} value={lastScan.errors.length} tone={lastScan.errors.length ? 'warn' : undefined} />
+                <Stat label={t('settings.scan.stat.finished')} value={formatRelative(lastScan.scannedAt)} />
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">No scan recorded yet. Click "Rescan now".</p>
+              <p className="text-sm text-muted-foreground">{t('settings.scan.none')}</p>
             )}
           </section>
 
           {lastScan && lastScan.errors.length > 0 && (
             <section className="space-y-2">
-              <h2 className="text-base font-semibold">Scan errors ({lastScan.errors.length})</h2>
+              <h2 className="text-base font-semibold">{t('settings.scan.errorsHeader', { count: lastScan.errors.length })}</h2>
               {Array.from(errorsByKind.entries()).map(([kind, errors]) => (
                 <details key={kind} className="rounded-md border bg-card">
                   <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm">
                     <ErrorIcon kind={kind} />
-                    <span className="font-medium">{labelForKind(kind)}</span>
+                    <span className="font-medium">{labelForKind(kind, t)}</span>
                     <span className="text-xs text-muted-foreground">({errors.length})</span>
                   </summary>
                   <ul className="space-y-1 border-t px-3 py-2">
@@ -603,17 +606,22 @@ export default function SettingsPage() {
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Search className="h-4 w-4" />
-              Discover platforms
+              {t('settings.discover.header')}
             </h2>
             <p className="text-xs text-muted-foreground">
-              Common SKILL.md-compatible agent tools. MySkills probes each default path; click <em>Add</em> on any
-              that exist but aren't enabled yet.
+              {t('settings.discover.help')}
             </p>
             <div className="space-y-2">
               {candidates.map((cand) => {
                 const probe = probeResults[cand.id];
                 const isRegistered = !!probe?.alreadyRegistered;
                 const exists = probe?.exists ?? false;
+                const skillsLine =
+                  probe && probe.exists && probe.readable
+                    ? ` · ${probe.skillCount === 1 ? t('settings.discover.skillsDetected', { count: probe.skillCount }) : t('settings.discover.skillsDetectedMany', { count: probe.skillCount })}`
+                    : probe && !probe.exists
+                    ? ` · ${t('settings.discover.pathNotFound')}`
+                    : '';
                 return (
                   <div
                     key={cand.id}
@@ -634,16 +642,11 @@ export default function SettingsPage() {
                         {probe?.resolvedPath ?? cand.defaultDir}
                       </div>
                       <div className="text-[11px] text-muted-foreground">
-                        {cand.description}
-                        {probe && probe.exists && probe.readable
-                          ? ` · ${probe.skillCount} skill${probe.skillCount === 1 ? '' : 's'} detected`
-                          : probe && !probe.exists
-                          ? ' · path not found'
-                          : ''}
+                        {cand.description}{skillsLine}
                       </div>
                     </div>
                     {isRegistered ? (
-                      <span className="text-[11px] text-muted-foreground">enabled</span>
+                      <span className="text-[11px] text-muted-foreground">{t('settings.discover.enabled')}</span>
                     ) : (
                       <Button
                         size="sm"
@@ -651,7 +654,7 @@ export default function SettingsPage() {
                         onClick={() => enableCandidate(cand)}
                         disabled={addingCandidate === cand.id}
                       >
-                        {addingCandidate === cand.id ? 'Adding…' : 'Add'}
+                        {addingCandidate === cand.id ? t('settings.discover.adding') : t('settings.discover.add')}
                       </Button>
                     )}
                   </div>
@@ -661,9 +664,9 @@ export default function SettingsPage() {
           </section>
 
           <section className="space-y-3">
-            <h2 className="text-base font-semibold">Platform directories</h2>
+            <h2 className="text-base font-semibold">{t('settings.platforms.header')}</h2>
             <p className="text-xs text-muted-foreground">
-              Edit a platform's path, or remove non-built-in ones. Built-in platforms can be re-pointed but not deleted.
+              {t('settings.platforms.helpEdit')}
             </p>
             <div className="space-y-3">
               {platforms.map((p) => (
@@ -672,11 +675,11 @@ export default function SettingsPage() {
                     {p.label}
                     {!p.isBuiltin && (
                       <span className="rounded bg-secondary px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
-                        custom
+                        {t('settings.platforms.customBadge')}
                       </span>
                     )}
                     <span className="text-[10px] font-normal text-muted-foreground">
-                      {stats?.byPlatform?.[p.id] ?? 0} skills
+                      {t('settings.platforms.skillsSuffix', { count: stats?.byPlatform?.[p.id] ?? 0 })}
                     </span>
                   </Label>
                   <div className="flex gap-2">
@@ -692,7 +695,7 @@ export default function SettingsPage() {
                       onClick={() => saveDir(p)}
                       disabled={savingId === p.id || !edits[p.id] || edits[p.id] === p.skillsDir}
                     >
-                      {savingId === p.id ? 'Saving…' : 'Save'}
+                      {savingId === p.id ? t('settings.platforms.savingBtn') : t('settings.platforms.saveBtn')}
                     </Button>
                     {!p.isBuiltin && (
                       <Button
@@ -700,7 +703,7 @@ export default function SettingsPage() {
                         variant="outline"
                         onClick={() => deletePlatform(p)}
                         disabled={deletingId === p.id}
-                        title="Remove this platform from MySkills"
+                        title={t('settings.platforms.removeTitle')}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -714,31 +717,31 @@ export default function SettingsPage() {
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Plus className="h-4 w-4" />
-              Add custom platform
+              {t('settings.custom.header')}
             </h2>
             <p className="text-xs text-muted-foreground">
-              For tools not in the discover list, or any other directory you keep SKILL.md folders in.
+              {t('settings.custom.help')}
             </p>
             <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:grid-rows-[auto_auto_auto] sm:items-center">
-              <Label htmlFor="cp-id">ID</Label>
+              <Label htmlFor="cp-id">{t('settings.custom.id')}</Label>
               <Input
                 id="cp-id"
-                placeholder="e.g. work_skills"
+                placeholder={t('settings.custom.idPlaceholder')}
                 value={customForm.id}
                 onChange={(e) => setCustomForm({ ...customForm, id: e.target.value })}
                 className="font-mono text-xs"
               />
-              <Label htmlFor="cp-label">Label</Label>
+              <Label htmlFor="cp-label">{t('settings.custom.labelField')}</Label>
               <Input
                 id="cp-label"
-                placeholder="e.g. Work Skills"
+                placeholder={t('settings.custom.labelPlaceholder')}
                 value={customForm.label}
                 onChange={(e) => setCustomForm({ ...customForm, label: e.target.value })}
               />
-              <Label htmlFor="cp-dir">Skills directory</Label>
+              <Label htmlFor="cp-dir">{t('settings.custom.dir')}</Label>
               <Input
                 id="cp-dir"
-                placeholder="~/Dropbox/team-skills"
+                placeholder={t('settings.custom.dirPlaceholder')}
                 value={customForm.skillsDir}
                 onChange={(e) => setCustomForm({ ...customForm, skillsDir: e.target.value })}
                 className="font-mono text-xs"
@@ -756,7 +759,7 @@ export default function SettingsPage() {
                   !customForm.skillsDir.trim()
                 }
               >
-                {savingCustom ? 'Adding…' : 'Add platform'}
+                {savingCustom ? t('settings.custom.adding') : t('settings.custom.addBtn')}
               </Button>
             </div>
           </section>
@@ -764,18 +767,18 @@ export default function SettingsPage() {
           <Separator />
 
           <section className="space-y-3">
-            <h2 className="text-base font-semibold">Stats</h2>
+            <h2 className="text-base font-semibold">{t('settings.stats.header')}</h2>
             {stats && (
               <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                <Stat label="Skills" value={stats.totalSkills} />
-                <Stat label="Scenarios" value={stats.scenarios} />
-                <Stat label="Broken symlinks" value={stats.brokenSymlinks} tone={stats.brokenSymlinks ? 'warn' : undefined} />
-                <Stat label="Duplicate hashes" value={stats.duplicates} tone={stats.duplicates ? 'warn' : undefined} />
-                <Stat label="Unscenarized" value={stats.unscenarized} />
+                <Stat label={t('settings.stats.skills')} value={stats.totalSkills} />
+                <Stat label={t('settings.stats.scenarios')} value={stats.scenarios} />
+                <Stat label={t('settings.stats.broken')} value={stats.brokenSymlinks} tone={stats.brokenSymlinks ? 'warn' : undefined} />
+                <Stat label={t('settings.stats.duplicates')} value={stats.duplicates} tone={stats.duplicates ? 'warn' : undefined} />
+                <Stat label={t('settings.stats.unscenarized')} value={stats.unscenarized} />
               </dl>
             )}
             {stats && (
-              <p className="font-mono text-[10px] text-muted-foreground break-all">DB: {stats.dbPath}</p>
+              <p className="font-mono text-[10px] text-muted-foreground break-all">{t('settings.stats.dbPath', { path: stats.dbPath })}</p>
             )}
           </section>
         </div>
@@ -866,6 +869,8 @@ function modelPlaceholder(provider: LlmProvider): string {
       return 'gpt-4o-mini';
     case 'anthropic':
       return 'claude-haiku-4-5';
+    case 'deepseek':
+      return 'deepseek-v4-pro';
     case 'openrouter':
       return 'anthropic/claude-3.5-sonnet';
     case 'ollama':
@@ -875,22 +880,22 @@ function modelPlaceholder(provider: LlmProvider): string {
   }
 }
 
-function labelForKind(kind: string): string {
+function labelForKind(kind: string, t: ReturnType<typeof useT>): string {
   switch (kind) {
     case 'broken_symlink':
-      return 'Broken symlinks';
+      return t('settings.scan.errorKind.broken_symlink');
     case 'missing_frontmatter':
-      return 'Missing frontmatter';
+      return t('settings.scan.errorKind.missing_frontmatter');
     case 'parse_error':
-      return 'Parse errors';
+      return t('settings.scan.errorKind.parse_error');
     case 'unreadable':
-      return 'Unreadable';
+      return t('settings.scan.errorKind.unreadable');
     case 'permission':
-      return 'Permission denied';
+      return t('settings.scan.errorKind.permission');
     case 'icloud_evicted':
-      return 'iCloud-offloaded (download the folder to fix)';
+      return t('settings.scan.errorKind.icloud_evicted');
     case 'too_large':
-      return 'SKILL.md too large (> 1 MB)';
+      return t('settings.scan.errorKind.too_large');
     default:
       return kind;
   }

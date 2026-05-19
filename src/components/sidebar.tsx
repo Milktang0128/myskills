@@ -4,10 +4,8 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import {
   Layers,
-  AlertTriangle,
   Copy as CopyIcon,
   HelpCircle,
-  EyeOff,
   Folder,
   Settings as SettingsIcon,
   Plus,
@@ -19,6 +17,8 @@ import {
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { LangToggle } from '@/components/lang-toggle';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 export type WorkspaceView = 'list' | 'matrix' | 'discover';
@@ -58,19 +58,20 @@ export function Sidebar({
   onRescan,
   scanning,
 }: Props) {
+  const t = useT();
   const scopes = useMemo<ScopeItem[]>(
     () => [
-      { scope: 'all', label: 'All Skills', count: stats?.totalSkills, icon: <Layers className="h-4 w-4" /> },
+      { scope: 'all', label: t('sidebar.allSkills'), count: stats?.totalSkills, icon: <Layers className="h-4 w-4" /> },
       // Duplicates surfaces same-content-different-name skills — the matrix can't see this
       // because it keys rows by skill name. Keep until consolidation tooling exists.
-      { scope: 'duplicate', label: 'Duplicates', count: stats?.duplicates, icon: <CopyIcon className="h-4 w-4" />, tone: 'warn' },
-      { scope: 'unscenarized', label: 'Unscenarized', count: stats?.unscenarized, icon: <HelpCircle className="h-4 w-4" />, tone: 'muted' },
+      { scope: 'duplicate', label: t('sidebar.duplicates'), count: stats?.duplicates, icon: <CopyIcon className="h-4 w-4" />, tone: 'warn' },
+      { scope: 'unscenarized', label: t('sidebar.unscenarized'), count: stats?.unscenarized, icon: <HelpCircle className="h-4 w-4" />, tone: 'muted' },
       // Removed:
       //   - 'broken': redundant with matrix's Broken chip + detail drawer's location list.
       //   - 'disabled': there is no enable/disable action yet, so the row is read-only dead UI.
       //     Re-add when the action is implemented.
     ],
-    [stats],
+    [stats, t],
   );
 
   // Sidebar highlights are only meaningful in list view. In matrix view, only
@@ -100,25 +101,25 @@ export function Sidebar({
           disabled={scanning}
         >
           <RefreshCw className={cn('h-3.5 w-3.5', scanning && 'animate-spin')} />
-          {scanning ? 'Scanning…' : 'Rescan all platforms'}
+          {scanning ? t('sidebar.scanning') : t('sidebar.rescan')}
         </Button>
       </div>
 
       <ScrollArea className="flex-1 px-2 scrollbar-thin">
-        <Section title="Library">
+        <Section title={t('sidebar.section.library')}>
           <SidebarRow
             active={view === 'matrix'}
             onClick={onSelectCoverage}
             icon={<Grid3x3 className="h-4 w-4" />}
           >
-            Coverage matrix
+            {t('sidebar.coverage')}
           </SidebarRow>
           <SidebarRow
             active={view === 'discover'}
             onClick={onSelectDiscover}
             icon={<Globe className="h-4 w-4" />}
           >
-            Discover
+            {t('sidebar.discover')}
           </SidebarRow>
           {scopes.map((s) => (
             <SidebarRow
@@ -134,7 +135,7 @@ export function Sidebar({
           ))}
         </Section>
 
-        <Section title="Platforms">
+        <Section title={t('sidebar.section.platforms')}>
           {platforms.map((p) => (
             <SidebarRow
               key={p.id}
@@ -149,12 +150,12 @@ export function Sidebar({
         </Section>
 
         <Section
-          title="Scenarios"
+          title={t('sidebar.section.scenarios')}
           action={
             <button
               onClick={onCreateScenario}
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              aria-label="New scenario"
+              aria-label={t('sidebar.newScenario')}
             >
               <Plus className="h-3.5 w-3.5" />
             </button>
@@ -165,7 +166,7 @@ export function Sidebar({
               onClick={onCreateScenario}
               className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
             >
-              No scenarios yet — <span className="underline">create one</span>
+              {t('sidebar.scenarios.empty')}
             </button>
           ) : (
             scenarios.map((sc) => (
@@ -189,22 +190,25 @@ export function Sidebar({
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Layers className="h-4 w-4" />
-          Manage scenarios
+          {t('sidebar.manageScenarios')}
         </Link>
         <Link
           href="/history"
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <HistoryIcon className="h-4 w-4" />
-          Sync history
+          {t('sidebar.syncHistory')}
         </Link>
         <Link
           href="/settings"
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <SettingsIcon className="h-4 w-4" />
-          Settings
+          {t('sidebar.settings')}
         </Link>
+        <div className="mt-1 flex items-center justify-end px-1 pt-1">
+          <LangToggle size="sm" />
+        </div>
       </div>
     </aside>
   );

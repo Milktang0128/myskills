@@ -12,6 +12,7 @@ import type {
 import { Button } from '@/components/ui/button';
 import { SyncConfirm } from '@/components/sync-confirm';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 
 interface Recommendation {
   source: string;
@@ -46,6 +47,7 @@ function cacheKey(scenarioId: number, installedCount: number): string {
 }
 
 export function ScenarioRecommendations({ scenario, installedSkills, onInstalled }: Props) {
+  const t = useT();
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [recs, setRecs] = useState<Recommendation[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -172,7 +174,7 @@ export function ScenarioRecommendations({ scenario, installedSkills, onInstalled
       setPendingPlan(plan);
       setPlanOpen(true);
     } catch (e) {
-      setError(`Couldn't plan install: ${e instanceof Error ? e.message : String(e)}`);
+      setError(t('recs.planError', { message: e instanceof Error ? e.message : String(e) }));
     } finally {
       setInstalling(null);
     }
@@ -194,7 +196,7 @@ export function ScenarioRecommendations({ scenario, installedSkills, onInstalled
   const Header = (
     <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
       <Sparkles className="h-3.5 w-3.5 text-violet-500" />
-      AI suggestions
+      {t('recs.heading')}
     </div>
   );
 
@@ -203,7 +205,7 @@ export function ScenarioRecommendations({ scenario, installedSkills, onInstalled
       <section className="space-y-2">
         {Header}
         <p className="text-xs text-muted-foreground">
-          Enable AI Recommendations in Settings to see suggestions.
+          {t('recs.disabled')}
         </p>
       </section>
     );
@@ -216,17 +218,17 @@ export function ScenarioRecommendations({ scenario, installedSkills, onInstalled
       {loading && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Asking AI for recommendations…
+          {t('recs.loading')}
         </div>
       )}
 
       {!loading && error && (
-        <p className="text-xs text-destructive">Couldn’t get recommendations: {error}</p>
+        <p className="text-xs text-destructive">{t('recs.error', { message: error })}</p>
       )}
 
       {!loading && !error && recs && recs.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          No matching skills found in the catalog for this scenario.
+          {t('recs.empty')}
         </p>
       )}
 
@@ -264,7 +266,7 @@ export function ScenarioRecommendations({ scenario, installedSkills, onInstalled
                     ) : (
                       <Download className="mr-1.5 h-3.5 w-3.5" />
                     )}
-                    Install
+                    {t('recs.install')}
                   </Button>
                 </div>
               </li>

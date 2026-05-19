@@ -15,6 +15,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { SyncConfirm } from '@/components/sync-confirm';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -35,6 +36,7 @@ const AI_CANDIDATE_LIMIT = 50;
 const AI_RESULT_LIMIT = 10;
 
 export function DiscoverView({ query, onToast }: Props) {
+  const t = useT();
   const [bridgeReady, setBridgeReady] = useState(false);
   const [results, setResults] = useState<CatalogSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -148,7 +150,7 @@ export function DiscoverView({ query, onToast }: Props) {
     setLoading(true);
     setLoadingPhase('keyword');
     setError(null);
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         // Phase 1: keyword. In AI mode we widen the pool so the reranker has
         // more candidates to choose from.
@@ -190,11 +192,11 @@ export function DiscoverView({ query, onToast }: Props) {
           setResults(resp.skills);
           setAiWhy({});
           setAiRanked(false);
-          onToast('AI rerank failed, showing keyword results');
+          onToast(t('discover.ai.fallback'));
         }
       } catch (err) {
         if (searchSeqRef.current !== mySeq) return;
-        const friendly = friendlyCatalogError(err, 'search');
+        const friendly = friendlyCatalogError(err, 'search', t);
         setError(friendly);
         setResults([]);
         setAiWhy({});
@@ -207,8 +209,8 @@ export function DiscoverView({ query, onToast }: Props) {
         }
       }
     }, DEBOUNCE_MS);
-    return () => clearTimeout(t);
-  }, [bridgeReady, networkAllowed, queryReady, trimmedQuery, mode, onToast]);
+    return () => clearTimeout(timer);
+  }, [bridgeReady, networkAllowed, queryReady, trimmedQuery, mode, onToast, t]);
 
   const openPreview = useCallback(
     async (result: CatalogSearchResult) => {
@@ -223,7 +225,7 @@ export function DiscoverView({ query, onToast }: Props) {
         const p = await api.catalog.preview(result.source, result.skillId);
         setPreview(p);
       } catch (err) {
-        const friendly = friendlyCatalogError(err, 'preview');
+        const friendly = friendlyCatalogError(err, 'preview', t);
         onToast(friendly);
         // Leave selectedResult set so the drawer still shows header + retry context.
         setPreview(null);
@@ -231,7 +233,7 @@ export function DiscoverView({ query, onToast }: Props) {
         setPreviewLoading(false);
       }
     },
-    [canonicalPlatform, networkAllowed, onToast],
+    [canonicalPlatform, networkAllowed, onToast, t],
   );
 
   function closePreview() {
@@ -264,18 +266,17 @@ export function DiscoverView({ query, onToast }: Props) {
       setPendingPlan(plan);
       setPlanOpen(true);
     } catch (err) {
-      onToast(friendlyCatalogError(err, 'install'));
+      onToast(friendlyCatalogError(err, 'install', t));
     } finally {
       setBusy(false);
     }
   }
 
   function onApplied(result: SyncExecuteResult) {
-    onToast(
-      `Installed ${result.applied.length} file${result.applied.length === 1 ? '' : 's'}` +
-        (result.skipped.length ? ` · ${result.skipped.length} skipped` : '') +
-        (result.failed.length ? ` · ${result.failed.length} failed` : ''),
-    );
+    let msg = t('discover.install.result', { applied: result.applied.length });
+    if (result.skipped.length) msg += t('discover.install.result.skipped', { skipped: result.skipped.length });
+    if (result.failed.length) msg += t('discover.install.result.failed', { failed: result.failed.length });
+    onToast(msg);
     setPlanOpen(false);
     setPendingPlan(null);
     closePreview();
@@ -287,12 +288,12 @@ export function DiscoverView({ query, onToast }: Props) {
     return (
       <div className="flex h-full flex-col">
         <div className="border-b bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
-          External network is disabled in Settings — Discover requires it.
+          {t('discover.networkDisabled.banner')}
         </div>
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           <div className="flex flex-col items-center gap-2 p-6 text-center">
             <Globe className="h-6 w-6 opacity-50" />
-            Enable external network access in Settings to browse the catalog.
+            {t('discover.networkDisabled.cta')}
           </div>
         </div>
       </div>
@@ -300,14 +301,16 @@ export function DiscoverView({ query, onToast }: Props) {
   }
 
   const statusLine = !queryReady
-    ? 'Type a query to search the catalog'
+    ? t('discover.status.typePrompt')
     : loading
     ? loadingPhase === 'ai-ranking'
-      ? 'AI is ranking…'
-      : `Searching catalog…`
+      ? t('discover.status.aiRanking')
+      : t('discover.status.searching')
     : error
     ? error
-    : `${results.length} result${results.length === 1 ? '' : 's'}`;
+    : results.length === 1
+    ? t('discover.status.result', { count: results.length })
+    : t('discover.status.results', { count: results.length });
 
   return (
     <div className="flex h-full min-w-0 flex-1">
@@ -321,7 +324,7 @@ export function DiscoverView({ query, onToast }: Props) {
               onChange={setMode}
             />
           </div>
-          <span className="shrink-0">via skills.sh</span>
+          <span className="shrink-0">{t('discover.via')}</span>
         </div>
 
         <ScrollArea className="flex-1 scrollbar-thin">
@@ -331,18 +334,18 @@ export function DiscoverView({ query, onToast }: Props) {
             ) : loading && results.length === 0 ? (
               <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {loadingPhase === 'ai-ranking' ? 'AI is ranking…' : 'Searching catalog…'}
+                {loadingPhase === 'ai-ranking' ? t('discover.status.aiRanking') : t('discover.status.searching')}
               </div>
             ) : results.length === 0 && !error ? (
               <div className="px-3 py-6 text-sm text-muted-foreground">
-                No skills matched “{trimmedQuery}”.
+                {t('discover.empty.noMatch', { query: trimmedQuery })}
               </div>
             ) : (
               <>
                 {aiRanked && (
                   <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-medium text-violet-600 dark:text-violet-300">
                     <Sparkles className="h-3 w-3" />
-                    AI ranked
+                    {t('discover.aiRanked.label')}
                   </div>
                 )}
                 <ul className="space-y-1.5">
@@ -393,13 +396,11 @@ export function DiscoverView({ query, onToast }: Props) {
 }
 
 function EmptyHint() {
+  const t = useT();
   return (
     <div className="flex flex-col items-center gap-3 px-3 py-12 text-center text-sm text-muted-foreground">
       <Globe className="h-7 w-7 opacity-40" />
-      <div>
-        Use the search bar at the top to find skills published on{' '}
-        <span className="font-mono">skills.sh</span>.
-      </div>
+      <div>{t('discover.empty.useSearch')}</div>
     </div>
   );
 }
@@ -416,6 +417,7 @@ function ResultRow({
   selected: boolean;
   onClick: () => void;
 }) {
+  const t = useT();
   return (
     <button
       onClick={onClick}
@@ -427,7 +429,7 @@ function ResultRow({
       <div className="flex items-center gap-2">
         <span className="truncate font-medium text-sm">{result.name}</span>
         <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
-          {formatInstalls(result.installs)} installs
+          {formatInstalls(result.installs)} {t('discover.installs.label')}
         </span>
       </div>
       <div className="mt-0.5 flex items-center gap-2">
@@ -436,8 +438,7 @@ function ResultRow({
         </span>
       </div>
       <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-        {result.description?.trim() ||
-          '(no description in catalog — open to fetch SKILL.md)'}
+        {result.description?.trim() || t('discover.preview.noDescription')}
       </div>
       {why && (
         <div className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80">
@@ -461,13 +462,12 @@ function ModeSegmented({
   aiAvailable: boolean;
   onChange: (m: SearchMode) => void;
 }) {
-  const aiTitle = aiAvailable
-    ? 'AI-ranked search using your configured LLM'
-    : 'Enable AI search in Settings + configure LLM key';
+  const t = useT();
+  const aiTitle = aiAvailable ? t('discover.mode.ai.title.enabled') : t('discover.mode.ai.title.disabled');
   return (
     <div
       role="tablist"
-      aria-label="Search mode"
+      aria-label={t('discover.mode.label')}
       className="flex shrink-0 items-center rounded-md border bg-background p-0.5 text-[11px]"
     >
       <button
@@ -481,7 +481,7 @@ function ModeSegmented({
             : 'text-muted-foreground hover:text-foreground',
         )}
       >
-        Keyword
+        {t('discover.mode.keyword.label')}
       </button>
       <button
         role="tab"
@@ -498,7 +498,7 @@ function ModeSegmented({
         )}
       >
         <Sparkles className="h-3 w-3" />
-        AI
+        {t('discover.mode.ai')}
       </button>
     </div>
   );
@@ -527,6 +527,7 @@ function PreviewDrawer({
   onClose: () => void;
   onInstall: () => void;
 }) {
+  const t = useT();
   return (
     <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
       <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
@@ -534,7 +535,7 @@ function PreviewDrawer({
           onClick={onClose}
           className="titlebar-no-drag text-xs text-muted-foreground hover:text-foreground"
         >
-          Close
+          {t('common.close')}
         </button>
       </div>
 
@@ -547,9 +548,9 @@ function PreviewDrawer({
                 {result.source}
               </span>
               <span>·</span>
-              <span>{formatInstalls(result.installs)} installs</span>
+              <span>{t('discover.preview.installsCount', { n: formatInstalls(result.installs) })}</span>
               <span>·</span>
-              <span>Preview from skills.sh</span>
+              <span>{t('discover.preview.viaSkills')}</span>
             </div>
           </header>
 
@@ -557,11 +558,11 @@ function PreviewDrawer({
 
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Install to
+              {t('discover.preview.installTo.heading')}
             </h3>
             {enabledPlatforms.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No enabled platforms — configure one in Settings before installing.
+                {t('discover.preview.noEnabledPlatforms')}
               </p>
             ) : (
               <ul className="space-y-1">
@@ -585,7 +586,7 @@ function PreviewDrawer({
                         <span className="font-medium">{p.label}</span>
                         {isCanon && (
                           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                            canonical
+                            {t('discover.preview.canonicalBadge')}
                           </span>
                         )}
                         <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground">
@@ -598,7 +599,7 @@ function PreviewDrawer({
               </ul>
             )}
             <p className="mt-2 text-[11px] text-muted-foreground">
-              Non-canonical platforms receive a symlink to the canonical copy.
+              {t('discover.preview.symlinkNote')}
             </p>
           </section>
 
@@ -606,12 +607,12 @@ function PreviewDrawer({
 
           <section>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              SKILL.md
+              {t('discover.preview.skillmd')}
             </h3>
             {loading ? (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Fetching from GitHub…
+                {t('discover.preview.fetching')}
               </div>
             ) : preview ? (
               <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
@@ -619,8 +620,7 @@ function PreviewDrawer({
               </pre>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Couldn’t load preview — install will still attempt to fetch the
-                latest copy from the source.
+                {t('discover.preview.previewFailed')}
               </p>
             )}
           </section>
@@ -635,8 +635,10 @@ function PreviewDrawer({
         >
           <Download className="mr-1.5 h-4 w-4" />
           {selectedPlatforms.size === 0
-            ? 'Pick at least one platform'
-            : `Install to ${selectedPlatforms.size} platform${selectedPlatforms.size === 1 ? '' : 's'}`}
+            ? t('discover.preview.installCount.zero')
+            : selectedPlatforms.size === 1
+            ? t('discover.preview.installCount.one', { count: selectedPlatforms.size })
+            : t('discover.preview.installCount.many', { count: selectedPlatforms.size })}
         </Button>
       </div>
     </aside>
@@ -743,22 +745,22 @@ function formatInstalls(n: number): string {
  * @param phase Which user-facing operation failed — used only to disambiguate
  *              CONTENT_NOT_FOUND messaging (preview vs install).
  */
-function friendlyCatalogError(err: unknown, phase: 'search' | 'preview' | 'install'): string {
+function friendlyCatalogError(err: unknown, phase: 'search' | 'preview' | 'install', t: ReturnType<typeof useT>): string {
   const raw = err instanceof Error ? err.message : String(err);
   const code = extractCode(raw);
   switch (code) {
     case 'CATALOG_UNAVAILABLE':
-      return "skills.sh isn’t reachable right now — try again later.";
+      return t('discover.error.unavailable');
     case 'CATALOG_RATE_LIMITED':
-      return 'skills.sh is rate-limiting us — wait a moment and try again.';
+      return t('discover.error.rateLimited');
     case 'CATALOG_UNAUTHORIZED':
-      return 'skills.sh rejected the request as unauthorized.';
+      return t('discover.error.unauthorized');
     case 'CONTENT_NOT_FOUND':
       return phase === 'preview'
-        ? "Couldn’t fetch SKILL.md from GitHub — the skill may have moved or be private."
-        : "Couldn’t find this skill at the source — it may have moved or been removed.";
+        ? t('discover.error.notFound.preview')
+        : t('discover.error.notFound.install');
     default:
-      return raw || 'Catalog request failed.';
+      return raw || t('discover.error.generic');
   }
 }
 

@@ -29,6 +29,7 @@ const API_KEY_NAME = 'llm.apiKey';
 const VALID_PROVIDERS: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
   'openai',
   'anthropic',
+  'deepseek',
   'openrouter',
   'ollama',
   'custom',

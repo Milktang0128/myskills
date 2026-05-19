@@ -358,7 +358,7 @@ export interface CatalogPreview {
  * refuse with code 'EXTERNAL_NETWORK_DISABLED'.
  * ------------------------------------------------------------------------- */
 
-export type LlmProvider = 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
+export type LlmProvider = 'openai' | 'anthropic' | 'deepseek' | 'openrouter' | 'ollama' | 'custom';
 
 export interface LlmConfig {
   provider: LlmProvider;

@@ -23,6 +23,7 @@ export function createProvider(config: LlmConfig, apiKey: string | null): LlmPro
       return new AnthropicClient(config, apiKey);
     case 'openai':
     case 'openrouter':
+    case 'deepseek':
     case 'ollama':
     case 'custom':
       return new OpenAiCompatibleClient(config, apiKey);

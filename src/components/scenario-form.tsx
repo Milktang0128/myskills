@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 
 const PALETTE = ['#3B82F6', '#10B981', '#F59E0B', '#EC4899', '#8B5CF6', '#6366F1', '#EF4444', '#14B8A6'];
 
@@ -26,6 +27,7 @@ interface Props {
 }
 
 export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
+  const t = useT();
   const editing = !!scenario;
   const [name, setName] = useState('');
   const [key, setKey] = useState('');
@@ -78,19 +80,19 @@ export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{editing ? 'Edit scenario' : 'New scenario'}</DialogTitle>
+          <DialogTitle>{editing ? t('scenarios.form.edit.title') : t('scenarios.form.create.title')}</DialogTitle>
           <DialogDescription>
-            Scenarios group skills by usage context. Keys are stable across devices.
+            {t('scenarioForm.description')}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label htmlFor="sc-name">Name</Label>
-            <Input id="sc-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 写作" autoFocus />
+            <Label htmlFor="sc-name">{t('scenarios.form.name')}</Label>
+            <Input id="sc-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={t('scenarioForm.name.placeholder')} autoFocus />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="sc-key">Key</Label>
+            <Label htmlFor="sc-key">{t('scenarios.form.key')}</Label>
             <Input
               id="sc-key"
               value={key}
@@ -98,18 +100,18 @@ export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
                 keyManuallyEdited.current = true;
                 setKey(e.target.value);
               }}
-              placeholder="auto-generated from name"
+              placeholder={t('scenarioForm.key.placeholder')}
               disabled={editing}
               className="font-mono text-xs"
             />
-            {editing && <p className="text-[10px] text-muted-foreground">Key is immutable after creation.</p>}
+            {editing && <p className="text-[10px] text-muted-foreground">{t('scenarioForm.key.immutable')}</p>}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="sc-desc">Description (optional)</Label>
+            <Label htmlFor="sc-desc">{t('scenarioForm.description.optional')}</Label>
             <Input id="sc-desc" value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
           <div className="space-y-1.5">
-            <Label>Color</Label>
+            <Label>{t('scenarios.form.color')}</Label>
             <div className="flex flex-wrap gap-1.5">
               {PALETTE.map((c) => (
                 <button
@@ -118,7 +120,7 @@ export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
                   onClick={() => setColor(c)}
                   className={`h-6 w-6 rounded-full border-2 transition-transform ${color === c ? 'border-foreground scale-110' : 'border-transparent'}`}
                   style={{ backgroundColor: c }}
-                  aria-label={`Color ${c}`}
+                  aria-label={t('scenarioForm.color.aria', { value: c })}
                 />
               ))}
             </div>
@@ -128,10 +130,10 @@ export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button onClick={submit} disabled={submitting || !name.trim()}>
-            {submitting ? 'Saving…' : editing ? 'Save' : 'Create'}
+            {submitting ? t('scenarioForm.saving') : editing ? t('common.save') : t('scenarioForm.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

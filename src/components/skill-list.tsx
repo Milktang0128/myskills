@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { EmptyState } from '@/components/ui/empty-state';
 import { SkillCard } from './skill-card';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -28,25 +29,28 @@ export function SkillList({
   onSelect,
   search,
   onSearchChange,
-  title = 'All Skills',
+  title,
   subtitle,
   hideOwnHeader = false,
 }: Props) {
+  const t = useT();
+  const headerTitle = title ?? t('sidebar.allSkills');
+  const headerSubtitle = subtitle ?? t('list.subtitle.count', { count: skills.length });
   return (
     <div className="flex h-full flex-col">
       {!hideOwnHeader && (
         <>
           <div className="titlebar-drag flex h-9 items-center justify-end px-3">
-            <span className="text-xs text-muted-foreground">{subtitle ?? `${skills.length} skills`}</span>
+            <span className="text-xs text-muted-foreground">{headerSubtitle}</span>
           </div>
           <div className="titlebar-no-drag border-b px-4 py-3">
-            <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+            <h1 className="text-lg font-semibold tracking-tight">{headerTitle}</h1>
             <div className="relative mt-2">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Search skills…"
+                placeholder={t('app.search.placeholder')}
                 className="pl-8"
               />
             </div>
@@ -56,8 +60,8 @@ export function SkillList({
 
       {hideOwnHeader && (
         <div className="flex items-center justify-between border-b px-4 py-2 text-xs">
-          <h2 className="font-medium">{title}</h2>
-          <span className="text-muted-foreground">{subtitle ?? `${skills.length} skills`}</span>
+          <h2 className="font-medium">{headerTitle}</h2>
+          <span className="text-muted-foreground">{headerSubtitle}</span>
         </div>
       )}
 
@@ -65,8 +69,8 @@ export function SkillList({
         <div className={cn('flex flex-col gap-1.5 p-3', loading && 'opacity-50')}>
           {skills.length === 0 ? (
             <EmptyState
-              title={loading ? 'Loading…' : 'No skills match this view'}
-              description={loading ? '' : 'Try clearing search or filters, or run a rescan.'}
+              title={loading ? t('list.empty.loading') : t('list.empty.title')}
+              description={loading ? '' : t('list.empty.description')}
             />
           ) : (
             skills.map((s) => (

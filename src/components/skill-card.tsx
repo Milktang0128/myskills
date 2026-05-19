@@ -1,6 +1,9 @@
+'use client';
+
 import { AlertTriangle, Link2, EyeOff } from 'lucide-react';
 import type { Skill } from '@shared/types';
 import { PlatformBadge } from './platform-badge';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -10,6 +13,7 @@ interface Props {
 }
 
 export function SkillCard({ skill, selected, onSelect }: Props) {
+  const t = useT();
   const platforms = Array.from(new Set(skill.locations.map((l) => l.platformId)));
   const hasBroken = skill.locations.some((l) => l.isBrokenSymlink);
   const allDisabled = skill.locations.length > 0 && skill.locations.every((l) => l.isDisabled);
@@ -27,10 +31,10 @@ export function SkillCard({ skill, selected, onSelect }: Props) {
     >
       <div className="flex items-center gap-2">
         <span className="truncate text-sm font-medium">{skill.name}</span>
-        {hasBroken && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label="Has broken symlink" />}
-        {allDisabled && <EyeOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Disabled" />}
+        {hasBroken && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label={t('card.brokenSymlink')} />}
+        {allDisabled && <EyeOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label={t('card.disabledAria')} />}
         {anySymlink && !hasBroken && (
-          <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Has symlink" />
+          <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label={t('card.symlinkAria')} />
         )}
         <div className="ml-auto flex shrink-0 gap-1">
           {platforms.map((p) => (

@@ -2,10 +2,18 @@
  * OpenAI-compatible chat client. Works for:
  *   - openai      → https://api.openai.com/v1
  *   - openrouter  → https://openrouter.ai/api/v1
+ *   - deepseek    → https://api.deepseek.com/v1   (reasoning model — needs large maxTokens)
  *   - ollama      → http://localhost:11434/v1     (no API key)
  *   - custom      → config.baseUrl
  *
  * Anthropic uses a different API shape; see ./anthropic.ts.
+ *
+ * Reasoning-model awareness: providers like DeepSeek v4 emit a separate
+ * `reasoning_content` field that consumes a large slice of `max_tokens` BEFORE
+ * the visible `content` is produced. With a too-small budget the response can
+ * come back with empty `content` and `finish_reason: "length"`. We default to
+ * 4096 tokens (vs the historical 1024) and surface a clear error when the
+ * budget was clearly the problem.
  */
 import type {
   LlmChatRequest,
@@ -19,8 +27,11 @@ import { isExternalNetworkAllowed } from '../secrets/network-gate';
 const DEFAULT_BASE_URLS: Partial<Record<LlmProvider, string>> = {
   openai: 'https://api.openai.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
+  deepseek: 'https://api.deepseek.com/v1',
   ollama: 'http://localhost:11434/v1',
 };
+
+const DEFAULT_MAX_TOKENS = 4096;
 
 const NETWORK_DENIED_ERROR = Object.freeze({
   code: 'EXTERNAL_NETWORK_DISABLED',
@@ -50,7 +61,7 @@ export class OpenAiCompatibleClient implements LlmProviderClient {
       model: this.config.model,
       messages: req.messages,
       temperature: req.temperature ?? 0.2,
-      max_tokens: req.maxTokens ?? 1024,
+      max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
     };
     if (req.jsonMode) body.response_format = { type: 'json_object' };
 
@@ -79,14 +90,36 @@ export class OpenAiCompatibleClient implements LlmProviderClient {
     }
 
     const json = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{
+        finish_reason?: string;
+        message?: { content?: string; reasoning_content?: string };
+      }>;
       usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
         total_tokens?: number;
+        completion_tokens_details?: { reasoning_tokens?: number };
       };
     };
-    const text = json.choices?.[0]?.message?.content ?? '';
+    const choice = json.choices?.[0];
+    const text = choice?.message?.content ?? '';
+    const finishReason = choice?.finish_reason;
+    const reasoningTokens =
+      json.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+
+    // Reasoning-model exhaustion: provider ran out of max_tokens budget on
+    // its hidden thinking phase and never emitted the visible content. Give
+    // the user an actionable error.
+    if (!text && finishReason === 'length') {
+      throw {
+        code: 'LLM_BUDGET_EXHAUSTED',
+        message:
+          reasoningTokens > 0
+            ? `The model spent its entire token budget on internal reasoning (${reasoningTokens} reasoning tokens) without producing output. Try a larger maxTokens or a non-reasoning model.`
+            : 'Response was truncated at max_tokens before any content was produced. Try a larger maxTokens.',
+      };
+    }
+
     return {
       text,
       usage: json.usage
@@ -104,9 +137,12 @@ export class OpenAiCompatibleClient implements LlmProviderClient {
       return { ok: false, message: NETWORK_DENIED_ERROR.message };
     }
     try {
+      // Reasoning models need a bigger budget even for a trivial 'ping' — they
+      // spend ~50–250 tokens just thinking. 512 is enough for any model to
+      // produce *some* output.
       const res = await this.chat({
-        messages: [{ role: 'user', content: 'ping' }],
-        maxTokens: 8,
+        messages: [{ role: 'user', content: 'Reply with exactly: PONG' }],
+        maxTokens: 512,
         temperature: 0,
       });
       return { ok: true, message: res.text ? `OK (${truncate(res.text, 60)})` : 'OK' };

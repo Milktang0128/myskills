@@ -10,8 +10,10 @@ import { SkillDetail } from '@/components/skill-detail';
 import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView } from '@/components/discover-view';
+import { useT } from '@/lib/i18n';
 
 export default function Workspace() {
+  const t = useT();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
@@ -71,13 +73,13 @@ export default function Workspace() {
       setBridgeReady(true);
       return;
     }
-    const t = setInterval(() => {
+    const tt = setInterval(() => {
       if (window.myskills) {
         setBridgeReady(true);
-        clearInterval(t);
+        clearInterval(tt);
       }
     }, 50);
-    return () => clearInterval(t);
+    return () => clearInterval(tt);
   }, []);
 
   useEffect(() => {
@@ -118,6 +120,20 @@ export default function Workspace() {
     setTimeout(() => setToast(null), 4000);
   }
 
+  const headerTitle =
+    view === 'matrix'
+      ? t('header.coverage')
+      : view === 'discover'
+      ? t('header.discover')
+      : titleForListFilter(filter, platforms, scenarios, t);
+
+  const searchPlaceholder =
+    view === 'matrix'
+      ? t('app.search.matrix.placeholder')
+      : view === 'discover'
+      ? t('app.search.discover.placeholder')
+      : t('app.search.placeholder');
+
   return (
     <main className="flex h-screen w-screen overflow-hidden">
       <Sidebar
@@ -149,25 +165,13 @@ export default function Workspace() {
           {/* Reserve room for macOS traffic lights */}
           <div className="w-[68px]" />
           <div className="titlebar-no-drag flex flex-1 items-center gap-3">
-            <h1 className="text-sm font-semibold">
-              {view === 'matrix'
-                ? 'Coverage matrix'
-                : view === 'discover'
-                ? 'Discover'
-                : titleForListFilter(filter, platforms, scenarios)}
-            </h1>
+            <h1 className="text-sm font-semibold">{headerTitle}</h1>
             <div className="relative ml-auto max-w-md flex-1">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder={
-                  view === 'matrix'
-                    ? 'Search the matrix…'
-                    : view === 'discover'
-                    ? 'Search skills.sh…'
-                    : 'Search skills…'
-                }
+                placeholder={searchPlaceholder}
                 className="h-7 w-full rounded-md border bg-background pl-8 pr-2 text-xs"
               />
             </div>
@@ -192,8 +196,8 @@ export default function Workspace() {
             onSelect={setSelectedId}
             search={search}
             onSearchChange={setSearch}
-            title={titleForListFilter(filter, platforms, scenarios)}
-            subtitle={`${skills.length} skills`}
+            title={titleForListFilter(filter, platforms, scenarios, t)}
+            subtitle={t('list.subtitle.count', { count: skills.length })}
             hideOwnHeader
           />
         )}
@@ -228,23 +232,28 @@ export default function Workspace() {
   );
 }
 
-function titleForListFilter(filter: SkillFilter, platforms: Platform[], scenarios: Scenario[]): string {
+function titleForListFilter(
+  filter: SkillFilter,
+  platforms: Platform[],
+  scenarios: Scenario[],
+  t: ReturnType<typeof useT>,
+): string {
   if (filter.scenarioId != null) {
-    return scenarios.find((s) => s.id === filter.scenarioId)?.name ?? 'Scenario';
+    return scenarios.find((s) => s.id === filter.scenarioId)?.name ?? t('header.scenario');
   }
   if (filter.platforms?.length === 1) {
-    return platforms.find((p) => p.id === filter.platforms![0])?.label ?? 'Platform';
+    return platforms.find((p) => p.id === filter.platforms![0])?.label ?? t('header.platform');
   }
   switch (filter.scope) {
     case 'broken':
-      return 'Broken Symlinks';
+      return t('header.scope.broken');
     case 'duplicate':
-      return 'Duplicates';
+      return t('header.scope.duplicate');
     case 'unscenarized':
-      return 'Unscenarized Skills';
+      return t('header.scope.unscenarized');
     case 'disabled':
-      return 'Disabled Skills';
+      return t('header.scope.disabled');
     default:
-      return 'All Skills';
+      return t('header.scope.all');
   }
 }

@@ -16,10 +16,12 @@ import { api, type SyncHistoryRow } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { PlatformBadge } from '@/components/platform-badge';
+import { useT } from '@/lib/i18n';
 import { formatRelative } from '@/lib/utils';
 import { cn } from '@/lib/utils';
 
 export default function HistoryPage() {
+  const t = useT();
   const [rows, setRows] = useState<SyncHistoryRow[]>([]);
   const [bridgeReady, setBridgeReady] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -50,15 +52,15 @@ export default function HistoryPage() {
   }, [refresh]);
 
   async function rollback(row: SyncHistoryRow) {
-    if (!confirm(`Rollback this ${row.action} for ${row.to_path}?`)) return;
+    if (!confirm(t('history.rollback.confirmAction', { action: row.action, path: row.to_path ?? '' }))) return;
     setBusyId(row.id);
     try {
       await api.sync.rollback(row.id);
-      setToast('Rolled back.');
+      setToast(t('history.rollback.success'));
       setTimeout(() => setToast(null), 3000);
       await refresh();
     } catch (err) {
-      setToast(`Rollback failed: ${err instanceof Error ? err.message : String(err)}`);
+      setToast(t('history.rollback.failure', { message: err instanceof Error ? err.message : String(err) }));
       setTimeout(() => setToast(null), 6000);
     } finally {
       setBusyId(null);
@@ -72,29 +74,29 @@ export default function HistoryPage() {
           <Link
             href="/"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
-            aria-label="Back"
+            aria-label={t('history.back')}
           >
             <ArrowLeft className="h-4 w-4" />
           </Link>
-          <h1 className="text-sm font-semibold">Sync history</h1>
-          <span className="text-xs text-muted-foreground">{rows.length} entries</span>
+          <h1 className="text-sm font-semibold">{t('history.title')}</h1>
+          <span className="text-xs text-muted-foreground">{t('history.entries', { count: rows.length })}</span>
         </div>
       </header>
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="px-4 py-3">
           {rows.length === 0 ? (
-            <div className="p-6 text-sm text-muted-foreground">No sync operations yet.</div>
+            <div className="p-6 text-sm text-muted-foreground">{t('history.empty.full')}</div>
           ) : (
             <table className="w-full text-sm">
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <tr className="border-b text-xs uppercase tracking-wider text-muted-foreground">
-                  <th className="px-3 py-2 text-left font-medium">When</th>
-                  <th className="px-3 py-2 text-left font-medium">Action</th>
-                  <th className="px-3 py-2 text-left font-medium">Platform</th>
-                  <th className="px-3 py-2 text-left font-medium">Paths</th>
-                  <th className="px-3 py-2 text-center font-medium">Result</th>
-                  <th className="px-3 py-2 text-right font-medium">Rollback</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('history.col.when')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('history.col.action')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('history.col.platform')}</th>
+                  <th className="px-3 py-2 text-left font-medium">{t('history.col.paths')}</th>
+                  <th className="px-3 py-2 text-center font-medium">{t('history.col.result')}</th>
+                  <th className="px-3 py-2 text-right font-medium">{t('history.col.rollback')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -127,6 +129,7 @@ function HistoryRow({
   onRollback: () => void;
   busy: boolean;
 }) {
+  const t = useT();
   const Icon = iconFor(row.action);
   const canRollback = row.success === 1 && !row.rolled_back_at;
   return (
@@ -146,27 +149,27 @@ function HistoryRow({
       <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">
         <div className="break-all">↳ {row.to_path}</div>
         {row.from_path && <div className="break-all">← {row.from_path}</div>}
-        {row.backup_path && <div className="break-all text-blue-700 dark:text-blue-400">backup → {row.backup_path}</div>}
+        {row.backup_path && <div className="break-all text-blue-700 dark:text-blue-400">{t('history.backupPrefix')} {row.backup_path}</div>}
       </td>
       <td className="px-3 py-2 text-center">
         {row.success === 1 ? (
           <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
-            <CheckCircle2 className="h-3.5 w-3.5" /> ok
+            <CheckCircle2 className="h-3.5 w-3.5" /> {t('history.result.ok')}
           </span>
         ) : (
           <span className="inline-flex items-center gap-1 text-xs text-destructive" title={row.message ?? ''}>
-            <XCircle className="h-3.5 w-3.5" /> fail
+            <XCircle className="h-3.5 w-3.5" /> {t('history.result.fail')}
           </span>
         )}
         {row.rolled_back_at && (
-          <div className="text-[10px] text-muted-foreground">rolled back</div>
+          <div className="text-[10px] text-muted-foreground">{t('history.rolledBack')}</div>
         )}
       </td>
       <td className="px-3 py-2 text-right">
         {canRollback ? (
           <Button size="sm" variant="outline" onClick={onRollback} disabled={busy}>
             <Undo2 className="mr-1 h-3 w-3" />
-            Rollback
+            {t('history.rollback')}
           </Button>
         ) : null}
       </td>
