@@ -1,13 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ExternalLink, Link2, AlertTriangle, EyeOff, RefreshCw } from 'lucide-react';
-import type { Scenario, Skill } from '@shared/types';
+import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload } from 'lucide-react';
+import type { Scenario, Skill, SkillLocation, SyncExecuteResult, SyncPlan } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { Badge } from '@/components/ui/badge';
 import { PlatformBadge } from './platform-badge';
+import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
 import { cn, formatBytes, formatRelative } from '@/lib/utils';
 
@@ -21,21 +21,45 @@ interface Props {
 export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
   const [skill, setSkill] = useState<Skill | null>(null);
   const [loading, setLoading] = useState(true);
+  const [canonicalPlatform, setCanonicalPlatform] = useState<string>('shared');
+  const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
+  const [planOpen, setPlanOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  async function fetchAll() {
+    setLoading(true);
+    try {
+      const [s, c] = await Promise.all([
+        api.skills.get(skillId),
+        api.settings.get('canonical_platform'),
+      ]);
+      setSkill(s);
+      if (c) setCanonicalPlatform(c);
+    } catch {
+      setSkill(null);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api.skills
-      .get(skillId)
-      .then((s) => {
-        if (!cancelled) setSkill(s);
-      })
-      .catch(() => {
+    (async () => {
+      try {
+        const [s, c] = await Promise.all([
+          api.skills.get(skillId),
+          api.settings.get('canonical_platform'),
+        ]);
+        if (cancelled) return;
+        setSkill(s);
+        if (c) setCanonicalPlatform(c);
+      } catch {
         if (!cancelled) setSkill(null);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -43,7 +67,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
   if (loading || !skill) {
     return (
-      <aside className="flex h-full w-[420px] flex-col border-l bg-card/40">
+      <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
         <div className="titlebar-drag h-9 shrink-0 border-b" />
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           {loading ? 'Loading…' : 'Not found'}
@@ -53,6 +77,24 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
   }
 
   const inScenarioIds = new Set(skill.scenarios.map((s) => s.id));
+  const canonicalLoc = skill.locations.find((l) => l.platformId === canonicalPlatform && !l.isDisabled);
+  const canonicalHash = canonicalLoc?.contentHash ?? null;
+
+  async function handleAdopt(loc: SkillLocation) {
+    setBusy(true);
+    try {
+      const plan = await api.sync.planPromote([{ skillId, sourceLocationId: loc.id }]);
+      setPendingPlan(plan);
+      setPlanOpen(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onApplied(_result: SyncExecuteResult) {
+    onMutated();
+    fetchAll();
+  }
 
   return (
     <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
@@ -133,41 +175,24 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
           <Separator />
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Locations ({skill.locations.length})
-            </h3>
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Locations ({skill.locations.length})
+              </h3>
+              <span className="text-[10px] text-muted-foreground">
+                Canonical: <span className="font-medium">{canonicalPlatform}</span>
+              </span>
+            </div>
             <div className="space-y-2">
               {skill.locations.map((loc) => (
-                <div key={loc.id} className="rounded-md border bg-background p-3 text-xs">
-                  <div className="flex items-center gap-2">
-                    <PlatformBadge platformId={loc.platformId} />
-                    {loc.isSymlink && (
-                      <span className="inline-flex items-center gap-1 text-muted-foreground">
-                        <Link2 className="h-3 w-3" /> symlink
-                      </span>
-                    )}
-                    {loc.isBrokenSymlink && (
-                      <span className="inline-flex items-center gap-1 text-destructive">
-                        <AlertTriangle className="h-3 w-3" /> broken
-                      </span>
-                    )}
-                    {loc.isDisabled && (
-                      <span className="inline-flex items-center gap-1 text-muted-foreground">
-                        <EyeOff className="h-3 w-3" /> disabled
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-2 space-y-1 font-mono">
-                    <div className="break-all">
-                      <span className="text-muted-foreground">install:</span> {loc.installPath}
-                    </div>
-                    {loc.isSymlink && (
-                      <div className="break-all">
-                        <span className="text-muted-foreground">real:</span> {loc.realPath}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                <LocationRow
+                  key={loc.id}
+                  loc={loc}
+                  isCanonical={loc.platformId === canonicalPlatform}
+                  canonicalHash={canonicalHash}
+                  onAdopt={() => handleAdopt(loc)}
+                  busy={busy}
+                />
               ))}
             </div>
           </section>
@@ -203,7 +228,107 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
           )}
         </div>
       </ScrollArea>
+
+      <SyncConfirm
+        open={planOpen}
+        plan={pendingPlan}
+        canonicalPlatform={canonicalPlatform}
+        onOpenChange={setPlanOpen}
+        onApplied={onApplied}
+      />
     </aside>
+  );
+}
+
+function LocationRow({
+  loc,
+  isCanonical,
+  canonicalHash,
+  onAdopt,
+  busy,
+}: {
+  loc: SkillLocation;
+  isCanonical: boolean;
+  canonicalHash: string | null;
+  onAdopt: () => void;
+  busy: boolean;
+}) {
+  // Decide what status to show + whether Adopt makes sense.
+  let statusIcon: React.ReactNode = null;
+  let statusLabel = '';
+  let statusTone = 'text-muted-foreground';
+  let canAdopt = false;
+
+  if (loc.isBrokenSymlink) {
+    statusIcon = <AlertTriangle className="h-3 w-3" />;
+    statusLabel = 'Broken';
+    statusTone = 'text-destructive';
+    canAdopt = false; // can't adopt content we can't read
+  } else if (loc.isDisabled) {
+    statusIcon = <EyeOff className="h-3 w-3" />;
+    statusLabel = 'Disabled';
+  } else if (isCanonical) {
+    statusIcon = <Crown className="h-3 w-3" />;
+    statusLabel = 'Canonical — source of truth';
+    statusTone = 'text-amber-600';
+  } else if (loc.isSymlink) {
+    statusIcon = <Link2 className="h-3 w-3" />;
+    statusLabel = 'Symlink';
+  } else {
+    // Real dir, non-canonical → compare to canonical
+    if (canonicalHash && loc.contentHash && loc.contentHash === canonicalHash) {
+      statusIcon = <Check className="h-3 w-3" />;
+      statusLabel = 'In sync';
+      statusTone = 'text-emerald-600';
+    } else if (canonicalHash && loc.contentHash) {
+      statusIcon = <AlertTriangle className="h-3 w-3" />;
+      statusLabel = 'Stale — content differs from canonical';
+      statusTone = 'text-amber-600';
+      canAdopt = true;
+    } else {
+      // No canonical to compare against → this IS the only version
+      statusIcon = <Check className="h-3 w-3" />;
+      statusLabel = 'Only version (canonical missing this skill)';
+      statusTone = 'text-blue-600';
+      canAdopt = true;
+    }
+  }
+
+  return (
+    <div className="rounded-md border bg-background p-3 text-xs">
+      <div className="flex items-center gap-2">
+        <PlatformBadge platformId={loc.platformId} />
+        <span className={cn('inline-flex items-center gap-1', statusTone)}>
+          {statusIcon}
+          {statusLabel}
+        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {loc.mtime && (
+            <span className="text-[10px] text-muted-foreground" title={new Date(loc.mtime).toLocaleString()}>
+              modified {formatRelative(loc.mtime)}
+            </span>
+          )}
+          {canAdopt && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-[11px]"
+              onClick={onAdopt}
+              disabled={busy}
+              title="Copy this version into canonical (with backup) and symlink every other platform to it"
+            >
+              <Upload className="mr-1 h-3 w-3" />
+              Adopt as canonical
+            </Button>
+          )}
+        </div>
+      </div>
+      <div className="mt-2 space-y-0.5 font-mono text-[10px] text-muted-foreground">
+        <div className="break-all">install: {loc.installPath}</div>
+        {loc.isSymlink && <div className="break-all">→ {loc.realPath}</div>}
+        {loc.contentHash && <div>hash: {loc.contentHash.slice(0, 12)}…</div>}
+      </div>
+    </div>
   );
 }
 

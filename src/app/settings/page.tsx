@@ -2,7 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, RefreshCw, AlertTriangle, FileWarning, FolderSearch, Crown, CloudOff, FileX2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  RefreshCw,
+  AlertTriangle,
+  FileWarning,
+  FolderSearch,
+  Crown,
+  CloudOff,
+  FileX2,
+  Plus,
+  Trash2,
+  Search,
+  Check,
+  X,
+} from 'lucide-react';
 import type { AppStats, Platform, ScanResult } from '@shared/types';
 import { PlatformBadge } from '@/components/platform-badge';
 import { Button } from '@/components/ui/button';
@@ -20,21 +34,45 @@ export default function SettingsPage() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [scanning, setScanning] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [bridgeReady, setBridgeReady] = useState(false);
   const [canonical, setCanonical] = useState<string>('shared');
   const [savingCanonical, setSavingCanonical] = useState(false);
+  const [candidates, setCandidates] = useState<
+    Array<{ id: string; label: string; defaultDir: string; description: string }>
+  >([]);
+  const [probeResults, setProbeResults] = useState<
+    Record<string, { exists: boolean; readable: boolean; skillCount: number; resolvedPath: string; alreadyRegistered: boolean }>
+  >({});
+  const [addingCandidate, setAddingCandidate] = useState<string | null>(null);
+  const [customForm, setCustomForm] = useState<{ id: string; label: string; skillsDir: string }>({
+    id: '',
+    label: '',
+    skillsDir: '',
+  });
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [savingCustom, setSavingCustom] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [pls, st, ls, c] = await Promise.all([
+    const [pls, st, ls, c, cands] = await Promise.all([
       api.platforms.list(),
       api.settings.stats(),
       api.scan.lastResult(),
       api.settings.get('canonical_platform'),
+      api.platforms.knownCandidates(),
     ]);
     setPlatforms(pls);
     setStats(st);
     setLastScan(ls);
     if (c) setCanonical(c);
+    setCandidates(cands);
+    // Probe each known candidate's default dir in parallel.
+    const probes = await Promise.all(
+      cands.map((cand) => api.platforms.probe(cand.defaultDir).then((r) => [cand.id, r] as const)),
+    );
+    const probeMap: typeof probeResults = {};
+    for (const [id, r] of probes) probeMap[id] = r;
+    setProbeResults(probeMap);
   }, []);
 
   async function saveCanonical(value: string) {
@@ -99,6 +137,50 @@ export default function SettingsPage() {
       await refresh();
     } finally {
       setSavingId(null);
+    }
+  }
+
+  async function deletePlatform(p: Platform) {
+    if (p.isBuiltin) return;
+    if (!confirm(`Remove "${p.label}" from MySkills? Existing skills under this platform must be removed first.`)) return;
+    setDeletingId(p.id);
+    try {
+      await api.platforms.delete(p.id);
+      await refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function enableCandidate(cand: { id: string; label: string; defaultDir: string }) {
+    setAddingCandidate(cand.id);
+    try {
+      await api.platforms.create({ id: cand.id, label: cand.label, skillsDir: cand.defaultDir });
+      await refresh();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAddingCandidate(null);
+    }
+  }
+
+  async function submitCustom() {
+    setCustomError(null);
+    setSavingCustom(true);
+    try {
+      await api.platforms.create({
+        id: customForm.id.trim(),
+        label: customForm.label.trim(),
+        skillsDir: customForm.skillsDir.trim(),
+      });
+      setCustomForm({ id: '', label: '', skillsDir: '' });
+      await refresh();
+    } catch (err) {
+      setCustomError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingCustom(false);
     }
   }
 
@@ -213,15 +295,80 @@ export default function SettingsPage() {
           <Separator />
 
           <section className="space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Search className="h-4 w-4" />
+              Discover platforms
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Common SKILL.md-compatible agent tools. MySkills probes each default path; click <em>Add</em> on any
+              that exist but aren't enabled yet.
+            </p>
+            <div className="space-y-2">
+              {candidates.map((cand) => {
+                const probe = probeResults[cand.id];
+                const isRegistered = !!probe?.alreadyRegistered;
+                const exists = probe?.exists ?? false;
+                return (
+                  <div
+                    key={cand.id}
+                    className="flex items-center gap-3 rounded-md border bg-card px-3 py-2"
+                  >
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full">
+                      {isRegistered ? (
+                        <Check className="h-3.5 w-3.5 text-emerald-600" />
+                      ) : exists ? (
+                        <Check className="h-3.5 w-3.5 text-blue-600" />
+                      ) : (
+                        <X className="h-3.5 w-3.5 text-muted-foreground/40" />
+                      )}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium">{cand.label}</div>
+                      <div className="font-mono text-[10px] text-muted-foreground truncate">
+                        {probe?.resolvedPath ?? cand.defaultDir}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {cand.description}
+                        {probe && probe.exists && probe.readable
+                          ? ` · ${probe.skillCount} skill${probe.skillCount === 1 ? '' : 's'} detected`
+                          : probe && !probe.exists
+                          ? ' · path not found'
+                          : ''}
+                      </div>
+                    </div>
+                    {isRegistered ? (
+                      <span className="text-[11px] text-muted-foreground">enabled</span>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => enableCandidate(cand)}
+                        disabled={addingCandidate === cand.id}
+                      >
+                        {addingCandidate === cand.id ? 'Adding…' : 'Add'}
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="space-y-3">
             <h2 className="text-base font-semibold">Platform directories</h2>
             <p className="text-xs text-muted-foreground">
-              Where MySkills looks for SKILL.md folders. Changes take effect on next scan.
+              Edit a platform's path, or remove non-built-in ones. Built-in platforms can be re-pointed but not deleted.
             </p>
             <div className="space-y-3">
               {platforms.map((p) => (
                 <div key={p.id} className="space-y-1.5">
                   <Label htmlFor={`dir-${p.id}`} className="flex items-center gap-2">
                     {p.label}
+                    {!p.isBuiltin && (
+                      <span className="rounded bg-secondary px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+                        custom
+                      </span>
+                    )}
                     <span className="text-[10px] font-normal text-muted-foreground">
                       {stats?.byPlatform?.[p.id] ?? 0} skills
                     </span>
@@ -241,9 +388,70 @@ export default function SettingsPage() {
                     >
                       {savingId === p.id ? 'Saving…' : 'Save'}
                     </Button>
+                    {!p.isBuiltin && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => deletePlatform(p)}
+                        disabled={deletingId === p.id}
+                        title="Remove this platform from MySkills"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Plus className="h-4 w-4" />
+              Add custom platform
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              For tools not in the discover list, or any other directory you keep SKILL.md folders in.
+            </p>
+            <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:grid-rows-[auto_auto_auto] sm:items-center">
+              <Label htmlFor="cp-id">ID</Label>
+              <Input
+                id="cp-id"
+                placeholder="e.g. work_skills"
+                value={customForm.id}
+                onChange={(e) => setCustomForm({ ...customForm, id: e.target.value })}
+                className="font-mono text-xs"
+              />
+              <Label htmlFor="cp-label">Label</Label>
+              <Input
+                id="cp-label"
+                placeholder="e.g. Work Skills"
+                value={customForm.label}
+                onChange={(e) => setCustomForm({ ...customForm, label: e.target.value })}
+              />
+              <Label htmlFor="cp-dir">Skills directory</Label>
+              <Input
+                id="cp-dir"
+                placeholder="~/Dropbox/team-skills"
+                value={customForm.skillsDir}
+                onChange={(e) => setCustomForm({ ...customForm, skillsDir: e.target.value })}
+                className="font-mono text-xs"
+              />
+            </div>
+            {customError && <p className="text-xs text-destructive">{customError}</p>}
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                onClick={submitCustom}
+                disabled={
+                  savingCustom ||
+                  !customForm.id.trim() ||
+                  !customForm.label.trim() ||
+                  !customForm.skillsDir.trim()
+                }
+              >
+                {savingCustom ? 'Adding…' : 'Add platform'}
+              </Button>
             </div>
           </section>
 

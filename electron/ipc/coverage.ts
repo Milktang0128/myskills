@@ -23,6 +23,7 @@ interface SkillRow {
 }
 
 interface LocRow {
+  id: number;
   skill_id: string;
   platform_id: string;
   install_path: string;
@@ -31,6 +32,7 @@ interface LocRow {
   is_broken_link: number;
   is_disabled: number;
   content_hash: string | null;
+  mtime: number | null;
 }
 
 export function registerCoverageHandlers(): void {
@@ -42,14 +44,19 @@ function buildMatrix(): CoverageMatrix {
   const platformRows = db
     .prepare('SELECT id, sort_order FROM platforms WHERE enabled = 1 ORDER BY sort_order, id')
     .all() as PlatformRow[];
-  const platforms: PlatformId[] = platformRows.map((p) => p.id);
+  const allIds = platformRows.map((p) => p.id);
   const canonicalSetting = (db
     .prepare("SELECT value FROM settings WHERE key = 'canonical_platform'")
     .get() as { value: string } | undefined)?.value ?? 'shared';
   // Fall back to the first platform if the configured canonical isn't enabled.
-  const canonicalPlatform: PlatformId = platforms.includes(canonicalSetting)
+  const canonicalPlatform: PlatformId = allIds.includes(canonicalSetting)
     ? canonicalSetting
-    : (platforms[0] ?? canonicalSetting);
+    : (allIds[0] ?? canonicalSetting);
+  // Canonical column comes first; the rest keep their original sort order.
+  const platforms: PlatformId[] = [
+    canonicalPlatform,
+    ...allIds.filter((id) => id !== canonicalPlatform),
+  ];
 
   const skillRows = db
     .prepare('SELECT id, name, source_key, description FROM skills ORDER BY name COLLATE NOCASE')
@@ -57,7 +64,7 @@ function buildMatrix(): CoverageMatrix {
 
   const locRows = db
     .prepare(
-      `SELECT skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash
+      `SELECT id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
        FROM skill_locations`,
     )
     .all() as LocRow[];
@@ -94,9 +101,11 @@ function buildMatrix(): CoverageMatrix {
     for (const loc of locs) {
       const cell: CoverageCell = {
         state: cellStateFor(loc, realPathOwner, canonicalPlatform),
+        locationId: loc.id,
         installPath: loc.install_path,
         realPath: loc.real_path,
         contentHash: loc.content_hash,
+        mtime: loc.mtime,
       };
       if (cell.state === 'symlink' || cell.state === 'symlink_other') {
         cell.resolvesToPlatformId = realPathOwner.get(loc.real_path);

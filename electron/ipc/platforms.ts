@@ -1,6 +1,13 @@
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
-import { listPlatforms, updatePlatformDir } from '../scanner/platforms';
+import {
+  listPlatforms,
+  updatePlatformDir,
+  createPlatform,
+  deletePlatform,
+  probePath,
+} from '../scanner/platforms';
+import { KNOWN_PLATFORMS } from '../../shared/known-platforms';
 
 export function registerPlatformHandlers(): void {
   registerHandler(IPC.platforms.list, () => listPlatforms());
@@ -11,4 +18,38 @@ export function registerPlatformHandlers(): void {
     updatePlatformDir(p.id, p.skillsDir);
     return { ok: true };
   });
+
+  registerHandler(IPC.platforms.create, (_e, payload) => {
+    const p = payload as { id?: string; label?: string; skillsDir?: string };
+    if (!p?.id || !p?.label || !p?.skillsDir) {
+      throw makeError('INVALID_INPUT', 'id, label, skillsDir required');
+    }
+    try {
+      return createPlatform({ id: p.id, label: p.label, skillsDir: p.skillsDir });
+    } catch (err) {
+      throw makeError('CREATE_FAILED', err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  registerHandler(IPC.platforms.delete, (_e, payload) => {
+    const p = payload as { id?: string };
+    if (!p?.id) throw makeError('INVALID_INPUT', 'id required');
+    try {
+      deletePlatform(p.id);
+      return { ok: true };
+    } catch (err) {
+      throw makeError('DELETE_FAILED', err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  registerHandler(IPC.platforms.probe, (_e, payload) => {
+    const p = payload as { path?: string };
+    if (!p?.path) throw makeError('INVALID_INPUT', 'path required');
+    return probePath(p.path);
+  });
+
+  // Returns the curated SKILL.md candidate list (purely static — could live in
+  // the renderer too, but keeping it server-side makes future updates without
+  // a renderer rebuild possible).
+  registerHandler(IPC.platforms.knownCandidates, () => KNOWN_PLATFORMS);
 }

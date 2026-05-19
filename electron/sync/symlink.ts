@@ -68,7 +68,12 @@ export interface SyncFromCanonicalRequest {
   targetPlatformIds?: PlatformId[];
 }
 
-/** Plan: canonical → requested target platforms. */
+/** Plan: canonical → requested target platforms.
+ *  - Target missing → symlink_create
+ *  - Target is already-correct symlink → skip
+ *  - Target hash matches canonical hash → skip
+ *  - Target is something else (present real-dir, wrong-target symlink, broken)
+ *    → symlink_replace (backup + symlink) */
 export function planSyncFromCanonical(requests: SyncFromCanonicalRequest[]): SyncPlan {
   const canonical = getCanonicalPlatform();
   const platforms = listPlatforms();
@@ -87,10 +92,12 @@ export function planSyncFromCanonical(requests: SyncFromCanonicalRequest[]): Syn
       .filter((p) => platformDirById.has(p));
 
     for (const targetId of targetIds) {
+      const targetLoc = loadLocation(req.skillId, targetId);
       items.push(
         buildItem({
           skill,
           sourceLoc,
+          targetLoc,
           sourcePlatformId: canonical,
           targetPlatformId: targetId,
           targetPlatformDir: platformDirById.get(targetId)!,
@@ -104,35 +111,65 @@ export function planSyncFromCanonical(requests: SyncFromCanonicalRequest[]): Syn
   return finalizePlan(items, 'sync_from_canonical');
 }
 
-/** Plan: copy an orphan into canonical, then symlink the original to canonical. */
-export function planPromoteToCanonical(skillIds: string[]): SyncPlan {
+export interface PromoteRequest {
+  skillId: string;
+  /** The specific location to elevate. If omitted, picks the first non-canonical
+   *  live location (legacy orphan-promote behavior). */
+  sourceLocationId?: number;
+}
+
+/**
+ * Plan: take the content from a chosen location and make it the canonical's
+ * content; every other non-canonical live location becomes a symlink back to
+ * canonical. The canonical platform itself doesn't change — only its content.
+ *
+ * For each skill in the input:
+ *   Step 1 (copy_to_canonical): copy source dir into canonical, backing up
+ *     any existing canonical dir first.
+ *   Steps 2..N (symlink_replace): for every other non-canonical live
+ *     location, back it up and symlink it to the new canonical.
+ *
+ * The whole op shares one opGroupId; if step 1 fails the executor aborts
+ * the rest of the group so the user is never left with half a promote.
+ */
+export function planPromoteToCanonical(requests: PromoteRequest[]): SyncPlan {
   const canonical = getCanonicalPlatform();
   const platforms = listPlatforms();
   const platformDirById = new Map(platforms.map((p) => [p.id, p.skillsDir]));
   const realDirById = realDirIndex(platforms);
   const items: SyncPlanItem[] = [];
 
-  for (const skillId of skillIds) {
-    const skill = loadSkill(skillId);
+  for (const req of requests) {
+    const skill = loadSkill(req.skillId);
     if (!skill) continue;
-    // Promote requires the skill to NOT be in canonical and to exist somewhere else.
-    const existingCanonical = loadLocation(skillId, canonical);
-    if (existingCanonical) continue; // already in canonical — wrong API
-    const candidates = loadAllLocations(skillId).filter(
-      (l) => l.platform_id !== canonical && !l.is_disabled,
-    );
-    const source = candidates[0];
-    if (!source) continue;
+    const allLocs = loadAllLocations(req.skillId).filter((l) => !l.is_disabled);
+
+    // Pick the source location:
+    //  - If sourceLocationId given, use that exact one (and refuse if it's the canonical itself).
+    //  - Else fall back to first non-canonical (legacy orphan-promote).
+    let source: LocRow | undefined;
+    if (req.sourceLocationId != null) {
+      source = allLocs.find((l) => l.id === req.sourceLocationId);
+      if (!source) continue;
+      if (source.platform_id === canonical) continue; // promoting canonical onto itself is a no-op
+    } else {
+      source = allLocs.find((l) => l.platform_id !== canonical);
+      if (!source) continue;
+    }
 
     const opGroupId = randomUUID();
     const canonicalRoot = realDirById.get(canonical);
     const canonicalDir = platformDirById.get(canonical);
     if (!canonicalRoot || !canonicalDir) continue;
 
-    // Step 1: copy source → canonical.
+    const existingCanonical = allLocs.find((l) => l.platform_id === canonical);
+
+    // Step 1: copy source → canonical. doCopyToCanonical will back up the
+    // existing canonical content if any.
     const copyItem = buildItem({
       skill,
-      sourceLoc: locFromRow(source),
+      sourceLoc: source,
+      targetLoc: existingCanonical,
       sourcePlatformId: source.platform_id,
       targetPlatformId: canonical,
       targetPlatformDir: canonicalDir,
@@ -141,37 +178,46 @@ export function planPromoteToCanonical(skillIds: string[]): SyncPlan {
       overrideAction: 'copy_to_canonical',
     });
     items.push(copyItem);
+    if (copyItem.action !== 'copy_to_canonical') continue; // skip the rest if step 1 can't run
 
-    // Step 2: replace the original with a symlink to the new canonical path.
-    // We can only sensibly enqueue this if step 1 will succeed; the plan
-    // captures it optimistically and execute aborts the whole opGroup if
-    // step 1 fails.
-    if (copyItem.action === 'copy_to_canonical') {
-      const sourceRoot = realDirById.get(source.platform_id);
-      if (sourceRoot) {
-        const replaceItem = buildItem({
-          skill,
-          // After step 1, the canonical IS our new source for step 2.
-          sourceLoc: {
-            id: -1, // synthetic — execute uses copyItem.targetPath as source
-            platform_id: canonical,
-            install_path: copyItem.targetPath,
-            real_path: copyItem.targetPath,
-            is_symlink: 0,
-            is_broken_link: 0,
-            is_disabled: 0,
-            content_hash: source.content_hash,
-          },
-          sourcePlatformId: canonical,
-          targetPlatformId: source.platform_id,
-          targetPlatformDir: listPlatforms().find((p) => p.id === source.platform_id)!.skillsDir,
-          targetRoot: sourceRoot,
-          opGroupId,
-          overrideAction: 'symlink_replace',
-        });
-        items.push(replaceItem);
-      }
+    // Steps 2..N: every live, non-canonical location becomes a symlink to
+    // the new canonical content. This INCLUDES the source location itself,
+    // so after promote there's no leftover "real dir" that could drift on
+    // its own next time the user edits it. (The original content is still
+    // backed up via the symlink_replace path, so rollback works.)
+    for (const other of allLocs) {
+      if (other.platform_id === canonical) continue;
+      const otherRoot = realDirById.get(other.platform_id);
+      const otherDir = platformDirById.get(other.platform_id);
+      if (!otherRoot || !otherDir) continue;
+      const replaceItem = buildItem({
+        skill,
+        // After step 1, the canonical's targetPath IS our new source.
+        sourceLoc: {
+          id: -1,
+          platform_id: canonical,
+          install_path: copyItem.targetPath,
+          real_path: copyItem.targetPath,
+          is_symlink: 0,
+          is_broken_link: 0,
+          is_disabled: 0,
+          content_hash: source.content_hash,
+          mtime: source.mtime,
+        },
+        targetLoc: other,
+        sourcePlatformId: canonical,
+        targetPlatformId: other.platform_id,
+        targetPlatformDir: otherDir,
+        targetRoot: otherRoot,
+        opGroupId,
+        overrideAction: 'symlink_replace',
+      });
+      items.push(replaceItem);
     }
+
+    // If `source` was on a non-canonical platform and is NOT already in allLocs
+    // as the one we replace, we also want it to end up as a symlink. The above
+    // loop already covers it (it's part of allLocs).
   }
   return finalizePlan(items, 'promote_to_canonical');
 }
@@ -209,6 +255,7 @@ interface LocRow {
   is_broken_link: number;
   is_disabled: number;
   content_hash: string | null;
+  mtime: number | null;
 }
 
 function getCanonicalPlatform(): string {
@@ -230,7 +277,7 @@ function loadLocation(skillId: string, platformId: string): LocRow | null {
   return (
     (getDb()
       .prepare(
-        `SELECT id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash
+        `SELECT id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
          FROM skill_locations WHERE skill_id = ? AND platform_id = ? AND is_disabled = 0`,
       )
       .get(skillId, platformId) as LocRow | undefined) ?? null
@@ -240,7 +287,7 @@ function loadLocation(skillId: string, platformId: string): LocRow | null {
 function loadAllLocations(skillId: string): LocRow[] {
   return getDb()
     .prepare(
-      `SELECT id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash
+      `SELECT id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
        FROM skill_locations WHERE skill_id = ?`,
     )
     .all(skillId) as LocRow[];
@@ -253,6 +300,10 @@ function locFromRow(r: LocRow): LocRow {
 interface BuildArgs {
   skill: SkillRow;
   sourceLoc: LocRow | null;
+  /** The target's existing DB row, if any. Lets the planner decide between
+   *  symlink_create (target missing) and symlink_replace (target present but
+   *  with wrong content). */
+  targetLoc?: LocRow | null;
   sourcePlatformId: PlatformId;
   targetPlatformId: PlatformId;
   targetPlatformDir: string;
@@ -267,6 +318,7 @@ function buildItem(args: BuildArgs): SyncPlanItem {
   const {
     skill,
     sourceLoc,
+    targetLoc,
     sourcePlatformId,
     targetPlatformId,
     targetPlatformDir,
@@ -357,9 +409,13 @@ function buildItem(args: BuildArgs): SyncPlanItem {
   const action: SyncPlanItem['action'] = overrideAction ?? classifyTarget(
     targetPath,
     sourceLoc.real_path,
+    sourceLoc.content_hash,
+    targetLoc ?? null,
   );
   let reason: SyncPlanItem['reason'] | undefined;
-  if (action === 'skip') reason = 'already_linked';
+  if (action === 'skip') {
+    reason = targetLoc?.content_hash === sourceLoc.content_hash ? 'same_hash' : 'already_linked';
+  }
 
   return {
     skillName: skill.name,
@@ -374,7 +430,7 @@ function buildItem(args: BuildArgs): SyncPlanItem {
     sourceHash: sourceLoc.content_hash,
     targetPlatformId,
     targetPath,
-    targetHash: null,
+    targetHash: targetLoc?.content_hash ?? null,
     mode: 'symlink',
     action,
     reason,
@@ -415,7 +471,30 @@ function placeholderItem(a: PlaceholderArgs): SyncPlanItem {
   };
 }
 
-function classifyTarget(targetPath: string, sourceReal: string): SyncPlanItem['action'] {
+function classifyTarget(
+  targetPath: string,
+  sourceReal: string,
+  sourceHash: string | null,
+  targetLoc: LocRow | null,
+): SyncPlanItem['action'] {
+  // 1) Fast paths via DB.
+  if (targetLoc) {
+    if (targetLoc.is_broken_link) return 'symlink_create'; // cleanup then create
+    if (targetLoc.is_symlink) {
+      // The scanner already resolved real_path. If it matches source, in sync.
+      if (targetLoc.real_path === sourceReal) return 'skip';
+      // Symlink to something else → backup + replace.
+      return 'symlink_replace';
+    }
+    // Real directory. Compare hashes — same content means already in sync
+    // even if not a symlink (e.g. a manual copy with identical content).
+    if (sourceHash && targetLoc.content_hash && sourceHash === targetLoc.content_hash) {
+      return 'skip';
+    }
+    // Real dir with different content → stale: backup + symlink-replace.
+    return 'symlink_replace';
+  }
+  // 2) No DB row — fall back to live FS inspection (scanner may have missed it).
   let lstat: fs.Stats;
   try {
     lstat = fs.lstatSync(targetPath);
@@ -427,14 +506,13 @@ function classifyTarget(targetPath: string, sourceReal: string): SyncPlanItem['a
     try {
       resolved = fs.realpathSync(targetPath);
     } catch {
-      // broken symlink — safe to replace
-      return 'symlink_create';
+      return 'symlink_create'; // broken
     }
     if (resolved === sourceReal) return 'skip';
-    return 'conflict'; // existing symlink points elsewhere
+    return 'symlink_replace';
   }
-  if (lstat.isDirectory()) return 'conflict'; // real directory
-  return 'conflict'; // file or special
+  if (lstat.isDirectory()) return 'symlink_replace';
+  return 'conflict'; // file or special — refuse for safety
 }
 
 function finalizePlan(items: SyncPlanItem[], op: SyncPlan['operation']): SyncPlan {
@@ -632,14 +710,25 @@ function doCopyToCanonical(item: SyncPlanItem): ExecuteOutcome {
   const targetDir = path.dirname(item.targetPath);
   fs.mkdirSync(targetDir, { recursive: true });
 
-  if (fs.existsSync(item.targetPath)) {
-    throw new Error(`target already exists, refusing to copy into it: ${item.targetPath}`);
+  // If the canonical platform already has this skill (e.g. promote-from-stale
+  // case), back up the existing content first so we can roll back. We accept
+  // both real dirs and symlinks at the target — the backup helper just renames.
+  let backupPath: string | null = null;
+  if (fs.existsSync(item.targetPath) || isBrokenSymlink(item.targetPath)) {
+    backupPath = createBackup(item.targetPath, item.skillName, item.targetPlatformId);
   }
 
   // Copy via temp dir, verify hash, rename.
   const tmpPath = `${item.targetPath}.myskills-copy-${randomUUID()}`;
   try {
-    fs.cpSync(sourceReal, tmpPath, { recursive: true, dereference: false, errorOnExist: true });
+    fs.cpSync(sourceReal, tmpPath, {
+      recursive: true,
+      dereference: false,
+      errorOnExist: true,
+      // Preserve mtime so the new canonical inherits the source's modification
+      // time — otherwise canonical looks "newer" than the source we copied from.
+      preserveTimestamps: true,
+    });
     // Verify the copy's SKILL.md hash matches what the scanner recorded.
     const copiedSkillMd = path.join(tmpPath, 'SKILL.md');
     const hash = createHash('sha256').update(fs.readFileSync(copiedSkillMd)).digest('hex');
@@ -649,9 +738,16 @@ function doCopyToCanonical(item: SyncPlanItem): ExecuteOutcome {
     fs.renameSync(tmpPath, item.targetPath);
   } catch (err) {
     try { fs.rmSync(tmpPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    // Best-effort restore of the backup if we made one and the copy failed.
+    if (backupPath) {
+      try {
+        const { restoreBackup } = require('./backup') as typeof import('./backup');
+        if (!fs.existsSync(item.targetPath)) restoreBackup(backupPath, item.targetPath);
+      } catch { /* ignore */ }
+    }
     throw err;
   }
-  return { beforeHash: null, afterHash: item.sourceHash, backupPath: null };
+  return { beforeHash: item.targetHash, afterHash: item.sourceHash, backupPath };
 }
 
 function reAssertTargetInPlatformRoot(item: SyncPlanItem): void {

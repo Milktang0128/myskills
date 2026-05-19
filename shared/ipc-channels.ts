@@ -8,6 +8,10 @@ export const IPC = {
   platforms: {
     list: 'platforms:list',
     update: 'platforms:update',
+    create: 'platforms:create',
+    delete: 'platforms:delete',
+    probe: 'platforms:probe',
+    knownCandidates: 'platforms:knownCandidates',
   },
   skills: {
     list: 'skills:list',

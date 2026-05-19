@@ -29,6 +29,16 @@ const MIGRATIONS: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 3,
+    name: 'per_location_mtime',
+    up: (db) => {
+      const cols = db.prepare("PRAGMA table_info('skill_locations')").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'mtime')) {
+        db.exec('ALTER TABLE skill_locations ADD COLUMN mtime INTEGER');
+      }
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

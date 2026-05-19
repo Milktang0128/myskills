@@ -13,6 +13,8 @@ export interface ParsedSkill {
   contentHash: string;
   sizeBytes: number;
   fileCount: number;
+  /** mtime (ms) of SKILL.md — used to surface "which version is newest". */
+  mtime: number;
 }
 
 export type SkillParseKind =
@@ -113,6 +115,7 @@ export function parseSkill(skillDir: string): ParsedSkill | null {
     contentHash,
     sizeBytes,
     fileCount,
+    mtime: stat.mtimeMs,
   };
 }
 

@@ -29,6 +29,8 @@ interface LocationRow {
   is_symlink: number;
   is_broken_link: number;
   is_disabled: number;
+  content_hash: string | null;
+  mtime: number | null;
   last_seen_at: number;
 }
 
@@ -130,6 +132,8 @@ function loadSkillsByIds(ids: string[], preloaded?: SkillRow[]): Skill[] {
       isSymlink: !!r.is_symlink,
       isBrokenSymlink: !!r.is_broken_link,
       isDisabled: !!r.is_disabled,
+      contentHash: r.content_hash,
+      mtime: r.mtime,
       lastSeenAt: r.last_seen_at,
     });
     locByIdMap.set(r.skill_id, arr);

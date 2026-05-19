@@ -26,6 +26,10 @@ export interface SkillLocation {
   isSymlink: boolean;
   isBrokenSymlink: boolean;
   isDisabled: boolean;
+  /** SHA-256 of SKILL.md at this location; null on legacy rows before schema v2. */
+  contentHash: string | null;
+  /** mtime (ms) of SKILL.md at this location; null on legacy rows before schema v3. */
+  mtime: number | null;
   lastSeenAt: number;
 }
 
@@ -164,9 +168,13 @@ export type CoverageDrift = 'in_sync' | 'stale' | 'only_here' | 'no_canonical';
 
 export interface CoverageCell {
   state: CoverageCellState;
+  /** The skill_locations.id for this cell (when present). UI uses it to call
+   *  adopt-as-canonical actions for stale cells. */
+  locationId?: number;
   installPath?: string;
   realPath?: string;
   contentHash?: string | null;
+  mtime?: number | null;
   /** Platform id this cell's symlink resolves to (when state=symlink/symlink_other). */
   resolvesToPlatformId?: PlatformId;
   drift?: CoverageDrift;

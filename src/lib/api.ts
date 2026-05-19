@@ -58,6 +58,23 @@ export const api = {
     list: () => bridge().invoke(IPC.platforms.list) as Promise<Platform[]>,
     update: (id: string, skillsDir: string) =>
       bridge().invoke(IPC.platforms.update, { id, skillsDir }) as Promise<{ ok: true }>,
+    create: (input: { id: string; label: string; skillsDir: string }) =>
+      bridge().invoke(IPC.platforms.create, input) as Promise<Platform>,
+    delete: (id: string) =>
+      bridge().invoke(IPC.platforms.delete, { id }) as Promise<{ ok: true }>,
+    probe: (path: string) =>
+      bridge().invoke(IPC.platforms.probe, { path }) as Promise<{
+        resolvedPath: string;
+        exists: boolean;
+        readable: boolean;
+        skillCount: number;
+        alreadyRegistered: boolean;
+        registeredAs?: string;
+      }>,
+    knownCandidates: () =>
+      bridge().invoke(IPC.platforms.knownCandidates) as Promise<
+        Array<{ id: string; label: string; defaultDir: string; description: string }>
+      >,
   },
   skills: {
     list: (filter: SkillFilter = {}) => bridge().invoke(IPC.skills.list, filter) as Promise<Skill[]>,
@@ -94,8 +111,8 @@ export const api = {
   sync: {
     planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[] }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'sync_from_canonical', requests }) as Promise<SyncPlan>,
-    planPromote: (skillIds: string[]) =>
-      bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', skillIds }) as Promise<SyncPlan>,
+    planPromote: (requests: Array<{ skillId: string; sourceLocationId?: number }>) =>
+      bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', requests }) as Promise<SyncPlan>,
     execute: (token: string) =>
       bridge().invoke(IPC.sync.execute, { token }) as Promise<SyncExecuteResult>,
     history: (skillId?: string, limit = 50) =>

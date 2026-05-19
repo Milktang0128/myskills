@@ -17,6 +17,8 @@ interface Props {
   onSearchChange: (s: string) => void;
   title?: string;
   subtitle?: string;
+  /** When true, omit the title bar + search input — assumes the parent owns them. */
+  hideOwnHeader?: boolean;
 }
 
 export function SkillList({
@@ -28,25 +30,36 @@ export function SkillList({
   onSearchChange,
   title = 'All Skills',
   subtitle,
+  hideOwnHeader = false,
 }: Props) {
   return (
     <div className="flex h-full flex-col">
-      <div className="titlebar-drag flex h-9 items-center justify-end px-3">
-        <span className="text-xs text-muted-foreground">{subtitle ?? `${skills.length} skills`}</span>
-      </div>
+      {!hideOwnHeader && (
+        <>
+          <div className="titlebar-drag flex h-9 items-center justify-end px-3">
+            <span className="text-xs text-muted-foreground">{subtitle ?? `${skills.length} skills`}</span>
+          </div>
+          <div className="titlebar-no-drag border-b px-4 py-3">
+            <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+            <div className="relative mt-2">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="Search skills…"
+                className="pl-8"
+              />
+            </div>
+          </div>
+        </>
+      )}
 
-      <div className="titlebar-no-drag border-b px-4 py-3">
-        <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-        <div className="relative mt-2">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Search skills…"
-            className="pl-8"
-          />
+      {hideOwnHeader && (
+        <div className="flex items-center justify-between border-b px-4 py-2 text-xs">
+          <h2 className="font-medium">{title}</h2>
+          <span className="text-muted-foreground">{subtitle ?? `${skills.length} skills`}</span>
         </div>
-      </div>
+      )}
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className={cn('flex flex-col gap-1.5 p-3', loading && 'opacity-50')}>

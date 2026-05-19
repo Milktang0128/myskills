@@ -12,6 +12,7 @@ import {
   Settings as SettingsIcon,
   Plus,
   RefreshCw,
+  History as HistoryIcon,
   Grid3x3,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
@@ -19,7 +20,11 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
+export type WorkspaceView = 'list' | 'matrix';
+
 interface Props {
+  view: WorkspaceView;
+  onSelectCoverage: () => void;
   filter: SkillFilter;
   onFilterChange: (f: SkillFilter) => void;
   platforms: Platform[];
@@ -39,6 +44,8 @@ interface ScopeItem {
 }
 
 export function Sidebar({
+  view,
+  onSelectCoverage,
   filter,
   onFilterChange,
   platforms,
@@ -51,23 +58,32 @@ export function Sidebar({
   const scopes = useMemo<ScopeItem[]>(
     () => [
       { scope: 'all', label: 'All Skills', count: stats?.totalSkills, icon: <Layers className="h-4 w-4" /> },
-      { scope: 'broken', label: 'Broken Symlinks', count: stats?.brokenSymlinks, icon: <AlertTriangle className="h-4 w-4" />, tone: 'danger' },
+      // Duplicates surfaces same-content-different-name skills — the matrix can't see this
+      // because it keys rows by skill name. Keep until consolidation tooling exists.
       { scope: 'duplicate', label: 'Duplicates', count: stats?.duplicates, icon: <CopyIcon className="h-4 w-4" />, tone: 'warn' },
       { scope: 'unscenarized', label: 'Unscenarized', count: stats?.unscenarized, icon: <HelpCircle className="h-4 w-4" />, tone: 'muted' },
-      { scope: 'disabled', label: 'Disabled', icon: <EyeOff className="h-4 w-4" />, tone: 'muted' },
+      // Removed:
+      //   - 'broken': redundant with matrix's Broken chip + detail drawer's location list.
+      //   - 'disabled': there is no enable/disable action yet, so the row is read-only dead UI.
+      //     Re-add when the action is implemented.
     ],
     [stats],
   );
 
+  // Sidebar highlights are only meaningful in list view. In matrix view, only
+  // the "Coverage matrix" item is active; other rows return to grey.
+  const inList = view === 'list';
+
   const isScopeActive = (scope: SkillScope) =>
+    inList &&
     (filter.scope ?? 'all') === scope &&
     (filter.platforms?.length ?? 0) === 0 &&
     filter.scenarioId == null;
 
   const isPlatformActive = (id: string) =>
-    filter.platforms?.length === 1 && filter.platforms[0] === id && filter.scenarioId == null;
+    inList && filter.platforms?.length === 1 && filter.platforms[0] === id && filter.scenarioId == null;
 
-  const isScenarioActive = (id: number) => filter.scenarioId === id;
+  const isScenarioActive = (id: number) => inList && filter.scenarioId === id;
 
   return (
     <aside className="flex h-full w-64 flex-col border-r bg-card/40">
@@ -87,6 +103,13 @@ export function Sidebar({
 
       <ScrollArea className="flex-1 px-2 scrollbar-thin">
         <Section title="Library">
+          <SidebarRow
+            active={view === 'matrix'}
+            onClick={onSelectCoverage}
+            icon={<Grid3x3 className="h-4 w-4" />}
+          >
+            Coverage matrix
+          </SidebarRow>
           {scopes.map((s) => (
             <SidebarRow
               key={s.scope}
@@ -152,18 +175,18 @@ export function Sidebar({
 
       <div className="space-y-px border-t p-2">
         <Link
-          href="/"
-          className="flex items-center gap-2 rounded-md bg-primary/5 px-2 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
-        >
-          <Grid3x3 className="h-4 w-4" />
-          Coverage matrix
-        </Link>
-        <Link
           href="/scenarios"
           className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Layers className="h-4 w-4" />
           Manage scenarios
+        </Link>
+        <Link
+          href="/history"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <HistoryIcon className="h-4 w-4" />
+          Sync history
         </Link>
         <Link
           href="/settings"

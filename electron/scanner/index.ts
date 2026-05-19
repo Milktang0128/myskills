@@ -264,11 +264,11 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
     'SELECT id FROM skill_locations WHERE platform_id = ? AND install_path = ?',
   );
   const insertLocation = db.prepare(
-    `INSERT INTO skill_locations (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO skill_locations (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const updateLocation = db.prepare(
-    `UPDATE skill_locations SET skill_id = ?, real_path = ?, is_symlink = ?, is_broken_link = ?, is_disabled = ?, content_hash = ?, last_seen_at = ? WHERE id = ?`,
+    `UPDATE skill_locations SET skill_id = ?, real_path = ?, is_symlink = ?, is_broken_link = ?, is_disabled = ?, content_hash = ?, mtime = ?, last_seen_at = ? WHERE id = ?`,
   );
 
   const seenLocationIds = new Set<number>();
@@ -337,6 +337,7 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
           d.isBrokenSymlink ? 1 : 0,
           d.isDisabled ? 1 : 0,
           d.parsed.contentHash,
+          Math.round(d.parsed.mtime),
           now,
           loc.id,
         );
@@ -351,6 +352,7 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
           d.isBrokenSymlink ? 1 : 0,
           d.isDisabled ? 1 : 0,
           d.parsed.contentHash,
+          Math.round(d.parsed.mtime),
           now,
         );
         seenLocationIds.add(Number(r.lastInsertRowid));

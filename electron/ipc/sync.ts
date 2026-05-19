@@ -6,6 +6,7 @@ import {
   planPromoteToCanonical,
   executeSync,
   type SyncFromCanonicalRequest,
+  type PromoteRequest,
 } from '../sync/symlink';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -16,15 +17,15 @@ export function registerSyncHandlers(): void {
   registerHandler(IPC.sync.plan, (_e, payload) => {
     const p = payload as
       | { kind: 'sync_from_canonical'; requests: SyncFromCanonicalRequest[] }
-      | { kind: 'promote_to_canonical'; skillIds: string[] };
+      | { kind: 'promote_to_canonical'; requests: PromoteRequest[] };
     if (!p || typeof p !== 'object') throw makeError('INVALID_INPUT', 'payload required');
     if (p.kind === 'sync_from_canonical') {
       if (!Array.isArray(p.requests)) throw makeError('INVALID_INPUT', 'requests[] required');
       return planSyncFromCanonical(p.requests);
     }
     if (p.kind === 'promote_to_canonical') {
-      if (!Array.isArray(p.skillIds)) throw makeError('INVALID_INPUT', 'skillIds[] required');
-      return planPromoteToCanonical(p.skillIds);
+      if (!Array.isArray(p.requests)) throw makeError('INVALID_INPUT', 'requests[] required');
+      return planPromoteToCanonical(p.requests);
     }
     throw makeError('INVALID_INPUT', 'unknown plan kind');
   });
