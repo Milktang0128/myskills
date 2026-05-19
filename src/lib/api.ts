@@ -5,6 +5,8 @@
 import { IPC } from '@shared/ipc-channels';
 import type {
   AppStats,
+  CatalogPreview,
+  CatalogSearchResponse,
   CoverageMatrix,
   Platform,
   PlatformId,
@@ -119,6 +121,24 @@ export const api = {
       bridge().invoke(IPC.sync.history, { skillId, limit }) as Promise<SyncHistoryRow[]>,
     rollback: (historyId: number) =>
       bridge().invoke(IPC.sync.rollback, { historyId }) as Promise<{ ok: true }>,
+  },
+  catalog: {
+    search: (q: string, limit?: number, offset?: number) =>
+      bridge().invoke(IPC.catalog.search, { q, limit, offset }) as Promise<CatalogSearchResponse>,
+    preview: (source: string, skillId: string) =>
+      bridge().invoke(IPC.catalog.preview, { source, skillId }) as Promise<CatalogPreview>,
+    planInstall: (
+      source: string,
+      skillId: string,
+      skillName: string,
+      targetPlatformIds: PlatformId[],
+    ) =>
+      bridge().invoke(IPC.catalog.planInstall, {
+        source,
+        skillId,
+        skillName,
+        targetPlatformIds,
+      }) as Promise<SyncPlan>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

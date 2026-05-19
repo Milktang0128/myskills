@@ -5,6 +5,7 @@ import { registerSettingsHandlers } from './settings';
 import { registerScanHandlers } from './scan';
 import { registerCoverageHandlers } from './coverage';
 import { registerSyncHandlers } from './sync';
+import { registerCatalogHandlers } from './catalog';
 
 export function registerAllHandlers(): void {
   registerPlatformHandlers();
@@ -14,4 +15,5 @@ export function registerAllHandlers(): void {
   registerScanHandlers();
   registerCoverageHandlers();
   registerSyncHandlers();
+  registerCatalogHandlers();
 }

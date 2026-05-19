@@ -83,21 +83,23 @@ CREATE TABLE IF NOT EXISTS skill_tags (
 );
 
 CREATE TABLE IF NOT EXISTS sync_history (
-  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  skill_id            TEXT NOT NULL,
-  action              TEXT NOT NULL,
-  from_path           TEXT,
-  to_path             TEXT,
-  platform_id         TEXT,
-  before_hash         TEXT,
-  after_hash          TEXT,
-  backup_path         TEXT,
-  dry_run_plan        TEXT,
-  conflict_resolution TEXT,
-  rolled_back_at      INTEGER,
-  success             INTEGER NOT NULL,
-  message             TEXT,
-  created_at          INTEGER NOT NULL
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id                 TEXT NOT NULL,
+  action                   TEXT NOT NULL,
+  from_path                TEXT,
+  to_path                  TEXT,
+  platform_id              TEXT,
+  before_hash              TEXT,
+  after_hash               TEXT,
+  backup_path              TEXT,
+  dry_run_plan             TEXT,
+  conflict_resolution      TEXT,
+  rolled_back_at           INTEGER,
+  success                  INTEGER NOT NULL,
+  message                  TEXT,
+  created_at               INTEGER NOT NULL,
+  installed_from_source    TEXT,
+  installed_from_skill_id  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_history_skill ON sync_history(skill_id);
 CREATE INDEX IF NOT EXISTS idx_history_created ON sync_history(created_at);

@@ -39,6 +39,22 @@ const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    version: 4,
+    name: 'sync_history_install_provenance',
+    up: (db) => {
+      // Catalog-install provenance — records which skills.sh (source, skillId)
+      // each install came from. Fresh installs that already materialized the
+      // columns from SCHEMA_V1 skip the ALTERs.
+      const cols = db.prepare("PRAGMA table_info('sync_history')").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'installed_from_source')) {
+        db.exec('ALTER TABLE sync_history ADD COLUMN installed_from_source TEXT');
+      }
+      if (!cols.some((c) => c.name === 'installed_from_skill_id')) {
+        db.exec('ALTER TABLE sync_history ADD COLUMN installed_from_skill_id TEXT');
+      }
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

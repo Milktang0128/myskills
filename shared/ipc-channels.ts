@@ -40,6 +40,11 @@ export const IPC = {
     history: 'sync:history',
     rollback: 'sync:rollback',
   },
+  catalog: {
+    search: 'catalog:search',
+    preview: 'catalog:preview',
+    planInstall: 'catalog:planInstall',
+  },
   settings: {
     get: 'settings:get',
     set: 'settings:set',
@@ -59,7 +64,8 @@ export type IpcChannel =
   | typeof IPC.scan[keyof typeof IPC.scan]
   | typeof IPC.settings[keyof typeof IPC.settings]
   | typeof IPC.coverage[keyof typeof IPC.coverage]
-  | typeof IPC.sync[keyof typeof IPC.sync];
+  | typeof IPC.sync[keyof typeof IPC.sync]
+  | typeof IPC.catalog[keyof typeof IPC.catalog];
 
 export type IpcEventChannel = typeof IPC.events[keyof typeof IPC.events];
 
@@ -71,6 +77,7 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.settings),
   ...Object.values(IPC.coverage),
   ...Object.values(IPC.sync),
+  ...Object.values(IPC.catalog),
 ]);
 
 export const ALL_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>(Object.values(IPC.events));

@@ -271,6 +271,14 @@ export interface SyncPlanItem {
   mode: SyncMode;
   action: SyncAction;
   reason?: SyncConflictReason | SyncSkipReason;
+
+  /**
+   * Catalog-install provenance. Set by the catalog install planner so executeSync
+   * records where this skill came from. Both fields are null for plain sync /
+   * promote operations originating from the user's own filesystem.
+   */
+  installedFromSource?: string;
+  installedFromSkillId?: string;
 }
 
 export interface SyncPlan {
@@ -298,4 +306,42 @@ export interface IpcError {
   code: string;
   message: string;
   detail?: unknown;
+}
+
+/* ---------------------------------------------------------------------------
+ * Catalog (skills.sh) types
+ *
+ * The catalog is queried live — no DB caching of search results. Identity in
+ * the catalog is (source, skillId) where source is typically "owner/repo" on
+ * GitHub and skillId is the directory basename of the skill.
+ * ------------------------------------------------------------------------- */
+
+export interface CatalogSearchResult {
+  /** skills.sh-internal id. */
+  id: string;
+  /** Directory basename of the skill — used to fetch its SKILL.md. */
+  skillId: string;
+  name: string;
+  installs: number;
+  /** Typically "owner/repo" for GitHub-hosted skills. */
+  source: string;
+  /** May be absent in search results — fetch from SKILL.md for the full text. */
+  description?: string;
+}
+
+export interface CatalogSearchResponse {
+  query: string;
+  /** skills.sh returns "fuzzy" currently. */
+  searchType: string;
+  skills: CatalogSearchResult[];
+  count: number;
+  duration_ms: number;
+}
+
+export interface CatalogPreview {
+  source: string;
+  skillId: string;
+  rawMarkdown: string;
+  frontmatter: Record<string, unknown>;
+  bodyExcerpt: string | null;
 }

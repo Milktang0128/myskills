@@ -34,7 +34,7 @@ const DEFAULT_SCENARIOS: SeedScenario[] = [
 ];
 
 const DEFAULT_SETTINGS: Array<[string, string]> = [
-  ['schema_version', '3'],
+  ['schema_version', '4'],
   ['theme', 'system'],
   ['auto_scan_on_launch', '1'],
   ['default_sync_mode', 'symlink'],

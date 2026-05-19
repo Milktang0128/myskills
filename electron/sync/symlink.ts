@@ -222,6 +222,129 @@ export function planPromoteToCanonical(requests: PromoteRequest[]): SyncPlan {
   return finalizePlan(items, 'promote_to_canonical');
 }
 
+/**
+ * Plan a catalog install: copy a staged SKILL.md tree into the canonical
+ * platform, then symlink it onto every requested target platform.
+ *
+ * The staging directory MUST already contain a complete skill tree
+ * (typically `{stagingDir}/SKILL.md`). It's the caller's job to materialize
+ * it before calling this; we treat it like any other on-disk source dir.
+ * Every emitted SyncPlanItem carries (installedFromSource, installedFromSkillId)
+ * so executeSync writes provenance into sync_history.
+ *
+ * NOTE: `targetBasename` is derived from `path.basename(stagingDir)` to keep
+ * filesystem identity stable. The caller is expected to name the staging dir
+ * after the catalog `skillId` (or the desired install basename).
+ */
+export interface PlanInstallArgs {
+  /** Absolute path to the staged skill tree. Must be a directory with SKILL.md. */
+  stagingDir: string;
+  skillName: string;
+  /** Hash of the staged SKILL.md (used in plan and for after-execute verify). */
+  sourceHash: string;
+  /** Catalog provenance — written to sync_history.installed_from_*. */
+  installedFromSource: string;
+  installedFromSkillId: string;
+  /** Optional list of additional platforms to symlink onto (besides canonical). */
+  targetPlatformIds?: PlatformId[];
+}
+
+export function planInstallFromStaging(args: PlanInstallArgs): SyncPlan {
+  const canonical = getCanonicalPlatform();
+  const platforms = listPlatforms();
+  const platformDirById = new Map(platforms.map((p) => [p.id, p.skillsDir]));
+  const realDirById = realDirIndex(platforms);
+  const opGroupId = randomUUID();
+  const items: SyncPlanItem[] = [];
+
+  const canonicalDir = platformDirById.get(canonical);
+  const canonicalRoot = realDirById.get(canonical);
+  if (!canonicalDir || !canonicalRoot) {
+    throw new Error(`canonical platform "${canonical}" is not registered`);
+  }
+
+  // Synthetic skill row — install hasn't been scanned yet, so we don't have
+  // a DB id. Generate a placeholder id; it's only used for the plan items'
+  // skillId field and is irrelevant once scanAll() runs post-execute.
+  const placeholderSkillId = `pending:${args.installedFromSource}:${args.installedFromSkillId}`;
+  const skill: SkillRow = {
+    id: placeholderSkillId,
+    name: args.skillName,
+    content_hash: args.sourceHash,
+  };
+
+  // Synthetic source LocRow — staging dir on disk, no DB id.
+  const stagingLoc: LocRow = {
+    id: -1,
+    platform_id: 'staging',
+    install_path: args.stagingDir,
+    real_path: args.stagingDir,
+    is_symlink: 0,
+    is_broken_link: 0,
+    is_disabled: 0,
+    content_hash: args.sourceHash,
+    mtime: null,
+  };
+
+  // Step 1: copy staging → canonical.
+  const copyItem = buildItem({
+    skill,
+    sourceLoc: stagingLoc,
+    targetLoc: null,
+    sourcePlatformId: 'staging',
+    targetPlatformId: canonical,
+    targetPlatformDir: canonicalDir,
+    targetRoot: canonicalRoot,
+    opGroupId,
+    overrideAction: 'copy_to_canonical',
+  });
+  copyItem.installedFromSource = args.installedFromSource;
+  copyItem.installedFromSkillId = args.installedFromSkillId;
+  items.push(copyItem);
+
+  // Steps 2..N: symlink_replace on each requested target platform.
+  // The source for these is the future canonical path (which step 1 will
+  // create). It doesn't exist yet at plan time, so we can't go through
+  // buildItem (which does plan-time stat of the source). We construct the
+  // items directly. dev/ino are set to 0/0 as a sentinel meaning "synthetic
+  // source — skip the inode-pinning TOCTOU check at execute" (executor
+  // already requires step 1 to succeed before these run, and step 1 verified
+  // the staging source by hash).
+  const requestedTargets = (args.targetPlatformIds ?? [])
+    .filter((p) => p !== canonical)
+    .filter((p) => platformDirById.has(p));
+
+  if (copyItem.action === 'copy_to_canonical') {
+    for (const targetId of requestedTargets) {
+      const targetDir = platformDirById.get(targetId)!;
+      const targetRoot = realDirById.get(targetId)!;
+      const targetPath = path.join(targetDir, copyItem.targetBasename);
+      if (!isInside(targetPath, targetRoot)) continue;
+      items.push({
+        skillName: args.skillName,
+        skillId: placeholderSkillId,
+        opGroupId,
+        targetBasename: copyItem.targetBasename,
+        sourcePlatformId: canonical,
+        sourceLocationId: -1,
+        sourceRealPath: copyItem.targetPath,
+        sourceDev: 0,
+        sourceIno: 0,
+        sourceHash: args.sourceHash,
+        targetPlatformId: targetId,
+        targetPath,
+        targetHash: null,
+        mode: 'symlink',
+        action: 'symlink_replace',
+        installedFromSource: args.installedFromSource,
+        installedFromSkillId: args.installedFromSkillId,
+      });
+    }
+  }
+
+  return finalizePlan(items, 'promote_to_canonical');
+}
+
 export async function executeSync(token: string): Promise<SyncExecuteResult> {
   if (executeInFlight) {
     throw new Error('Another sync is already running — wait for it to finish.');
@@ -554,8 +677,9 @@ async function doExecute(plan: SyncPlan): Promise<SyncExecuteResult> {
   const insertHistory = db.prepare(
     `INSERT INTO sync_history
        (skill_id, action, from_path, to_path, platform_id, before_hash, after_hash,
-        backup_path, dry_run_plan, conflict_resolution, success, message, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        backup_path, dry_run_plan, conflict_resolution, success, message, created_at,
+        installed_from_source, installed_from_skill_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   const applied: SyncPlanItem[] = [];
@@ -600,6 +724,8 @@ async function doExecute(plan: SyncPlan): Promise<SyncExecuteResult> {
           1,
           null,
           now,
+          item.installedFromSource ?? null,
+          item.installedFromSkillId ?? null,
         );
         applied.push(item);
       } catch (err) {
@@ -618,6 +744,8 @@ async function doExecute(plan: SyncPlan): Promise<SyncExecuteResult> {
           0,
           msg,
           now,
+          item.installedFromSource ?? null,
+          item.installedFromSkillId ?? null,
         );
         failed.push({ item, message: msg });
         groupAborted = true; // don't run later steps in the same op group
@@ -650,10 +778,17 @@ function doExecuteOne(item: SyncPlanItem): ExecuteOutcome {
 
 function doSymlinkCreate(item: SyncPlanItem, allowReplace: boolean): ExecuteOutcome {
   // Re-pin source by inode+dev. This is the TOCTOU defense from SPEC.
+  // Synthetic-source sentinel: dev=0 && ino=0 means "this item's source did not
+  // exist at plan time" (e.g. an install symlink whose source is the canonical
+  // copy produced by an earlier step in the same op group). We skip the
+  // dev+ino check; the prior step in the group already verified hashes, and
+  // the executor aborts the group if step 1 fails.
   const sourceReal = fs.realpathSync(item.sourceRealPath);
   const srcStat = fs.statSync(sourceReal);
-  if (Number(srcStat.dev) !== item.sourceDev || Number(srcStat.ino) !== item.sourceIno) {
-    throw new Error('source has changed since plan was generated — re-plan and try again');
+  if (item.sourceDev !== 0 || item.sourceIno !== 0) {
+    if (Number(srcStat.dev) !== item.sourceDev || Number(srcStat.ino) !== item.sourceIno) {
+      throw new Error('source has changed since plan was generated — re-plan and try again');
+    }
   }
   if (!srcStat.isDirectory()) {
     throw new Error(`source is no longer a directory: ${sourceReal}`);
