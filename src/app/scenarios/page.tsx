@@ -3,21 +3,45 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Pencil, Plus, Trash2, Download, Upload } from 'lucide-react';
-import type { Scenario, ScenarioExport, ScenarioImportResult } from '@shared/types';
+import type { Scenario, ScenarioExport, ScenarioImportResult, Skill } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ScenarioForm } from '@/components/scenario-form';
+import { ScenarioRecommendations } from '@/components/scenario-recommendations';
 import { api } from '@/lib/api';
+import { cn } from '@/lib/utils';
 
 export default function ScenariosPage() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Scenario | null>(null);
   const [importResult, setImportResult] = useState<ScenarioImportResult | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedSkills, setSelectedSkills] = useState<Skill[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
 
   const refresh = useCallback(async () => {
     setScenarios(await api.scenarios.list());
   }, []);
+
+  // Reload installed skills whenever the selected scenario changes.
+  const loadSelectedSkills = useCallback(async (scenarioId: number) => {
+    setSkillsLoading(true);
+    try {
+      const skills = await api.skills.list({ scenarioId });
+      setSelectedSkills(skills);
+    } finally {
+      setSkillsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedId == null) {
+      setSelectedSkills([]);
+      return;
+    }
+    loadSelectedSkills(selectedId);
+  }, [selectedId, loadSelectedSkills]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -113,49 +137,136 @@ export default function ScenariosPage() {
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="grid gap-3 p-6 sm:grid-cols-2 lg:grid-cols-3">
-          {scenarios.map((sc) => (
-            <div key={sc.id} className="rounded-lg border bg-card p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span
-                    className="inline-block h-3 w-3 rounded-full"
-                    style={{ backgroundColor: sc.color ?? '#888' }}
-                  />
-                  <h2 className="text-sm font-semibold">{sc.name}</h2>
-                  {sc.isBuiltin && (
-                    <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      built-in
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => {
-                      setEditing(sc);
-                      setFormOpen(true);
-                    }}
-                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                    aria-label="Edit"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                  {!sc.isBuiltin && (
+          {scenarios.map((sc) => {
+            const isSelected = selectedId === sc.id;
+            return (
+              <div
+                key={sc.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedId((cur) => (cur === sc.id ? null : sc.id))}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedId((cur) => (cur === sc.id ? null : sc.id));
+                  }
+                }}
+                className={cn(
+                  'cursor-pointer rounded-lg border bg-card p-4 transition-colors',
+                  'hover:border-foreground/20 hover:bg-accent/30',
+                  isSelected && 'border-primary/60 bg-accent/40 ring-1 ring-primary/20',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block h-3 w-3 rounded-full"
+                      style={{ backgroundColor: sc.color ?? '#888' }}
+                    />
+                    <h2 className="text-sm font-semibold">{sc.name}</h2>
+                    {sc.isBuiltin && (
+                      <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        built-in
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-1">
                     <button
-                      onClick={() => handleDelete(sc)}
-                      className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                      aria-label="Delete"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditing(sc);
+                        setFormOpen(true);
+                      }}
+                      className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      aria-label="Edit"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
+                      <Pencil className="h-3.5 w-3.5" />
                     </button>
+                    {!sc.isBuiltin && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(sc);
+                        }}
+                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        aria-label="Delete"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-1 font-mono text-[10px] text-muted-foreground">{sc.key}</p>
+                {sc.description && <p className="mt-2 text-xs text-muted-foreground">{sc.description}</p>}
+                <p className="mt-3 text-xs text-muted-foreground">{sc.skillCount ?? 0} skills</p>
+              </div>
+            );
+          })}
+        </div>
+
+        {selectedId != null && (() => {
+          const sc = scenarios.find((s) => s.id === selectedId);
+          if (!sc) return null;
+          return (
+            <div className="border-t bg-secondary/20 px-6 py-6">
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block h-3 w-3 rounded-full"
+                      style={{ backgroundColor: sc.color ?? '#888' }}
+                    />
+                    <h2 className="text-base font-semibold">{sc.name}</h2>
+                  </div>
+                  {sc.description && (
+                    <p className="mt-1 text-xs text-muted-foreground">{sc.description}</p>
                   )}
                 </div>
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setSelectedId(null)}
+                >
+                  Close
+                </button>
               </div>
-              <p className="mt-1 font-mono text-[10px] text-muted-foreground">{sc.key}</p>
-              {sc.description && <p className="mt-2 text-xs text-muted-foreground">{sc.description}</p>}
-              <p className="mt-3 text-xs text-muted-foreground">{sc.skillCount ?? 0} skills</p>
+
+              <section className="mb-6 space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Skills in this scenario ({selectedSkills.length})
+                </div>
+                {skillsLoading ? (
+                  <p className="text-xs text-muted-foreground">Loading…</p>
+                ) : selectedSkills.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No skills are linked to this scenario yet.
+                  </p>
+                ) : (
+                  <ul className="flex flex-wrap gap-1.5">
+                    {selectedSkills.map((s) => (
+                      <li
+                        key={s.id}
+                        className="rounded bg-background px-2 py-1 text-xs"
+                        title={s.description ?? undefined}
+                      >
+                        {s.name}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              <ScenarioRecommendations
+                scenario={sc}
+                installedSkills={selectedSkills}
+                onInstalled={() => {
+                  // Refresh skill counts on the cards and the installed list.
+                  refresh();
+                  loadSelectedSkills(sc.id);
+                }}
+              />
             </div>
-          ))}
-        </div>
+          );
+        })()}
       </ScrollArea>
 
       <ScenarioForm
