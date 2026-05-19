@@ -345,3 +345,52 @@ export interface CatalogPreview {
   frontmatter: Record<string, unknown>;
   bodyExcerpt: string | null;
 }
+
+/* ---------------------------------------------------------------------------
+ * LLM provider types
+ *
+ * The renderer never sees the API key — it only knows whether one is stored
+ * (LlmConfig.hasApiKey). Keys are written via llm.setApiKey({ key }) and
+ * stored in macOS Keychain via Electron's safeStorage.
+ *
+ * All outbound network calls (including LLM requests) must check
+ * isExternalNetworkAllowed() first; when the master toggle is off, providers
+ * refuse with code 'EXTERNAL_NETWORK_DISABLED'.
+ * ------------------------------------------------------------------------- */
+
+export type LlmProvider = 'openai' | 'anthropic' | 'openrouter' | 'ollama' | 'custom';
+
+export interface LlmConfig {
+  provider: LlmProvider;
+  model: string;
+  /** For custom / ollama (or override). Optional for the four built-in providers. */
+  baseUrl?: string;
+  /** Whether a key is stored in safeStorage. The key itself is never returned. */
+  hasApiKey: boolean;
+}
+
+export interface LlmChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface LlmChatRequest {
+  messages: LlmChatMessage[];
+  /** Default 0.2. */
+  temperature?: number;
+  /** Default 1024. */
+  maxTokens?: number;
+  /** Request JSON output if true (uses response_format on OpenAI-compatible APIs). */
+  jsonMode?: boolean;
+}
+
+export interface LlmChatResponse {
+  text: string;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
+export interface LlmFeatureToggles {
+  search: boolean;
+  autoCategorize: boolean;
+  recommend: boolean;
+}

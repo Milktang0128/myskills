@@ -6,6 +6,7 @@ import { registerScanHandlers } from './scan';
 import { registerCoverageHandlers } from './coverage';
 import { registerSyncHandlers } from './sync';
 import { registerCatalogHandlers } from './catalog';
+import { registerLlmHandlers } from './llm';
 
 export function registerAllHandlers(): void {
   registerPlatformHandlers();
@@ -16,4 +17,5 @@ export function registerAllHandlers(): void {
   registerCoverageHandlers();
   registerSyncHandlers();
   registerCatalogHandlers();
+  registerLlmHandlers();
 }

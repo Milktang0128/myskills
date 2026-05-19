@@ -16,8 +16,19 @@ import {
   Search,
   Check,
   X,
+  Wifi,
+  Sparkles,
+  KeyRound,
+  ShieldCheck,
 } from 'lucide-react';
-import type { AppStats, Platform, ScanResult } from '@shared/types';
+import type {
+  AppStats,
+  LlmConfig,
+  LlmFeatureToggles,
+  LlmProvider,
+  Platform,
+  ScanResult,
+} from '@shared/types';
 import { PlatformBadge } from '@/components/platform-badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -52,20 +63,50 @@ export default function SettingsPage() {
   });
   const [customError, setCustomError] = useState<string | null>(null);
   const [savingCustom, setSavingCustom] = useState(false);
+  // External-network master toggle.
+  const [networkAllowed, setNetworkAllowed] = useState(true);
+  const [savingNetwork, setSavingNetwork] = useState(false);
+  // AI integration.
+  const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
+  const [llmFeatures, setLlmFeatures] = useState<LlmFeatureToggles>({
+    search: false,
+    autoCategorize: false,
+    recommend: false,
+  });
+  const [llmDraft, setLlmDraft] = useState<{ provider: LlmProvider; model: string; baseUrl: string }>(
+    { provider: 'openai', model: '', baseUrl: '' },
+  );
+  const [llmApiKeyDraft, setLlmApiKeyDraft] = useState('');
+  const [savingLlm, setSavingLlm] = useState(false);
+  const [savingLlmKey, setSavingLlmKey] = useState(false);
+  const [testingLlm, setTestingLlm] = useState(false);
+  const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
 
   const refresh = useCallback(async () => {
-    const [pls, st, ls, c, cands] = await Promise.all([
+    const [pls, st, ls, c, cands, netRaw, cfg, feats] = await Promise.all([
       api.platforms.list(),
       api.settings.stats(),
       api.scan.lastResult(),
       api.settings.get('canonical_platform'),
       api.platforms.knownCandidates(),
+      api.settings.get('allow_external_network'),
+      api.llm.getConfig(),
+      api.llm.getFeatures(),
     ]);
     setPlatforms(pls);
     setStats(st);
     setLastScan(ls);
     if (c) setCanonical(c);
     setCandidates(cands);
+    // netRaw missing → default to allowed (matches the seed default).
+    setNetworkAllowed(netRaw === null ? true : netRaw === '1');
+    setLlmConfig(cfg);
+    setLlmDraft({
+      provider: cfg.provider,
+      model: cfg.model ?? '',
+      baseUrl: cfg.baseUrl ?? '',
+    });
+    setLlmFeatures(feats);
     // Probe each known candidate's default dir in parallel.
     const probes = await Promise.all(
       cands.map((cand) => api.platforms.probe(cand.defaultDir).then((r) => [cand.id, r] as const)),
@@ -194,6 +235,79 @@ export default function SettingsPage() {
     }
   }
 
+  async function toggleNetwork(next: boolean) {
+    setSavingNetwork(true);
+    try {
+      await api.settings.set('allow_external_network', next ? '1' : '0');
+      setNetworkAllowed(next);
+    } finally {
+      setSavingNetwork(false);
+    }
+  }
+
+  async function saveLlmConfig() {
+    setSavingLlm(true);
+    setLlmTestResult(null);
+    try {
+      const updated = await api.llm.setConfig({
+        provider: llmDraft.provider,
+        model: llmDraft.model.trim(),
+        baseUrl: llmDraft.baseUrl.trim(),
+      });
+      setLlmConfig(updated);
+    } finally {
+      setSavingLlm(false);
+    }
+  }
+
+  async function saveLlmKey() {
+    const key = llmApiKeyDraft.trim();
+    if (!key) return;
+    setSavingLlmKey(true);
+    setLlmTestResult(null);
+    try {
+      await api.llm.setApiKey({ key });
+      setLlmApiKeyDraft('');
+      const cfg = await api.llm.getConfig();
+      setLlmConfig(cfg);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingLlmKey(false);
+    }
+  }
+
+  async function clearLlmKey() {
+    if (!confirm('Remove the stored API key from macOS Keychain?')) return;
+    await api.llm.deleteApiKey();
+    const cfg = await api.llm.getConfig();
+    setLlmConfig(cfg);
+    setLlmTestResult(null);
+  }
+
+  async function testLlm() {
+    setTestingLlm(true);
+    setLlmTestResult(null);
+    try {
+      // Persist current draft first so the test uses what the user sees.
+      await saveLlmConfig();
+      const result = await api.llm.testConnection();
+      setLlmTestResult(result);
+    } catch (err) {
+      setLlmTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTestingLlm(false);
+    }
+  }
+
+  async function toggleFeature(key: keyof LlmFeatureToggles, next: boolean) {
+    const updated = await api.llm.setFeatures({ [key]: next });
+    setLlmFeatures(updated);
+  }
+
   return (
     <main className="flex h-screen w-screen flex-col overflow-hidden">
       <header className="titlebar-drag flex h-12 shrink-0 items-center border-b pl-[88px] pr-4">
@@ -245,6 +359,198 @@ export default function SettingsPage() {
               })}
             </div>
           </section>
+
+          <Separator />
+
+          <section className="space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Wifi className="h-4 w-4" />
+              Allow external network requests
+            </h2>
+            <div className="flex items-start gap-3 rounded-md border bg-card px-3 py-3">
+              <ToggleSwitch
+                checked={networkAllowed}
+                onChange={toggleNetwork}
+                disabled={savingNetwork}
+                label="Allow external network requests"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">
+                  {networkAllowed ? 'Network enabled' : 'Offline mode'}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  When off, MySkills works fully offline. Catalog search, AI features, and remote
+                  skill content are disabled.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Sparkles className="h-4 w-4 text-violet-500" />
+              AI integration
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              Connect a language model to enable smart search, scenario auto-categorization, and
+              skill recommendations. Disabled when the master network toggle is off.
+            </p>
+
+            <div className={`space-y-3 ${!networkAllowed ? 'opacity-60' : ''}`}>
+              <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
+                <Label htmlFor="llm-provider">Provider</Label>
+                <select
+                  id="llm-provider"
+                  value={llmDraft.provider}
+                  onChange={(e) =>
+                    setLlmDraft({ ...llmDraft, provider: e.target.value as LlmProvider })
+                  }
+                  disabled={!networkAllowed}
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="ollama">Ollama (local)</option>
+                  <option value="custom">Custom (OpenAI-compatible)</option>
+                </select>
+
+                <Label htmlFor="llm-model">Model</Label>
+                <Input
+                  id="llm-model"
+                  value={llmDraft.model}
+                  onChange={(e) => setLlmDraft({ ...llmDraft, model: e.target.value })}
+                  placeholder={modelPlaceholder(llmDraft.provider)}
+                  disabled={!networkAllowed}
+                  className="font-mono text-xs"
+                />
+
+                {(llmDraft.provider === 'custom' || llmDraft.provider === 'ollama') && (
+                  <>
+                    <Label htmlFor="llm-base-url">Base URL</Label>
+                    <Input
+                      id="llm-base-url"
+                      value={llmDraft.baseUrl}
+                      onChange={(e) => setLlmDraft({ ...llmDraft, baseUrl: e.target.value })}
+                      placeholder={
+                        llmDraft.provider === 'ollama'
+                          ? 'http://localhost:11434/v1'
+                          : 'https://your-host/v1'
+                      }
+                      disabled={!networkAllowed}
+                      className="font-mono text-xs"
+                    />
+                  </>
+                )}
+
+                <Label htmlFor="llm-key" className="flex items-center gap-1.5">
+                  <KeyRound className="h-3.5 w-3.5" />
+                  API Key
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="llm-key"
+                    type="password"
+                    autoComplete="off"
+                    value={llmApiKeyDraft}
+                    onChange={(e) => setLlmApiKeyDraft(e.target.value)}
+                    placeholder={
+                      llmConfig?.hasApiKey
+                        ? 'saved in macOS Keychain — paste to replace'
+                        : llmDraft.provider === 'ollama'
+                        ? 'not required for Ollama'
+                        : 'Paste your key...'
+                    }
+                    disabled={!networkAllowed || llmDraft.provider === 'ollama'}
+                    className="font-mono text-xs"
+                  />
+                  {llmConfig?.hasApiKey && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={clearLlmKey}
+                      disabled={!networkAllowed}
+                      title="Remove the stored API key"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    onClick={saveLlmConfig}
+                    disabled={!networkAllowed || savingLlm}
+                  >
+                    {savingLlm ? 'Saving…' : 'Save'}
+                  </Button>
+                  {llmApiKeyDraft.trim() && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={saveLlmKey}
+                      disabled={!networkAllowed || savingLlmKey}
+                    >
+                      {savingLlmKey ? 'Storing…' : 'Save API key'}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={testLlm}
+                    disabled={!networkAllowed || testingLlm || !llmDraft.model.trim()}
+                  >
+                    {testingLlm ? 'Testing…' : 'Test connection'}
+                  </Button>
+                </div>
+                {llmTestResult && (
+                  <span
+                    className={`text-xs ${
+                      llmTestResult.ok ? 'text-emerald-600' : 'text-destructive'
+                    }`}
+                  >
+                    {llmTestResult.ok ? 'OK' : 'Failed'}
+                    {llmTestResult.message ? `: ${llmTestResult.message}` : ''}
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-2 rounded-md border bg-card px-3 py-3">
+                <div className="text-xs font-medium text-muted-foreground">Use AI for…</div>
+                <FeatureToggleRow
+                  checked={llmFeatures.search}
+                  onChange={(v) => toggleFeature('search', v)}
+                  disabled={!networkAllowed}
+                  label="Use AI for catalog search (Discover)"
+                />
+                <FeatureToggleRow
+                  checked={llmFeatures.autoCategorize}
+                  onChange={(v) => toggleFeature('autoCategorize', v)}
+                  disabled={!networkAllowed}
+                  label="Suggest scenarios for new skills (auto-categorize)"
+                />
+                <FeatureToggleRow
+                  checked={llmFeatures.recommend}
+                  onChange={(v) => toggleFeature('recommend', v)}
+                  disabled={!networkAllowed}
+                  label="Recommend missing skills for active scenarios"
+                />
+              </div>
+
+              <div className="flex items-start gap-2 text-[11px] text-muted-foreground">
+                <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <p>
+                  Your API key is stored in macOS Keychain via Electron safeStorage. It never
+                  leaves your device except in direct calls to your chosen provider.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <Separator />
 
           <section className="space-y-3">
             <div className="flex items-center justify-between">
@@ -501,6 +807,72 @@ function ErrorIcon({ kind }: { kind: string }) {
   if (kind === 'icloud_evicted') return <CloudOff className="h-3.5 w-3.5 text-blue-600" />;
   if (kind === 'too_large') return <FileX2 className="h-3.5 w-3.5 text-amber-600" />;
   return <FolderSearch className="h-3.5 w-3.5 text-muted-foreground" />;
+}
+
+function ToggleSwitch({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => !disabled && onChange(!checked)}
+      disabled={disabled}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50 ${
+        checked ? 'border-emerald-500 bg-emerald-500' : 'border-input bg-muted'
+      }`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-background shadow transition-transform ${
+          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+        }`}
+      />
+    </button>
+  );
+}
+
+function FeatureToggleRow({
+  checked,
+  onChange,
+  disabled,
+  label,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center gap-3 text-sm">
+      <ToggleSwitch checked={checked} onChange={onChange} disabled={disabled} label={label} />
+      <span className={disabled ? 'text-muted-foreground' : ''}>{label}</span>
+    </label>
+  );
+}
+
+function modelPlaceholder(provider: LlmProvider): string {
+  switch (provider) {
+    case 'openai':
+      return 'gpt-4o-mini';
+    case 'anthropic':
+      return 'claude-haiku-4-5';
+    case 'openrouter':
+      return 'anthropic/claude-3.5-sonnet';
+    case 'ollama':
+      return 'llama3.1:8b';
+    case 'custom':
+      return 'your-model-id';
+  }
 }
 
 function labelForKind(kind: string): string {

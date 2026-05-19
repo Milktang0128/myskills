@@ -40,6 +40,16 @@ const DEFAULT_SETTINGS: Array<[string, string]> = [
   ['default_sync_mode', 'symlink'],
   ['backup_retention_days', '30'],
   ['canonical_platform', 'shared'],
+  // Master toggle. When '0', all outbound network calls (catalog search, LLM,
+  // remote skill content) must refuse. See electron/secrets/network-gate.ts.
+  ['allow_external_network', '1'],
+  // LLM defaults. Provider/model/baseUrl live here; API key lives in safeStorage.
+  ['llm.provider', 'openai'],
+  ['llm.model', ''],
+  ['llm.baseUrl', ''],
+  ['llm.feature.search', '0'],
+  ['llm.feature.autoCategorize', '0'],
+  ['llm.feature.recommend', '0'],
 ];
 
 export function seedDefaults(db: Database): void {

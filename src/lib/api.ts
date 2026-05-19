@@ -8,6 +8,11 @@ import type {
   CatalogPreview,
   CatalogSearchResponse,
   CoverageMatrix,
+  LlmChatRequest,
+  LlmChatResponse,
+  LlmConfig,
+  LlmFeatureToggles,
+  LlmProvider,
   Platform,
   PlatformId,
   Scenario,
@@ -139,6 +144,23 @@ export const api = {
         skillName,
         targetPlatformIds,
       }) as Promise<SyncPlan>,
+  },
+  llm: {
+    getConfig: () => bridge().invoke(IPC.llm.getConfig) as Promise<LlmConfig>,
+    setConfig: (cfg: { provider?: LlmProvider; model?: string; baseUrl?: string }) =>
+      bridge().invoke(IPC.llm.setConfig, cfg) as Promise<LlmConfig>,
+    /** Key only travels renderer → main. The renderer never receives it back. */
+    setApiKey: (input: { key: string }) =>
+      bridge().invoke(IPC.llm.setApiKey, input) as Promise<{ ok: true; hasApiKey: boolean }>,
+    deleteApiKey: () =>
+      bridge().invoke(IPC.llm.deleteApiKey) as Promise<{ ok: true; hasApiKey: false }>,
+    chat: (req: LlmChatRequest) =>
+      bridge().invoke(IPC.llm.chat, { req }) as Promise<LlmChatResponse>,
+    testConnection: () =>
+      bridge().invoke(IPC.llm.testConnection) as Promise<{ ok: boolean; message?: string }>,
+    getFeatures: () => bridge().invoke(IPC.llm.getFeatures) as Promise<LlmFeatureToggles>,
+    setFeatures: (toggles: Partial<LlmFeatureToggles>) =>
+      bridge().invoke(IPC.llm.setFeatures, toggles) as Promise<LlmFeatureToggles>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>
