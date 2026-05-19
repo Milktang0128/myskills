@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 9% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 9% 14%;
+    --primary: 224 9% 14%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 224 9% 14%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 94%;
+    --accent-foreground: 224 9% 14%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 224 9% 14%;
+    --radius: 0.5rem;
+
+    --platform-claude: 24 95% 53%;
+    --platform-codex: 271 91% 65%;
+    --platform-shared: 142 76% 36%;
+  }
+
+  .dark {
+    --background: 222 14% 8%;
+    --foreground: 0 0% 95%;
+    --card: 222 14% 11%;
+    --card-foreground: 0 0% 95%;
+    --primary: 0 0% 95%;
+    --primary-foreground: 222 14% 8%;
+    --secondary: 222 14% 16%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 222 14% 16%;
+    --muted-foreground: 220 9% 65%;
+    --accent: 222 14% 20%;
+    --accent-foreground: 0 0% 95%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 222 14% 18%;
+    --input: 222 14% 18%;
+    --ring: 0 0% 80%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+  html, body {
+    height: 100%;
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Make the title bar drag region work with macOS hidden-inset */
+  .titlebar-drag {
+    -webkit-app-region: drag;
+  }
+  .titlebar-no-drag {
+    -webkit-app-region: no-drag;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 4px;
+  }
+}

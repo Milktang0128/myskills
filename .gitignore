@@ -10,4 +10,5 @@ release/
 data/
 *.db
 *.db-journal
+*.tsbuildinfo
 .icloud

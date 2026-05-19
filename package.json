@@ -4,7 +4,7 @@
   "private": true,
   "description": "AI Skill Hub — unified management of AI agent skills across Claude, Codex and other platforms",
   "author": "tangmilk1205@gmail.com",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n NEXT,ELEC -c blue,green \"npm:dev:next\" \"npm:dev:electron\"",
     "dev:next": "next dev --port 4477",
@@ -16,7 +16,7 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
-    "better-sqlite3": "^11.5.0",
+    "better-sqlite3": "^12.4.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "gray-matter": "^4.0.3",
