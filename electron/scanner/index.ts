@@ -8,11 +8,6 @@ import type { ScanError, ScanResult } from '../../shared/types';
 import { parseSkill, SkillParseError } from './parser';
 import { checkPlatformRoot, isDisabledContainer, listPlatforms } from './platforms';
 
-interface LocationKey {
-  platformId: string;
-  installPath: string;
-}
-
 interface DiscoveredSkill {
   parsed: NonNullable<ReturnType<typeof parseSkill>>;
   platformId: string;
@@ -23,11 +18,23 @@ interface DiscoveredSkill {
   isDisabled: boolean;
 }
 
-/**
- * Scan all enabled platforms, reconcile against DB.
- * Returns counts and any errors encountered. Never throws — errors go into the result.
- */
+// Single in-flight scan promise. Concurrent callers join the same promise
+// rather than racing on the FS or on module-level state.
+let inFlightScan: Promise<ScanResult> | null = null;
+
 export async function scanAll(sender?: WebContents): Promise<ScanResult> {
+  if (inFlightScan) return inFlightScan;
+  inFlightScan = (async () => {
+    try {
+      return await doScan(sender);
+    } finally {
+      inFlightScan = null;
+    }
+  })();
+  return inFlightScan;
+}
+
+async function doScan(sender?: WebContents): Promise<ScanResult> {
   const startedAt = Date.now();
   console.log('[scan] starting');
   if (sender) safeSend(sender, IPC.events.scanStarted, { startedAt });
@@ -36,27 +43,43 @@ export async function scanAll(sender?: WebContents): Promise<ScanResult> {
   const errors: ScanError[] = [];
   const discovered: DiscoveredSkill[] = [];
 
-  for (const platform of listPlatforms().filter((p) => p.enabled)) {
+  const enabledPlatforms = listPlatforms().filter((p) => p.enabled);
+  for (let i = 0; i < enabledPlatforms.length; i++) {
+    const platform = enabledPlatforms[i]!;
     const status = checkPlatformRoot(platform);
-    if (!status.exists || !status.readable) continue;
+    if (!status.exists || !status.readable) {
+      if (sender) safeSend(sender, IPC.events.scanPlatformDone, {
+        platformId: platform.id,
+        index: i,
+        total: enabledPlatforms.length,
+        found: 0,
+        skipped: true,
+      });
+      continue;
+    }
 
-    // Top-level skills
+    const beforeCount = discovered.length;
     const topErrors = scanDir(platform.skillsDir, platform.id, false, discovered);
     errors.push(...topErrors);
 
-    // .disabled/ container, if present
     const disabledPath = path.join(platform.skillsDir, '.disabled');
     if (safeIsDir(disabledPath)) {
       const dErrors = scanDir(disabledPath, platform.id, true, discovered);
       errors.push(...dErrors);
     }
+    if (sender) safeSend(sender, IPC.events.scanPlatformDone, {
+      platformId: platform.id,
+      index: i,
+      total: enabledPlatforms.length,
+      found: discovered.length - beforeCount,
+      skipped: false,
+    });
   }
 
   const reconcileResult = reconcile(discovered);
   const finishedAt = Date.now();
   const durationMs = finishedAt - startedAt;
 
-  // Record scan run
   db.prepare(
     `INSERT INTO scan_runs (started_at, finished_at, total_found, new_count, updated_count, removed_count, duration_ms, errors_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -150,8 +173,7 @@ function scanDir(
 
   for (const entry of entries) {
     if (entry.name.startsWith('.') && !isDisabledContainerScope) {
-      if (entry.name === '.disabled') continue; // handled at caller
-      // skip hidden entries like .DS_Store, .git
+      if (entry.name === '.disabled') continue;
       continue;
     }
     if (isDisabledContainer(entry.name)) continue;
@@ -192,7 +214,7 @@ function scanDir(
 
     try {
       const parsed = parseSkill(realPath);
-      if (!parsed) continue; // no SKILL.md → not a skill
+      if (!parsed) continue;
       out.push({
         parsed,
         platformId,
@@ -242,15 +264,21 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
     'SELECT id FROM skill_locations WHERE platform_id = ? AND install_path = ?',
   );
   const insertLocation = db.prepare(
-    `INSERT INTO skill_locations (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO skill_locations (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const updateLocation = db.prepare(
-    `UPDATE skill_locations SET skill_id = ?, real_path = ?, is_symlink = ?, is_broken_link = ?, is_disabled = ?, last_seen_at = ? WHERE id = ?`,
+    `UPDATE skill_locations SET skill_id = ?, real_path = ?, is_symlink = ?, is_broken_link = ?, is_disabled = ?, content_hash = ?, last_seen_at = ? WHERE id = ?`,
   );
 
   const seenLocationIds = new Set<number>();
   const seenSkillIds = new Set<string>();
+
+  // Snapshot the pre-scan skill IDs so we can compute removed count from DB
+  // state, not module-level memory.
+  const preScanSkillIds = new Set(
+    (db.prepare('SELECT id FROM skills').all() as { id: string }[]).map((r) => r.id),
+  );
 
   const tx = db.transaction(() => {
     for (const d of discovered) {
@@ -308,6 +336,7 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
           d.isSymlink ? 1 : 0,
           d.isBrokenSymlink ? 1 : 0,
           d.isDisabled ? 1 : 0,
+          d.parsed.contentHash,
           now,
           loc.id,
         );
@@ -321,13 +350,14 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
           d.isSymlink ? 1 : 0,
           d.isBrokenSymlink ? 1 : 0,
           d.isDisabled ? 1 : 0,
+          d.parsed.contentHash,
           now,
         );
         seenLocationIds.add(Number(r.lastInsertRowid));
       }
     }
 
-    // Remove locations not seen this scan
+    // Remove locations not seen this scan.
     const allLocationRows = db.prepare('SELECT id FROM skill_locations').all() as { id: number }[];
     const toRemove = allLocationRows.filter((r) => !seenLocationIds.has(r.id)).map((r) => r.id);
     if (toRemove.length > 0) {
@@ -335,23 +365,26 @@ function reconcile(discovered: DiscoveredSkill[]): ReconcileResult {
       db.prepare(`DELETE FROM skill_locations WHERE id IN (${placeholders})`).run(...toRemove);
     }
 
-    // Remove orphan skills (no remaining locations)
+    // Remove orphan skills, but PRESERVE any with surviving scenario assignments
+    // (per SPEC §6 — scenarios are user data, not derivable from the FS).
     db.exec(
-      `DELETE FROM skills WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_locations)`,
+      `DELETE FROM skills
+       WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_locations)
+         AND id NOT IN (SELECT DISTINCT skill_id FROM skill_scenarios)`,
     );
   });
   tx();
 
-  const removed = Math.max(0, getRemovedCount(seenSkillIds));
-  return { added, updated, removed };
-}
-
-let _lastSkillIds: Set<string> = new Set();
-function getRemovedCount(currentIds: Set<string>): number {
+  // Removed count: pre-scan skill IDs that didn't survive AND we didn't touch this scan.
   let removed = 0;
-  for (const id of _lastSkillIds) if (!currentIds.has(id)) removed += 1;
-  _lastSkillIds = currentIds;
-  return removed;
+  for (const id of preScanSkillIds) {
+    if (!seenSkillIds.has(id)) {
+      const stillThere = db.prepare('SELECT 1 FROM skills WHERE id = ?').get(id);
+      if (!stillThere) removed += 1;
+    }
+  }
+
+  return { added, updated, removed };
 }
 
 function safeIsDir(p: string): boolean {
@@ -366,6 +399,6 @@ function safeSend(sender: WebContents, channel: string, payload: unknown): void 
   try {
     if (!sender.isDestroyed()) sender.send(channel, payload);
   } catch {
-    // ignore — renderer may have closed
+    /* ignore */
   }
 }

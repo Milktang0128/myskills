@@ -92,10 +92,12 @@ export const api = {
     matrix: () => bridge().invoke(IPC.coverage.matrix) as Promise<CoverageMatrix>,
   },
   sync: {
-    plan: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[] }>) =>
-      bridge().invoke(IPC.sync.plan, { requests }) as Promise<SyncPlan>,
-    execute: (plan: SyncPlan) =>
-      bridge().invoke(IPC.sync.execute, { plan }) as Promise<SyncExecuteResult>,
+    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[] }>) =>
+      bridge().invoke(IPC.sync.plan, { kind: 'sync_from_canonical', requests }) as Promise<SyncPlan>,
+    planPromote: (skillIds: string[]) =>
+      bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', skillIds }) as Promise<SyncPlan>,
+    execute: (token: string) =>
+      bridge().invoke(IPC.sync.execute, { token }) as Promise<SyncExecuteResult>,
     history: (skillId?: string, limit = 50) =>
       bridge().invoke(IPC.sync.history, { skillId, limit }) as Promise<SyncHistoryRow[]>,
     rollback: (historyId: number) =>
@@ -106,5 +108,11 @@ export const api = {
       bridge().on(IPC.events.scanStarted, (d) => cb(d as { startedAt: number })),
     scanFinished: (cb: (data: ScanResult) => void) =>
       bridge().on(IPC.events.scanFinished, (d) => cb(d as ScanResult)),
+    scanPlatformDone: (
+      cb: (data: { platformId: string; index: number; total: number; found: number; skipped: boolean }) => void,
+    ) =>
+      bridge().on(IPC.events.scanPlatformDone, (d) =>
+        cb(d as { platformId: string; index: number; total: number; found: number; skipped: boolean }),
+      ),
   },
 };

@@ -44,6 +44,7 @@ export const IPC = {
   events: {
     scanStarted: 'event:scanStarted',
     scanFinished: 'event:scanFinished',
+    scanPlatformDone: 'event:scanPlatformDone',
   },
 } as const;
 

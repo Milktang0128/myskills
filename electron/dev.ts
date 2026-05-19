@@ -10,13 +10,18 @@ const repoRoot = path.resolve(__dirname, '..');
 
 function compile(): void {
   const tsc = require.resolve('typescript/lib/tsc.js');
-  const result = spawnSync(process.execPath, [tsc, '-p', path.join(repoRoot, 'electron', 'tsconfig.json')], {
+  const r1 = spawnSync(process.execPath, [tsc, '-p', path.join(repoRoot, 'electron', 'tsconfig.json')], {
     cwd: repoRoot,
     stdio: 'inherit',
   });
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
-  }
+  if (r1.status !== 0) process.exit(r1.status ?? 1);
+
+  // Bundle preload so it can run under sandbox:true.
+  const r2 = spawnSync(process.execPath, [path.join(repoRoot, 'electron', 'build-preload.mjs')], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  if (r2.status !== 0) process.exit(r2.status ?? 1);
 }
 
 function launch(): void {

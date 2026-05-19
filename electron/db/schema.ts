@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS skill_locations (
   is_symlink      INTEGER NOT NULL DEFAULT 0,
   is_broken_link  INTEGER NOT NULL DEFAULT 0,
   is_disabled     INTEGER NOT NULL DEFAULT 0,
+  content_hash    TEXT,
   last_seen_at    INTEGER NOT NULL,
   UNIQUE(platform_id, install_path)
 );

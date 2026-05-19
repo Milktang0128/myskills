@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, RefreshCw, AlertTriangle, FileWarning, FolderSearch } from 'lucide-react';
+import { ArrowLeft, RefreshCw, AlertTriangle, FileWarning, FolderSearch, Crown, CloudOff, FileX2 } from 'lucide-react';
 import type { AppStats, Platform, ScanResult } from '@shared/types';
+import { PlatformBadge } from '@/components/platform-badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,17 +21,31 @@ export default function SettingsPage() {
   const [scanning, setScanning] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [bridgeReady, setBridgeReady] = useState(false);
+  const [canonical, setCanonical] = useState<string>('shared');
+  const [savingCanonical, setSavingCanonical] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [pls, st, ls] = await Promise.all([
+    const [pls, st, ls, c] = await Promise.all([
       api.platforms.list(),
       api.settings.stats(),
       api.scan.lastResult(),
+      api.settings.get('canonical_platform'),
     ]);
     setPlatforms(pls);
     setStats(st);
     setLastScan(ls);
+    if (c) setCanonical(c);
   }, []);
+
+  async function saveCanonical(value: string) {
+    setSavingCanonical(true);
+    try {
+      await api.settings.set('canonical_platform', value);
+      setCanonical(value);
+    } finally {
+      setSavingCanonical(false);
+    }
+  }
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -114,6 +129,41 @@ export default function SettingsPage() {
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="mx-auto w-full max-w-3xl space-y-8 p-6">
+          <section className="space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Crown className="h-4 w-4 text-amber-500" />
+              Canonical platform
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              MySkills treats one platform as the source of truth. Sync creates symlinks on
+              other platforms pointing at the canonical copy; promote moves orphans into it.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {platforms.map((p) => {
+                const active = p.id === canonical;
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => saveCanonical(p.id)}
+                    disabled={savingCanonical}
+                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                      active
+                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30'
+                        : 'hover:bg-accent'
+                    }`}
+                  >
+                    {active && <Crown className="h-3.5 w-3.5 text-amber-500" />}
+                    <PlatformBadge platformId={p.id} />
+                    <span>{p.label}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      ({stats?.byPlatform?.[p.id] ?? 0})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           <section className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold">Last scan</h2>
@@ -240,6 +290,8 @@ function Stat({
 function ErrorIcon({ kind }: { kind: string }) {
   if (kind === 'broken_symlink') return <AlertTriangle className="h-3.5 w-3.5 text-destructive" />;
   if (kind === 'missing_frontmatter') return <FileWarning className="h-3.5 w-3.5 text-amber-600" />;
+  if (kind === 'icloud_evicted') return <CloudOff className="h-3.5 w-3.5 text-blue-600" />;
+  if (kind === 'too_large') return <FileX2 className="h-3.5 w-3.5 text-amber-600" />;
   return <FolderSearch className="h-3.5 w-3.5 text-muted-foreground" />;
 }
 
@@ -255,6 +307,10 @@ function labelForKind(kind: string): string {
       return 'Unreadable';
     case 'permission':
       return 'Permission denied';
+    case 'icloud_evicted':
+      return 'iCloud-offloaded (download the folder to fix)';
+    case 'too_large':
+      return 'SKILL.md too large (> 1 MB)';
     default:
       return kind;
   }

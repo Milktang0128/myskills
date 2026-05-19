@@ -15,29 +15,63 @@ export interface ParsedSkill {
   fileCount: number;
 }
 
+export type SkillParseKind =
+  | 'missing_frontmatter'
+  | 'parse_error'
+  | 'unreadable'
+  | 'icloud_evicted'
+  | 'too_large';
+
 export class SkillParseError extends Error {
-  constructor(public kind: 'missing_frontmatter' | 'parse_error' | 'unreadable', msg: string) {
+  constructor(public kind: SkillParseKind, msg: string) {
     super(msg);
   }
 }
 
 const SKILL_MD = 'SKILL.md';
+const ICLOUD_PLACEHOLDER = '.SKILL.md.icloud';
 const EXCERPT_CHARS = 500;
+const SKILL_MD_MAX_BYTES = 1 * 1024 * 1024; // 1 MB hard limit for SKILL.md
+const FILE_COUNT_HARD_CAP = 10_000;
 
 /**
  * Parse a skill directory. Returns null if the directory is not a skill
- * (no SKILL.md), throws SkillParseError for malformed skills.
+ * (no SKILL.md and no iCloud placeholder), throws SkillParseError for
+ * malformed skills or iCloud-evicted ones.
  */
 export function parseSkill(skillDir: string): ParsedSkill | null {
   const skillMdPath = path.join(skillDir, SKILL_MD);
-  let raw: string;
+
+  // Stat first so we can bound reads and detect iCloud eviction explicitly.
+  let stat: fs.Stats;
   try {
-    const stat = fs.statSync(skillMdPath);
-    if (!stat.isFile()) return null;
-    raw = fs.readFileSync(skillMdPath, 'utf-8');
+    stat = fs.statSync(skillMdPath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      // Distinguish "iCloud has evicted SKILL.md" from "not a skill dir".
+      if (hasIcloudPlaceholder(skillDir)) {
+        throw new SkillParseError(
+          'icloud_evicted',
+          `SKILL.md at ${skillDir} is offloaded to iCloud — open the folder in Finder to download it`,
+        );
+      }
+      return null;
+    }
+    throw new SkillParseError('unreadable', `cannot stat ${skillMdPath}: ${(err as Error).message}`);
+  }
+  if (!stat.isFile()) return null;
+  if (stat.size > SKILL_MD_MAX_BYTES) {
+    throw new SkillParseError(
+      'too_large',
+      `SKILL.md at ${skillDir} is ${stat.size} bytes (limit ${SKILL_MD_MAX_BYTES})`,
+    );
+  }
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(skillMdPath, 'utf-8');
+  } catch (err) {
     throw new SkillParseError('unreadable', `cannot read ${skillMdPath}: ${(err as Error).message}`);
   }
 
@@ -49,7 +83,10 @@ export function parseSkill(skillDir: string): ParsedSkill | null {
   }
 
   const fm = (parsed.data ?? {}) as Record<string, unknown>;
-  const name = typeof fm.name === 'string' && fm.name.trim().length > 0 ? fm.name.trim() : null;
+  const rawName = typeof fm.name === 'string' ? fm.name.trim() : '';
+  // Normalize to NFC so macOS NFD filenames and frontmatter NFC text match
+  // under our (name, source_key) identity rule.
+  const name = rawName ? rawName.normalize('NFC') : null;
   if (!name) {
     throw new SkillParseError('missing_frontmatter', `SKILL.md at ${skillDir} is missing required "name" field`);
   }
@@ -86,11 +123,19 @@ function strOrNull(v: unknown): string | null {
   return null;
 }
 
+function hasIcloudPlaceholder(dir: string): boolean {
+  try {
+    return fs.statSync(path.join(dir, ICLOUD_PLACEHOLDER)).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Walk the skill directory to compute size and file count.
- * Bounded depth + follows-symlinks=false to avoid loops or huge external dirs.
+ * Bounded depth + bounded file count + follows-symlinks=false.
  */
-function measureDir(dir: string, depth = 0): { sizeBytes: number; fileCount: number } {
+function measureDir(dir: string, depth = 0, runningCount = 0): { sizeBytes: number; fileCount: number } {
   if (depth > 6) return { sizeBytes: 0, fileCount: 0 };
   let total = 0;
   let count = 0;
@@ -102,14 +147,15 @@ function measureDir(dir: string, depth = 0): { sizeBytes: number; fileCount: num
   }
   for (const entry of entries) {
     if (entry.name.startsWith('.git')) continue;
+    if (entry.name === '.DS_Store') continue;
+    if (runningCount + count >= FILE_COUNT_HARD_CAP) break;
     const full = path.join(dir, entry.name);
     if (entry.isSymbolicLink()) {
-      // count the link itself as a file; don't follow
       count += 1;
       continue;
     }
     if (entry.isDirectory()) {
-      const sub = measureDir(full, depth + 1);
+      const sub = measureDir(full, depth + 1, runningCount + count);
       total += sub.sizeBytes;
       count += sub.fileCount;
       continue;

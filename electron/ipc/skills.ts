@@ -166,15 +166,20 @@ function rowToSkill(r: SkillRow, locations: SkillLocation[], scenarios: Scenario
   };
 }
 
+// 1 MB cap mirrors scanner's SKILL_MD_MAX_BYTES. Anything larger is rejected
+// rather than blocking the main process.
+const BODY_MAX_BYTES = 1 * 1024 * 1024;
+
 function loadBody(skill: Skill): string | null {
-  // Read the most recent live location's SKILL.md to provide full markdown to the renderer.
   const loc = skill.locations.find((l) => !l.isBrokenSymlink) ?? skill.locations[0];
   if (!loc) return null;
   try {
     const fs = require('node:fs') as typeof import('node:fs');
     const path = require('node:path') as typeof import('node:path');
-    const md = fs.readFileSync(path.join(loc.realPath, 'SKILL.md'), 'utf-8');
-    // strip frontmatter for the body view
+    const p = path.join(loc.realPath, 'SKILL.md');
+    const stat = fs.statSync(p);
+    if (!stat.isFile() || stat.size > BODY_MAX_BYTES) return null;
+    const md = fs.readFileSync(p, 'utf-8');
     const m = md.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
     return m ? (m[2] ?? '').trim() : md;
   } catch {

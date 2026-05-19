@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { Scenario } from '@shared/types';
+import { slugify } from '@shared/slug';
 import {
   Dialog,
   DialogContent,
@@ -48,11 +49,11 @@ export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
   }, [open, scenario]);
 
   // Auto-slug from name unless the user has typed in the key field themselves.
+  // Uses the same slugify as the server to avoid client-only invalid keys.
   useEffect(() => {
     if (editing) return;
     if (keyManuallyEdited.current) return;
-    const auto = name.toLowerCase().trim().replace(/[\s/\\]+/g, '-').slice(0, 64);
-    setKey(auto);
+    setKey(slugify(name));
   }, [name, editing]);
 
   async function submit() {

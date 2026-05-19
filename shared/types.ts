@@ -80,7 +80,14 @@ export type SkillScope =
 
 export interface ScanError {
   path: string;
-  kind: 'broken_symlink' | 'missing_frontmatter' | 'parse_error' | 'unreadable' | 'permission';
+  kind:
+    | 'broken_symlink'
+    | 'missing_frontmatter'
+    | 'parse_error'
+    | 'unreadable'
+    | 'permission'
+    | 'icloud_evicted'
+    | 'too_large';
   message: string;
 }
 
@@ -127,13 +134,15 @@ export interface ScenarioImportResult {
 
 /**
  * Per-platform cell in the coverage matrix.
- *   missing       — skill not present on this platform
- *   present       — real directory exists on this platform
- *   symlink       — symlink whose realpath matches a location on another platform
- *   symlink_other — symlink whose realpath does NOT match any tracked location
- *                   (e.g. points outside the configured roots)
- *   broken        — symlink target missing
- *   disabled      — present but moved to .disabled/ on that platform
+ *
+ *   missing        — skill not present on this platform
+ *   present        — real directory exists on this platform
+ *   symlink        — symlink whose realpath matches a location on the canonical
+ *                    platform (the "good" symlink — in sync)
+ *   symlink_other  — symlink whose realpath does NOT match the canonical
+ *                    platform's location (points elsewhere or outside)
+ *   broken         — symlink target missing
+ *   disabled       — present but moved to .disabled/ on that platform
  */
 export type CoverageCellState =
   | 'missing'
@@ -143,12 +152,24 @@ export type CoverageCellState =
   | 'broken'
   | 'disabled';
 
+/**
+ * Drift = how this cell compares to the canonical platform's hash.
+ *   in_sync — same hash as canonical (or this IS canonical, or absent canonical)
+ *   stale   — present but hash differs from canonical (needs replace)
+ *   only_here — canonical doesn't have this skill; this cell is a promote candidate
+ *   no_canonical — canonical platform is configured but skill isn't there;
+ *                   cell IS present somewhere → promote candidate
+ */
+export type CoverageDrift = 'in_sync' | 'stale' | 'only_here' | 'no_canonical';
+
 export interface CoverageCell {
   state: CoverageCellState;
   installPath?: string;
   realPath?: string;
-  /** Platform id of the location this symlink resolves to (when state=symlink). */
+  contentHash?: string | null;
+  /** Platform id this cell's symlink resolves to (when state=symlink/symlink_other). */
   resolvesToPlatformId?: PlatformId;
+  drift?: CoverageDrift;
 }
 
 export interface CoverageRow {
@@ -160,52 +181,98 @@ export interface CoverageRow {
   cells: Record<string, CoverageCell>;
   /** Convenience: which platforms are missing this skill (for "sync gaps" action). */
   missingOn: PlatformId[];
-  /** True if the skill has a `present` cell on the shared pool, the canonical source. */
-  hasSharedSource: boolean;
+  /** True iff the canonical platform has this skill (a real or symlinked entry). */
+  hasCanonicalSource: boolean;
+  /** True if any non-canonical cell's hash differs from canonical. */
+  hasDrift: boolean;
 }
 
 export interface CoverageMatrix {
   platforms: PlatformId[];
+  canonicalPlatform: PlatformId;
   rows: CoverageRow[];
 }
 
 export type CoverageFilter =
   | 'all'
-  | 'gaps'                 // any platform missing
-  | 'shared_not_propagated' // present in shared but missing on at least one of the other platforms
-  | 'orphan'               // present on exactly one platform
-  | 'broken';              // has at least one broken-link cell
+  | 'gaps'              // any non-canonical platform missing the skill
+  | 'orphans'           // canonical doesn't have it but somewhere does
+  | 'drift'             // present on canonical and elsewhere but hashes differ
+  | 'broken';           // has at least one broken-link cell
 
 /* ---------------------------------------------------------------------------
  * MVP-B sync types
+ *
+ * Sync is canonical-driven: there is one "canonical platform" (set in
+ * settings.canonical_platform, default 'shared') whose locations are treated
+ * as the source of truth. Sync produces symlinks on the other platforms that
+ * resolve to the canonical location. Promotion copies an orphan from a
+ * non-canonical platform into the canonical platform and replaces the
+ * original with a symlink.
  * ------------------------------------------------------------------------- */
 
 export type SyncMode = 'symlink' | 'copy';
-export type SyncAction = 'create' | 'skip' | 'replace' | 'conflict';
+
+/**
+ * Each plan item is one filesystem-level action. Composite UX operations
+ * (e.g. "promote orphan to canonical") expand into multiple items the user
+ * confirms together.
+ */
+export type SyncAction =
+  | 'symlink_create'           // create a symlink at target (target is absent or broken)
+  | 'symlink_replace'          // backup existing target dir, then symlink_create
+  | 'copy_to_canonical'        // copy source dir into canonical (promote step 1)
+  | 'skip'                     // already in sync — no FS change
+  | 'conflict';                // user must resolve manually before execute
+
 export type SyncConflictReason =
   | 'target_exists_dir'
   | 'target_exists_symlink_other'
   | 'target_exists_file'
   | 'source_outside_roots'
   | 'target_outside_root'
-  | 'shared_pool_missing'
+  | 'canonical_missing'
+  | 'unsafe_target_name'
+  | 'source_changed_since_plan'
   | 'unreadable';
 
+export type SyncSkipReason = 'already_linked' | 'same_hash';
+
 export interface SyncPlanItem {
-  skillId: string;
+  /** Human-readable label used in dialogs. */
   skillName: string;
+  /** The DB id of the skill this row touches. */
+  skillId: string;
+  /** Operation grouping — useful when one user action expands into multiple items. */
+  opGroupId: string;
+  /** Filesystem-safe basename used for both source and target — comes from the actual source dir basename, not frontmatter. */
+  targetBasename: string;
+
   sourcePlatformId: PlatformId;
+  sourceLocationId: number;
   sourceRealPath: string;
+  /** Identity captured at plan time, verified at execute (TOCTOU defense). */
+  sourceDev: number;
+  sourceIno: number;
+  sourceHash: string | null;
+
   targetPlatformId: PlatformId;
   targetPath: string;
+  targetHash: string | null;
+
   mode: SyncMode;
   action: SyncAction;
-  /** Filled when action is 'conflict' or 'skip' so the UI can explain why. */
-  reason?: SyncConflictReason | 'already_linked' | 'same_hash';
+  reason?: SyncConflictReason | SyncSkipReason;
 }
 
 export interface SyncPlan {
+  /** Opaque, server-issued. Renderer must pass this back to execute. */
+  token: string;
   generatedAt: number;
+  /** Used to drop expired plans. */
+  expiresAt: number;
+  /** The intended high-level user operation, for telemetry/UI. */
+  operation: 'sync_from_canonical' | 'promote_to_canonical';
   items: SyncPlanItem[];
 }
 

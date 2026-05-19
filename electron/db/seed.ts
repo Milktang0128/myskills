@@ -34,11 +34,12 @@ const DEFAULT_SCENARIOS: SeedScenario[] = [
 ];
 
 const DEFAULT_SETTINGS: Array<[string, string]> = [
-  ['schema_version', '1'],
+  ['schema_version', '2'],
   ['theme', 'system'],
   ['auto_scan_on_launch', '1'],
   ['default_sync_mode', 'symlink'],
   ['backup_retention_days', '30'],
+  ['canonical_platform', 'shared'],
 ];
 
 export function seedDefaults(db: Database): void {

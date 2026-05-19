@@ -128,7 +128,12 @@ export function Sidebar({
           }
         >
           {scenarios.length === 0 ? (
-            <div className="px-2 py-1 text-xs text-muted-foreground">No scenarios yet</div>
+            <button
+              onClick={onCreateScenario}
+              className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              No scenarios yet — <span className="underline">create one</span>
+            </button>
           ) : (
             scenarios.map((sc) => (
               <SidebarRow
@@ -147,8 +152,8 @@ export function Sidebar({
 
       <div className="space-y-px border-t p-2">
         <Link
-          href="/coverage"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          href="/"
+          className="flex items-center gap-2 rounded-md bg-primary/5 px-2 py-1.5 text-sm font-medium text-foreground hover:bg-accent"
         >
           <Grid3x3 className="h-4 w-4" />
           Coverage matrix

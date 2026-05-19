@@ -23,9 +23,9 @@ async function createWindow(): Promise<void> {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // sandbox:true would block preload from requiring its sibling files (shared/ipc-channels).
-      // We rely on contextIsolation + nodeIntegration:false + IPC whitelist + CSP for isolation.
-      sandbox: false,
+      // Preload is bundled by electron/build-preload.mjs with esbuild so it has
+      // no `require` of relative siblings, which lets us run under full sandbox.
+      sandbox: true,
       webSecurity: true,
     },
   });

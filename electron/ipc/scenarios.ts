@@ -2,6 +2,7 @@ import { getDb } from '../db';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
 import type { Scenario, ScenarioExport, ScenarioImportResult } from '../../shared/types';
+import { slugify, isValidKey } from '../../shared/slug';
 
 interface ScenarioRow {
   id: number;
@@ -208,7 +209,9 @@ function importScenarios(payload: ScenarioExport): ScenarioImportResult {
         created += 1;
       }
       for (const sk of sc.skills) {
-        const found = findSkill.get(sk.name, sk.sourceKey) as { id: string } | undefined;
+        // NFC normalize matches scanner's identity rule.
+        const nfcName = sk.name.normalize('NFC');
+        const found = findSkill.get(nfcName, sk.sourceKey) as { id: string } | undefined;
         if (!found) {
           notFound.push({ scenarioKey: sc.key, skillName: sk.name, sourceKey: sk.sourceKey });
           continue;
@@ -223,16 +226,3 @@ function importScenarios(payload: ScenarioExport): ScenarioImportResult {
   return { scenariosCreated: created, scenariosMerged: merged, skillsLinked: linked, skillsNotFound: notFound };
 }
 
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .trim()
-    .replace(/[\s/\\]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64);
-}
-
-function isValidKey(s: string): boolean {
-  // Allow unicode letters/numbers, hyphen, underscore — but no slashes/whitespace.
-  return /^[\p{Letter}\p{Number}][\p{Letter}\p{Number}_-]{0,63}$/u.test(s);
-}
