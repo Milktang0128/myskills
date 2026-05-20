@@ -394,6 +394,7 @@ export function DiscoverView({ query, onToast }: Props) {
             <ModeSegmented
               mode={mode}
               aiAvailable={aiAvailable ?? false}
+              queryReady={queryReady}
               onChange={setMode}
             />
           </div>
@@ -547,20 +548,34 @@ function ResultRow({
 }
 
 /**
- * Segmented "Keyword" | "AI" toggle. The AI half is disabled (with a tooltip)
- * when the LLM feature toggle is off or no API key is stored.
+ * Segmented "Keyword" | "AI" toggle. The AI half is disabled in three
+ * cases (most-specific first wins the tooltip):
+ *   1. `aiAvailable` = false → no LLM configured or feature toggle off.
+ *      Tooltip points to Settings.
+ *   2. `queryReady` = false → AI mode reranks search results, so without
+ *      a query there's nothing to rank. (Popular landing always shows in
+ *      keyword mode regardless.) Tooltip explains.
+ *   3. Otherwise → enabled, switching triggers an AI rerank on the next
+ *      search response.
  */
 function ModeSegmented({
   mode,
   aiAvailable,
+  queryReady,
   onChange,
 }: {
   mode: SearchMode;
   aiAvailable: boolean;
+  queryReady: boolean;
   onChange: (m: SearchMode) => void;
 }) {
   const t = useT();
-  const aiTitle = aiAvailable ? t('discover.mode.ai.title.enabled') : t('discover.mode.ai.title.disabled');
+  const aiClickable = aiAvailable && queryReady;
+  const aiTitle = !aiAvailable
+    ? t('discover.mode.ai.title.disabled')
+    : !queryReady
+    ? t('discover.mode.ai.title.needQuery')
+    : t('discover.mode.ai.title.enabled');
   return (
     <div
       role="tablist"
@@ -583,15 +598,15 @@ function ModeSegmented({
       <button
         role="tab"
         aria-selected={mode === 'ai'}
-        disabled={!aiAvailable}
+        disabled={!aiClickable}
         title={aiTitle}
-        onClick={() => aiAvailable && onChange('ai')}
+        onClick={() => aiClickable && onChange('ai')}
         className={cn(
           'flex items-center gap-1 rounded px-2 py-0.5 transition-colors',
-          mode === 'ai' && aiAvailable
+          mode === 'ai' && aiClickable
             ? 'bg-accent text-foreground'
             : 'text-muted-foreground hover:text-foreground',
-          !aiAvailable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
+          !aiClickable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
         )}
       >
         <Sparkles className="h-3 w-3" />

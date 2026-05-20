@@ -222,6 +222,7 @@ export const zh: Dict = {
   'discover.mode.keyword.label': '关键字',
   'discover.mode.ai.title.enabled': '使用已配置的 LLM 进行 AI 排序搜索',
   'discover.mode.ai.title.disabled': '在「设置」中启用 AI 搜索并配置 LLM key',
+  'discover.mode.ai.title.needQuery': '输入关键字后启用 —— AI 模式是对搜索结果重新排序，需要先有搜索内容',
   'discover.preview.installsCount': '{{n}} 次安装',
   'discover.preview.viaSkills': '来自 skills.sh 的预览',
   'discover.preview.installTo.heading': '安装到',
