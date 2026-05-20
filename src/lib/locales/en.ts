@@ -239,7 +239,7 @@ export const en = {
   'discover.mode.keyword.label': 'Keyword',
   'discover.mode.ai.title.enabled': 'AI-ranked search using your configured LLM',
   'discover.mode.ai.title.disabled': 'Enable AI search in Settings + configure LLM key',
-  'discover.mode.ai.title.needQuery': 'Type a query — AI mode reranks search results, it needs something to rank',
+  'discover.mode.ai.title.willEngage': 'AI mode selected — engages once you type a query',
   'discover.preview.installsCount': '{{n}} installs',
   'discover.preview.viaSkills': 'Preview from skills.sh',
   'discover.preview.installTo.heading': 'Install to',

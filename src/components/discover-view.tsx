@@ -852,15 +852,14 @@ function ResultRow({
 }
 
 /**
- * Segmented "Keyword" | "AI" toggle. The AI half is disabled in three
- * cases (most-specific first wins the tooltip):
- *   1. `aiAvailable` = false → no LLM configured or feature toggle off.
- *      Tooltip points to Settings.
- *   2. `queryReady` = false → AI mode reranks search results, so without
- *      a query there's nothing to rank. (Popular landing always shows in
- *      keyword mode regardless.) Tooltip explains.
- *   3. Otherwise → enabled, switching triggers an AI rerank on the next
- *      search response.
+ * Segmented "Keyword" | "AI" toggle. The AI half is disabled in only one
+ * case: `aiAvailable` = false (no LLM configured or feature toggle off).
+ *
+ * `queryReady` is still passed in so the tooltip can hint "type something
+ * to engage AI" — but the button stays clickable. Users intuitively want
+ * to pick the mode BEFORE typing, not after, and the search loop already
+ * falls back to keyword on the popular landing regardless of selection
+ * (see isPopularRun + effectiveMode).
  */
 export function ModeSegmented({
   mode,
@@ -874,11 +873,11 @@ export function ModeSegmented({
   onChange: (m: SearchMode) => void;
 }) {
   const t = useT();
-  const aiClickable = aiAvailable && queryReady;
+  const aiClickable = aiAvailable;
   const aiTitle = !aiAvailable
     ? t('discover.mode.ai.title.disabled')
     : !queryReady
-    ? t('discover.mode.ai.title.needQuery')
+    ? t('discover.mode.ai.title.willEngage')
     : t('discover.mode.ai.title.enabled');
   return (
     <div
