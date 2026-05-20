@@ -1036,20 +1036,42 @@ async function aiRerank(
   query: string,
   candidates: CatalogSearchResult[],
 ): Promise<Array<{ skill: CatalogSearchResult; why: string }>> {
-  // Truncate descriptions so the prompt stays bounded regardless of catalog payloads.
+  // Candidate lines deliberately *omit* installs. The UI shows install
+  // counts in its own column; passing them in the prompt led the model
+  // to (a) repeat numbers redundantly in "why", and (b) hallucinate a
+  // number when it didn't have the exact value cached. Without installs
+  // in the prompt the model focuses on actual semantic relevance.
+  // Descriptions are truncated to keep the prompt bounded.
   const candidateLines = candidates
     .map((c) => {
       const desc = (c.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
-      return `- id=${c.skillId} name=${c.name} installs=${c.installs} description=${desc}`;
+      return `- id=${c.skillId} name=${c.name} description=${desc}`;
     })
     .join('\n');
 
   const systemPrompt =
-    "You are a skill catalog ranker. Given a user's natural-language need and a list of candidate skills (each with id, name, description, installs), return the top 10 most relevant in JSON. For each, include a one-sentence \"why\" explaining the match. Return ONLY valid JSON with this shape:\n" +
+    "You are a skill catalog ranker. Given a user's natural-language need and a list of candidate skills " +
+    "(each with id, name, description), return the top 10 MOST RELEVANT in JSON.\n" +
+    "\n" +
+    "Ranking criteria, in order of importance:\n" +
+    "  1. Direct match on the user's intent (does this skill actually solve their problem?)\n" +
+    "  2. Specificity (a skill that does exactly the thing > a generic skill that might).\n" +
+    "  3. Quality signals in the description (clear purpose, well-scoped, documented).\n" +
+    "Do NOT consider installs — the UI shows install counts separately; they are not passed to you.\n" +
+    "Do NOT invent numbers or facts not present in the candidate's name/description.\n" +
+    "\n" +
+    "For each result include a one-sentence \"why\" that:\n" +
+    "  - Explains HOW this skill matches the user's intent (not its features in general).\n" +
+    "  - Is written IN THE SAME LANGUAGE AS THE USER'S QUERY (Chinese query → Chinese why,\n" +
+    "    English query → English why, etc.).\n" +
+    "  - Is concise (one sentence, no preamble like \"This skill ...\").\n" +
+    "\n" +
+    "Return ONLY valid JSON with this shape:\n" +
     '{ "results": [ { "id": string, "why": string } ] }\n' +
-    "Do not include skills that don't match the user's intent. If fewer than 10 are clearly relevant, return fewer. If none match, return an empty results array.";
+    "Skills that don't actually match the user's intent must be excluded. " +
+    "If fewer than 10 are clearly relevant, return fewer. If none match, return an empty results array.";
 
-  const userPrompt = `${query}\nCandidates:\n${candidateLines}`;
+  const userPrompt = `User query: ${query}\n\nCandidates:\n${candidateLines}`;
 
   const resp = await api.llm.chat({
     messages: [
