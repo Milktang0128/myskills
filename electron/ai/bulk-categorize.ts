@@ -38,8 +38,25 @@ import {
 } from '../../shared/types';
 
 const API_KEY_NAME = 'llm.apiKey';
+
+/**
+ * Per-skill content limits sent to the LLM. These are deliberately generous
+ * relative to the v0 values (200/200) because the first end-to-end test
+ * showed the model skipping rows it couldn't read enough of (e.g.
+ * "reader-audit" — abstract name, needed the body to disambiguate).
+ *
+ * Budget math for deepseek-v4-pro (128K context window):
+ *   batch (20) × (~50 name + 400 desc + 600 body) ≈ 21K chars ≈ 7K tokens
+ *   + system prompt (~2K) + existing scenarios (~500) = ~10K input tokens
+ *   + 4K output + ~15K hidden reasoning = ~30K total per batch
+ *   → ~25% of context, comfortably within budget.
+ *
+ * If we ever swap to a smaller-context model, lower MAX_PER_BATCH first.
+ */
+const MAX_DESCRIPTION_CHARS = 400;
+const MAX_BODY_CHARS = 600;
 /** How many skills to send to the LLM in one batch. Beyond this we chunk. */
-const MAX_PER_BATCH = 25;
+const MAX_PER_BATCH = 20;
 /** Hard upper bound on a single bulk call (UI should prompt before going huge). */
 const MAX_TOTAL_SKILLS = 200;
 
@@ -131,6 +148,12 @@ export async function buildBulkPlan(skillIds: string[]): Promise<BulkCategorizeP
     const proposedSoFar = Array.from(accumulatedProposed.values());
 
     const prompt = buildPrompt(scenarios, proposedSoFar, batch);
+    // Log the size so we can spot creeping prompt bloat over time.
+    // Rough tokens estimate: chars / 3 for mixed CJK + English.
+    const inputChars = prompt.system.length + prompt.user.length;
+    console.log(
+      `[ai/bulk] batch=${batch.length} inputChars=${inputChars} (~${Math.round(inputChars / 3)} tokens)`,
+    );
     const res = await client.chat({
       messages: [
         { role: 'system', content: prompt.system },
@@ -377,8 +400,8 @@ function buildPrompt(
 
   const skillsBlock = batch
     .map((s) => {
-      const desc = (s.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
-      const body = (s.body_excerpt ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      const desc = (s.description ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_DESCRIPTION_CHARS);
+      const body = (s.body_excerpt ?? '').replace(/\s+/g, ' ').trim().slice(0, MAX_BODY_CHARS);
       return `- skillId=${s.id}\n  name=${s.name}\n  description=${desc}\n  body=${body}`;
     })
     .join('\n');
