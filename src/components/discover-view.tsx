@@ -625,6 +625,8 @@ function PreviewDrawer({
   onInstall: () => void;
 }) {
   const t = useT();
+  const installDisabled =
+    busy || selectedPlatforms.size === 0 || enabledPlatforms.length === 0;
   return (
     <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
       <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
@@ -638,16 +640,36 @@ function PreviewDrawer({
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="space-y-5 p-5">
-          <header className="space-y-2">
-            <h2 className="text-base font-semibold tracking-tight">{result.name}</h2>
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">
-                {result.source}
-              </span>
-              <span>·</span>
-              <span>{t('discover.preview.installsCount', { n: formatInstalls(result.installs) })}</span>
-              <span>·</span>
-              <span>{t('discover.preview.viaSkills')}</span>
+          <header className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1 space-y-2">
+                <h2 className="text-base font-semibold tracking-tight">{result.name}</h2>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">
+                    {result.source}
+                  </span>
+                  <span>·</span>
+                  <span>{t('discover.preview.installsCount', { n: formatInstalls(result.installs) })}</span>
+                  <span>·</span>
+                  <span>{t('discover.preview.viaSkills')}</span>
+                </div>
+              </div>
+              {/* Header-level install CTA. Mirrors the footer button so users
+                  reading SKILL.md don't have to scroll back down to act.
+                  Disabled state matches the footer; both wire to the same
+                  handler. */}
+              <Button
+                size="sm"
+                onClick={onInstall}
+                disabled={installDisabled}
+                className="shrink-0"
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {selectedPlatforms.size === 0
+                  ? t('discover.preview.installButton')
+                  : t('discover.preview.installButton') +
+                    ` · ${selectedPlatforms.size}`}
+              </Button>
             </div>
           </header>
 
