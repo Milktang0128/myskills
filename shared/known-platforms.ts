@@ -16,7 +16,10 @@
  *   - codex      — OpenAI Codex CLI
  *   - opencode   — sst/opencode
  *   - openclaw   — OpenClaw
- *   - shared     — the cross-tool pool convention (`~/.agents/skills`)
+ *   - shared     — the cross-tool user agents folder (`~/.agents/skills`)
+ *                  (DB id is still `shared`; label/description rebranded
+ *                  away from "Shared Pool" because users found it opaque.
+ *                  The convention itself is shared by OpenClaw and others.)
  *
  * # What's intentionally NOT here
  *
@@ -68,8 +71,9 @@ export const KNOWN_PLATFORMS: KnownPlatformCandidate[] = [
   },
   {
     id: 'shared',
-    label: 'Shared Pool',
+    label: 'User Agents Folder',
     defaultDir: '~/.agents/skills',
-    description: 'Cross-tool pool that other platforms symlink to',
+    description:
+      'User-scoped folder shared across agent tools — OpenClaw and others read from here by convention',
   },
 ];

@@ -221,6 +221,11 @@ function PlatformsStep() {
   const [candidates, setCandidates] = useState<ProbedCandidate[]>([]);
   const [registered, setRegistered] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Custom platform form state. Hidden by default — power-user feature.
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customForm, setCustomForm] = useState({ id: '', label: '', skillsDir: '' });
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [customBusy, setCustomBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -256,6 +261,25 @@ function PlatformsStep() {
     }
   }
 
+  async function submitCustom() {
+    setCustomError(null);
+    setCustomBusy(true);
+    try {
+      await api.platforms.create({
+        id: customForm.id.trim(),
+        label: customForm.label.trim(),
+        skillsDir: customForm.skillsDir.trim(),
+      });
+      setCustomForm({ id: '', label: '', skillsDir: '' });
+      setCustomOpen(false);
+      await refresh();
+    } catch (err) {
+      setCustomError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCustomBusy(false);
+    }
+  }
+
   const enabledCount = candidates.filter((c) => registered.has(c.id) || c.alreadyRegistered).length;
 
   return (
@@ -279,6 +303,9 @@ function PlatformsStep() {
               : cand.skillCount === 1
               ? t('onboarding.platforms.found', { count: cand.skillCount })
               : t('onboarding.platforms.foundMany', { count: cand.skillCount });
+            // Localized display label: built-in generic concepts like 'shared'
+            // get translated. Product-name platforms keep their English name.
+            const displayLabel = cand.id === 'shared' ? t('platform.shared.label') : cand.label;
             return (
               <div
                 key={cand.id}
@@ -289,7 +316,7 @@ function PlatformsStep() {
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 text-sm font-medium">
-                    {cand.label}
+                    {displayLabel}
                     {isEnabled && (
                       <Check className="h-3.5 w-3.5 text-emerald-600" aria-label={t('onboarding.platforms.enabled')} />
                     )}
@@ -318,6 +345,85 @@ function PlatformsStep() {
           {enabledCount === 0 && !loading && (
             <p className="text-center text-xs text-amber-600">{t('onboarding.platforms.none')}</p>
           )}
+
+          {/* Custom platform expander — power-user escape hatch for tools
+              not in KNOWN_PLATFORMS. Hidden by default so the page stays
+              uncluttered for the common case. */}
+          <div className="pt-2">
+            {!customOpen ? (
+              <button
+                type="button"
+                onClick={() => setCustomOpen(true)}
+                className="w-full rounded-lg border border-dashed bg-background/40 px-3 py-2 text-center text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:bg-accent/30 hover:text-foreground"
+              >
+                {t('onboarding.platforms.custom.expand')}
+              </button>
+            ) : (
+              <div className="space-y-3 rounded-lg border bg-background px-3 py-3">
+                <div>
+                  <p className="text-xs font-medium">{t('onboarding.platforms.custom.intro')}</p>
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+                    {t('onboarding.platforms.custom.hint')}
+                  </p>
+                </div>
+                <div className="grid grid-cols-[80px_1fr] items-center gap-2">
+                  <Label htmlFor="ob-cp-id" className="text-xs">{t('onboarding.platforms.custom.id')}</Label>
+                  <Input
+                    id="ob-cp-id"
+                    value={customForm.id}
+                    onChange={(e) => setCustomForm({ ...customForm, id: e.target.value })}
+                    placeholder={t('onboarding.platforms.custom.idPlaceholder')}
+                    className="h-8 font-mono text-xs"
+                  />
+                  <Label htmlFor="ob-cp-label" className="text-xs">{t('onboarding.platforms.custom.label')}</Label>
+                  <Input
+                    id="ob-cp-label"
+                    value={customForm.label}
+                    onChange={(e) => setCustomForm({ ...customForm, label: e.target.value })}
+                    placeholder={t('onboarding.platforms.custom.labelPlaceholder')}
+                    className="h-8 text-xs"
+                  />
+                  <Label htmlFor="ob-cp-dir" className="text-xs">{t('onboarding.platforms.custom.dir')}</Label>
+                  <Input
+                    id="ob-cp-dir"
+                    value={customForm.skillsDir}
+                    onChange={(e) => setCustomForm({ ...customForm, skillsDir: e.target.value })}
+                    placeholder={t('onboarding.platforms.custom.dirPlaceholder')}
+                    className="h-8 font-mono text-xs"
+                  />
+                </div>
+                {customError && (
+                  <p className="text-[11px] text-destructive break-all">{customError}</p>
+                )}
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setCustomOpen(false);
+                      setCustomError(null);
+                      setCustomForm({ id: '', label: '', skillsDir: '' });
+                    }}
+                    disabled={customBusy}
+                  >
+                    {t('onboarding.platforms.custom.collapse')}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={submitCustom}
+                    disabled={
+                      customBusy ||
+                      !customForm.id.trim() ||
+                      !customForm.label.trim() ||
+                      !customForm.skillsDir.trim()
+                    }
+                  >
+                    {customBusy ? t('onboarding.platforms.custom.adding') : t('onboarding.platforms.custom.add')}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -368,6 +474,11 @@ function CanonicalStep() {
       <div className="space-y-2">
         {platforms.map((p) => {
           const active = p.id === canonical;
+          // Same localization trick as the wizard's platforms step — the
+          // built-in 'shared' platform's label is shown in the user's locale.
+          // The DB label is left untouched (migration v7 already updates
+          // legacy "Shared Pool" rows to the new English default).
+          const displayLabel = p.id === 'shared' ? t('platform.shared.label') : p.label;
           return (
             <button
               key={p.id}
@@ -389,7 +500,7 @@ function CanonicalStep() {
                 {active && <Check className="h-2.5 w-2.5 text-white" />}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{p.label}</div>
+                <div className="text-sm font-medium">{displayLabel}</div>
                 <div className="font-mono text-[10px] text-muted-foreground truncate">{p.skillsDir}</div>
               </div>
               <span className="shrink-0 text-[11px] text-muted-foreground">

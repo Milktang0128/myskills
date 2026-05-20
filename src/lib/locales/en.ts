@@ -577,10 +577,29 @@ export const en = {
   'onboarding.platforms.enable': 'Enable',
   'onboarding.platforms.none': 'No platforms enabled yet — at least one is recommended.',
   'onboarding.platforms.scanning': 'Probing default paths…',
+  'onboarding.platforms.custom.expand': '+ Add another platform',
+  'onboarding.platforms.custom.collapse': 'Cancel',
+  'onboarding.platforms.custom.intro': 'Using a tool not in the list? Paste its SKILL.md folder below.',
+  'onboarding.platforms.custom.hint': 'Hidden directories (like ~/.foo/) don\'t show in macOS file pickers — type the path directly.',
+  'onboarding.platforms.custom.id': 'ID',
+  'onboarding.platforms.custom.idPlaceholder': 'e.g. work_skills',
+  'onboarding.platforms.custom.label': 'Display name',
+  'onboarding.platforms.custom.labelPlaceholder': 'e.g. Work Skills',
+  'onboarding.platforms.custom.dir': 'Skills folder',
+  'onboarding.platforms.custom.dirPlaceholder': '~/path/to/skills',
+  'onboarding.platforms.custom.add': 'Add platform',
+  'onboarding.platforms.custom.adding': 'Adding…',
+
+  // Localized labels for known platforms (used in onboarding wizard).
+  // For built-in platforms whose name is a generic concept (not a product
+  // name), the wizard renders this i18n string instead of the DB label.
+  // Product-name platforms (Claude Code, Codex, OpenCode, OpenClaw) use
+  // their DB label verbatim.
+  'platform.shared.label': 'User Agents Folder',
 
   'onboarding.canonical.title': 'Pick a canonical platform',
   'onboarding.canonical.subtitle': 'The canonical platform is the source of truth. Sync creates symlinks on other platforms pointing at it, so all your tools see the same file.',
-  'onboarding.canonical.sharedHint': 'Shared Pool is the safest default — your tools see symlinks into a neutral folder.',
+  'onboarding.canonical.sharedHint': 'User Agents Folder is the safest default — your tools all see symlinks into a neutral folder.',
   'onboarding.canonical.skillsLabel': '{{count}} skills',
 
   'onboarding.llm.title': 'Connect a language model (optional)',

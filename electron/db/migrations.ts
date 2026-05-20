@@ -94,6 +94,21 @@ const MIGRATIONS: Migration[] = [
       db.prepare("DELETE FROM settings WHERE key = 'schema_version'").run();
     },
   },
+  {
+    version: 7,
+    name: 'rename_shared_pool_label',
+    up: (db) => {
+      // Rebrand the built-in `shared` platform's label from "Shared Pool" to
+      // "User Agents Folder" — the old name was MySkills-internal jargon,
+      // the new one matches the cross-tool convention (OpenClaw etc. call it
+      // "Personal/User agent skills"). Only update DBs that still hold the
+      // original label; any user customization (e.g. "我的共享池") is preserved.
+      // The DB `id` stays 'shared' so saved data isn't touched.
+      db.prepare(
+        "UPDATE platforms SET label = 'User Agents Folder' WHERE id = 'shared' AND label = 'Shared Pool'",
+      ).run();
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

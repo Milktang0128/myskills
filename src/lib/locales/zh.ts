@@ -579,10 +579,27 @@ export const zh: Dict = {
   'onboarding.platforms.enable': '启用',
   'onboarding.platforms.none': '尚未启用任何平台 —— 建议至少启用一个。',
   'onboarding.platforms.scanning': '正在探测默认路径…',
+  'onboarding.platforms.custom.expand': '+ 添加其他平台',
+  'onboarding.platforms.custom.collapse': '取消',
+  'onboarding.platforms.custom.intro': '用了不在列表里的工具？直接粘贴它的 SKILL.md 目录路径：',
+  'onboarding.platforms.custom.hint': '隐藏目录（如 ~/.foo/）在 macOS 文件选择器里看不到，请直接输入完整路径。',
+  'onboarding.platforms.custom.id': 'ID',
+  'onboarding.platforms.custom.idPlaceholder': '例如：work_skills',
+  'onboarding.platforms.custom.label': '显示名',
+  'onboarding.platforms.custom.labelPlaceholder': '例如：Work Skills',
+  'onboarding.platforms.custom.dir': '技能目录',
+  'onboarding.platforms.custom.dirPlaceholder': '~/path/to/skills',
+  'onboarding.platforms.custom.add': '添加平台',
+  'onboarding.platforms.custom.adding': '添加中…',
+
+  // 已知平台的本地化标签（仅在 onboarding 向导中替换）。
+  // 通用概念类平台（如 shared）使用 i18n 文案；产品名类平台
+  // （Claude Code、Codex、OpenCode、OpenClaw）保持英文原名。
+  'platform.shared.label': '用户级 Agent 文件夹',
 
   'onboarding.canonical.title': '选定核心库平台',
   'onboarding.canonical.subtitle': '核心库平台是唯一来源。同步会让其他平台通过软链接指向它，让所有工具看到同一份文件。',
-  'onboarding.canonical.sharedHint': 'Shared Pool 是最稳妥的默认选择 —— 各工具都通过软链接看到这个中立目录。',
+  'onboarding.canonical.sharedHint': '用户级 Agent 文件夹是最稳妥的默认选择 —— 各工具都通过软链接看到这个中立目录。',
   'onboarding.canonical.skillsLabel': '{{count}} 个技能',
 
   'onboarding.llm.title': '连接一个大语言模型（可选）',
