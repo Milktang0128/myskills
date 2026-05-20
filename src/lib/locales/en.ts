@@ -659,7 +659,7 @@ export const en = {
   // Dialog
   'bulkCat.dialog.title': 'AI categorization preview',
   'bulkCat.dialog.subtitle':
-    'Review and edit. Nothing is applied until you click "Apply".',
+    'Scenarios are just labels — applying won\'t touch your skill files.',
   'bulkCat.intentLabel': 'Understood as:',
   'bulkCat.newScenarios': 'Suggested new scenarios',
   'bulkCat.newScenarios.help':

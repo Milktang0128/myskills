@@ -356,20 +356,20 @@ function BulkCatBanner({
     );
   }
   return (
-    <div className="border-b bg-violet-50/50 px-4 py-2 dark:bg-violet-950/20">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <button
-            onClick={onClick}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-700 hover:text-violet-900 dark:text-violet-300 dark:hover:text-violet-100"
-          >
-            ✨ {t('bulkCat.cta', { count })}
-          </button>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            {t('bulkCat.helper')}
-          </p>
-        </div>
+    <div className="flex items-center justify-between gap-3 border-b bg-violet-50/50 px-4 py-2.5 dark:bg-violet-950/20">
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] text-muted-foreground">
+          {t('bulkCat.helper')}
+        </p>
       </div>
+      {/* Solid violet button so the CTA reads unambiguously as actionable.
+          The earlier text-only link form blended with the helper copy. */}
+      <button
+        onClick={onClick}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1"
+      >
+        ✨ {t('bulkCat.cta', { count })}
+      </button>
     </div>
   );
 }

@@ -655,7 +655,7 @@ export const zh: Dict = {
 
   // 弹窗
   'bulkCat.dialog.title': 'AI 分类预览',
-  'bulkCat.dialog.subtitle': '可逐条修改。点击「应用」之前不会改动任何数据。',
+  'bulkCat.dialog.subtitle': '场景只是分类标签，不会对数据做任何改动。',
   'bulkCat.intentLabel': '理解为：',
   'bulkCat.newScenarios': '建议新增的场景',
   'bulkCat.newScenarios.help':
