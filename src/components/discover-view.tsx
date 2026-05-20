@@ -642,10 +642,30 @@ export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }
                 empty hint anymore — opening Discover always fires the popular
                 seed, so the user either sees rows or sees a loading spinner. */}
             {loading && results.length === 0 ? (
-              <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {statusLine}
-              </div>
+              <>
+                <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span>{statusLine}</span>
+                </div>
+                {/* Skeleton rows give the layout a stable shape while the
+                    request is in flight — better than a single spinner in
+                    an otherwise blank pane. */}
+                <ul className="space-y-2 px-1 pt-2" aria-hidden="true">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <li
+                      key={i}
+                      className="rounded-md border bg-background px-3 py-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="h-3.5 w-40 animate-pulse rounded bg-muted/60" />
+                        <div className="ml-auto h-3 w-14 animate-pulse rounded bg-muted/40" />
+                      </div>
+                      <div className="mt-2 h-3 w-24 animate-pulse rounded bg-muted/40" />
+                      <div className="mt-2 h-3 w-2/3 animate-pulse rounded bg-muted/40" />
+                    </li>
+                  ))}
+                </ul>
+              </>
             ) : results.length === 0 && !error ? (
               // Empty after a real search — distinguish from popular failure
               // (which is rare; if popular returns 0, status line says so).
