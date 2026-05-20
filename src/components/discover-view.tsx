@@ -44,6 +44,74 @@ const AI_RESULT_LIMIT = 10;
 const POPULAR_SEED_QUERY = 'skill';
 /** Cap on how many rows we eagerly enrich with descriptions per response. */
 const ENRICH_LIMIT = 10;
+/**
+ * Cap for the pre-rerank description enrichment in AI mode. Bigger than
+ * ENRICH_LIMIT because rerank reads more rows than the user displays — we
+ * want the LLM to have descriptions on ~3x the eventual visible rows so it
+ * can compare and pick best, not just shuffle the visible 10.
+ */
+const AI_RERANK_ENRICH_LIMIT = 30;
+/** Cap on rows sent to Phase 3 rerank. Keeps the prompt size predictable. */
+const AI_RERANK_CANDIDATE_LIMIT = 100;
+/** Pipeline result cache TTL (ms). Same query in this window skips all LLM calls. */
+const PIPELINE_CACHE_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Cached AI pipeline output, keyed by normalized query. Module-level so it
+ * survives DiscoverView unmount/remount (user clicking between Coverage and
+ * Discover). Tab-scoped — the cache resets on page reload, which is fine
+ * for an internal acceleration; description data already lives in the DB.
+ */
+interface CachedPipeline {
+  skills: CatalogSearchResult[];
+  why: Record<string, string>;
+  ranked: boolean;
+  intent: string | null;
+  expiresAt: number;
+}
+const pipelineCache = new Map<string, CachedPipeline>();
+
+function normalizeQuery(q: string): string {
+  return q.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function readPipelineCache(q: string): CachedPipeline | null {
+  const key = normalizeQuery(q);
+  const entry = pipelineCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    pipelineCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function writePipelineCache(q: string, value: Omit<CachedPipeline, 'expiresAt'>): void {
+  const key = normalizeQuery(q);
+  pipelineCache.set(key, { ...value, expiresAt: Date.now() + PIPELINE_CACHE_TTL_MS });
+}
+
+/**
+ * Heuristic: skip Phase 1 (intent decompose) when the user's query is
+ * already a short English term. Three tests must all pass to skip:
+ *   - no CJK / Korean characters present (those need translation)
+ *   - ≤3 whitespace-separated tokens (long sentences benefit from
+ *     keyword extraction)
+ *   - each token is plain ASCII letters/digits/hyphens
+ *
+ * When true, the pipeline uses the raw query as a single keyword and
+ * jumps straight to Phase 2, saving one LLM round-trip (~3-5s with
+ * reasoning models) for the very common "git commit" / "vercel deploy"
+ * style query.
+ */
+function shouldSkipDecompose(query: string): boolean {
+  if (/[一-鿿㐀-䶿぀-ゟ゠-ヿ가-힯]/.test(query)) {
+    return false;
+  }
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 3) return false;
+  return tokens.every((t) => /^[A-Za-z0-9._-]+$/.test(t));
+}
 
 export function DiscoverView({ query, onToast }: Props) {
   const t = useT();
@@ -54,12 +122,21 @@ export function DiscoverView({ query, onToast }: Props) {
    * Which phase of an in-flight search is currently running. Drives the
    * status-line copy so users can tell whether the LLM is still thinking
    * vs the keyword catalog is still responding. AI mode advances through:
-   *   keyword          (initial direct catalog hit, if any)
-   *   ai-understanding (Phase 1: decompose user intent into keywords)
-   *   ai-multisearch   (Phase 2: parallel skills.sh fetches per keyword)
-   *   ai-ranking       (Phase 3: rerank the union against original intent)
+   *   keyword           (initial direct catalog hit, if any)
+   *   ai-understanding  (Phase 1: decompose user intent into keywords)
+   *   ai-multisearch    (Phase 2: parallel skills.sh fetches per keyword)
+   *   ai-enriching      (Phase 2.5: fetch descriptions so Phase 3 has context)
+   *   ai-sorting        (Phase 3 in progress, union already on screen — used
+   *                      when `results` is non-empty during ai-ranking)
+   *   ai-ranking        (Phase 3 starting before any results visible)
    */
-  type LoadingPhase = 'keyword' | 'ai-understanding' | 'ai-multisearch' | 'ai-ranking';
+  type LoadingPhase =
+    | 'keyword'
+    | 'ai-understanding'
+    | 'ai-multisearch'
+    | 'ai-enriching'
+    | 'ai-sorting'
+    | 'ai-ranking';
   const [loadingPhase, setLoadingPhase] = useState<LoadingPhase | null>(null);
   /**
    * Counters for the multi-search phase, so the status line can read
@@ -197,32 +274,162 @@ export function DiscoverView({ query, onToast }: Props) {
         let finalResults: CatalogSearchResult[] = [];
 
         if (effectiveMode === 'ai') {
-          // ── 3-phase AI pipeline ──────────────────────────────────────
-          // Phase 1: decompose user intent into English search terms.
-          // Phase 2: parallel keyword searches against skills.sh.
-          // Phase 3: rerank the union against the original (possibly
-          //          non-English) intent + add per-row "why" rationale.
-          // Any phase that fails falls back gracefully: a Phase 1 failure
-          // skips straight to a single direct search; a Phase 3 failure
-          // shows the unranked union with a toast.
-          const aiOutcome = await runAiSearch(
-            effectiveQuery,
-            mySeq,
-            searchSeqRef,
-            {
-              onPhase: setLoadingPhase,
-              onIntent: setAiIntent,
-              onKeywordCount: setAiKeywordCount,
-              onCandidateCount: setAiCandidateCount,
-            },
-          );
-          if (searchSeqRef.current !== mySeq) return;
-          if (aiOutcome.fallbackToast) onToast(aiOutcome.fallbackToast);
-          finalResults = aiOutcome.skills;
-          setResults(finalResults);
-          setAiWhy(aiOutcome.why);
-          setAiRanked(aiOutcome.ranked);
-          setIsPopular(false);
+          // ── AI pipeline ──────────────────────────────────────────────
+          // Optimization stack:
+          //   0. Cache: same query in last 30min → instant.
+          //   1. Decompose (skipped for short English queries — heuristic).
+          //   2. Parallel multi-search over keywords.
+          //   3. Progressive: union shown immediately by installs while
+          //      Phase 4/5 run, so user sees something at ~1s.
+          //   4. Enrich top-30 descriptions BEFORE rerank (so the LLM has
+          //      real context, not just names).
+          //   5. Rerank top-100 against original intent → final order + why.
+
+          // Step 0 — cache check
+          const cached = readPipelineCache(effectiveQuery);
+          if (cached) {
+            finalResults = cached.skills;
+            setResults(cached.skills);
+            setAiWhy(cached.why);
+            setAiRanked(cached.ranked);
+            setAiIntent(cached.intent);
+            setIsPopular(false);
+            // Descriptions are already on cached.skills, no extra enrich needed.
+          } else {
+            // Step 1 — decompose (or skip)
+            let intent = '';
+            let keywords: string[];
+            if (shouldSkipDecompose(effectiveQuery)) {
+              keywords = [effectiveQuery];
+            } else {
+              setLoadingPhase('ai-understanding');
+              try {
+                const decomposed = await aiDecomposeIntent(effectiveQuery);
+                if (searchSeqRef.current !== mySeq) return;
+                intent = decomposed.intent;
+                keywords =
+                  decomposed.keywords.length > 0 ? decomposed.keywords : [effectiveQuery];
+                setAiIntent(intent || null);
+                setAiKeywordCount(keywords.length);
+              } catch {
+                keywords = [effectiveQuery];
+              }
+            }
+
+            // Step 2 — multi-search
+            setLoadingPhase('ai-multisearch');
+            setAiKeywordCount(keywords.length);
+            const perSearch = await Promise.all(
+              keywords.map((kw) =>
+                api.catalog.search(kw, AI_PER_KEYWORD_LIMIT).catch(() => null),
+              ),
+            );
+            if (searchSeqRef.current !== mySeq) return;
+            const seenCands = new Set<string>();
+            const union: CatalogSearchResult[] = [];
+            for (const resp of perSearch) {
+              if (!resp) continue;
+              for (const s of resp.skills) {
+                const key = `${s.source}\x00${s.skillId}`;
+                if (seenCands.has(key)) continue;
+                seenCands.add(key);
+                union.push(s);
+              }
+            }
+            setAiCandidateCount(union.length);
+
+            if (union.length === 0) {
+              finalResults = [];
+              setResults([]);
+              setAiWhy({});
+              setAiRanked(false);
+              setIsPopular(false);
+            } else {
+              // Step 3 — progressive: show union sorted by installs
+              // immediately so the user has something to look at while
+              // Phase 4 + 5 run. The list will reorder when rerank lands.
+              const provisional = [...union]
+                .sort((a, b) => b.installs - a.installs)
+                .slice(0, AI_RESULT_LIMIT);
+              setResults(provisional);
+              setAiWhy({});
+              setAiRanked(false);
+              setIsPopular(false);
+
+              // Step 4 — enrich descriptions for the top N candidates
+              // BEFORE rerank, so the LLM sees real text and not just
+              // names. Updates the displayed provisional list in-place
+              // so descriptions appear while waiting on rerank.
+              setLoadingPhase('ai-enriching');
+              const toEnrich = union.slice(0, AI_RERANK_ENRICH_LIMIT);
+              try {
+                const enriched = await api.catalog.enrichDescriptions(
+                  toEnrich.map((s) => ({ source: s.source, skillId: s.skillId })),
+                );
+                if (searchSeqRef.current !== mySeq) return;
+                const descMap = new Map<string, string | null>();
+                for (const e of enriched) {
+                  descMap.set(`${e.source}\x00${e.skillId}`, e.description);
+                }
+                // Mutate union descriptions for rerank input.
+                for (const c of union) {
+                  const d = descMap.get(`${c.source}\x00${c.skillId}`);
+                  if (typeof d === 'string' && d.length > 0 && !c.description) {
+                    c.description = d;
+                  }
+                }
+                // Reflect into the visible list too.
+                setResults((prev) =>
+                  prev.map((r) => {
+                    const d = descMap.get(`${r.source}\x00${r.skillId}`);
+                    if (typeof d === 'string' && d.length > 0 && !r.description) {
+                      return { ...r, description: d };
+                    }
+                    return r;
+                  }),
+                );
+              } catch {
+                // Enrich is best-effort; continue with names alone.
+              }
+
+              // Step 5 — rerank with the richer candidate descriptions
+              setLoadingPhase('ai-sorting');
+              try {
+                const ranked = await aiRerank(
+                  effectiveQuery,
+                  union.slice(0, AI_RERANK_CANDIDATE_LIMIT),
+                );
+                if (searchSeqRef.current !== mySeq) return;
+                if (ranked.length === 0) {
+                  finalResults = provisional;
+                  setResults(finalResults);
+                  setAiWhy({});
+                  setAiRanked(false);
+                } else {
+                  finalResults = ranked.map((r) => r.skill);
+                  const whyMap = Object.fromEntries(
+                    ranked.map((r) => [r.skill.skillId, r.why]),
+                  );
+                  setResults(finalResults);
+                  setAiWhy(whyMap);
+                  setAiRanked(true);
+                  writePipelineCache(effectiveQuery, {
+                    skills: finalResults,
+                    why: whyMap,
+                    ranked: true,
+                    intent: intent || null,
+                  });
+                }
+              } catch (err) {
+                console.error('AI rerank failed', err);
+                finalResults = provisional;
+                setResults(finalResults);
+                setAiWhy({});
+                setAiRanked(false);
+                onToast(t('discover.ai.fallback'));
+              }
+            }
+          }
         } else {
           // ── Keyword mode: direct search, no LLM ──────────────────────
           const resp = await api.catalog.search(effectiveQuery, undefined);
@@ -380,16 +587,21 @@ export function DiscoverView({ query, onToast }: Props) {
   }
 
   // Status-line copy. Five cases, in priority order:
-  // Status-line copy. AI mode now goes through 3 phases (understand →
-  // multi-search → rank), each with its own status. Priority order:
-  //   loading + popular         → "Loading popular skills…"
-  //   loading + ai-understanding → "AI is reading your intent…"
-  //   loading + ai-multisearch   → "Searching N angles…"
-  //   loading + ai-ranking       → "AI is picking the best of N matches…"
-  //   loading + keyword          → "Searching catalog…"
-  //   error                      → friendly error
-  //   isPopular + done           → "Popular on skills.sh"
-  //   search + done              → "{n} result(s)"
+  // Status-line copy. AI mode goes through 5 progressive phases; each one
+  // has its own copy so the user knows what's happening and when.
+  // Priority order:
+  //   loading + popular           → "Loading popular skills…"
+  //   loading + ai-understanding  → "AI is reading your intent…"
+  //   loading + ai-multisearch    → "Searching N angles…"
+  //   loading + ai-enriching      → "Loading descriptions for AI to read…"
+  //   loading + ai-sorting        → "Showing N candidates — AI is reordering…"
+  //                                 (provisional results already on screen)
+  //   loading + ai-ranking        → "AI is picking the best of N matches…"
+  //                                 (no provisional results yet)
+  //   loading + keyword           → "Searching catalog…"
+  //   error                       → friendly error
+  //   isPopular + done            → "Popular on skills.sh"
+  //   search + done               → "{n} result(s)"
   const statusLine = loading
     ? isPopular
       ? t('discover.status.popularLoading')
@@ -397,6 +609,10 @@ export function DiscoverView({ query, onToast }: Props) {
       ? t('discover.status.aiUnderstanding')
       : loadingPhase === 'ai-multisearch'
       ? t('discover.status.aiMultiSearch', { count: aiKeywordCount })
+      : loadingPhase === 'ai-enriching'
+      ? t('discover.status.aiEnriching')
+      : loadingPhase === 'ai-sorting'
+      ? t('discover.status.aiSorting', { count: aiCandidateCount })
       : loadingPhase === 'ai-ranking'
       ? aiCandidateCount > 0
         ? t('discover.status.aiFiltering', { count: aiCandidateCount })
@@ -814,139 +1030,9 @@ function PreviewDrawer({
 // helpers
 // ---------------------------------------------------------------------------
 
-/** Outcome of a 3-phase AI search run, surfaced to the caller. */
-interface AiSearchOutcome {
-  skills: CatalogSearchResult[];
-  why: Record<string, string>;
-  /** True if Phase 3 (rerank) produced an explicit ranking — drives the
-   *  "AI ranked" badge in the result list. */
-  ranked: boolean;
-  /** If the pipeline degraded (e.g. Phase 3 failed), we still surface
-   *  something — this carries the toast message to show after. */
-  fallbackToast?: string;
-}
-
-/** Caller-side seq guard + phase callbacks for `runAiSearch`. */
-interface AiSearchHooks {
-  onPhase: (phase: 'ai-understanding' | 'ai-multisearch' | 'ai-ranking') => void;
-  onIntent: (intent: string | null) => void;
-  onKeywordCount: (n: number) => void;
-  onCandidateCount: (n: number) => void;
-}
-
 /** Per-keyword search cap. Smaller than AI_CANDIDATE_LIMIT because we run
  *  several in parallel — total pool size is `keywords.length * this`. */
 const AI_PER_KEYWORD_LIMIT = 30;
-
-/**
- * Three-phase AI search.
- *
- *   Phase 1 — decompose: LLM reads the user's free-form query (any language,
- *             any specificity) and emits an intent summary + 3-5 English
- *             keywords suitable for the English-only skills.sh catalog.
- *   Phase 2 — multi-search: parallel keyword fetches against skills.sh.
- *             Results unioned and deduped by (source, skillId).
- *   Phase 3 — rerank: same LLM call as the old single-phase AI search,
- *             but operates on the broader unioned pool against the
- *             original (possibly non-English) intent for relevance.
- *
- * Each phase has its own degradation path:
- *   - Phase 1 failure → fall back to direct keyword search with original query.
- *   - Phase 2 returns empty union → return [].
- *   - Phase 3 failure → return the union unranked, with a toast.
- *
- * The seqRef is checked between phases to bail early if a newer search has
- * superseded this one (user kept typing).
- */
-async function runAiSearch(
-  query: string,
-  mySeq: number,
-  seqRef: { current: number },
-  hooks: AiSearchHooks,
-): Promise<AiSearchOutcome> {
-  // ── Phase 1: decompose ────────────────────────────────────────────
-  hooks.onPhase('ai-understanding');
-  let decomposed: { intent: string; keywords: string[] };
-  try {
-    decomposed = await aiDecomposeIntent(query);
-  } catch {
-    // LLM failed before we could even decompose — fall back to direct
-    // keyword search with the original query. Better than nothing.
-    const resp = await api.catalog.search(query, AI_CANDIDATE_LIMIT);
-    return {
-      skills: resp.skills,
-      why: {},
-      ranked: false,
-      fallbackToast: 'AI rerank failed, showing keyword results',
-    };
-  }
-  if (seqRef.current !== mySeq) {
-    return { skills: [], why: {}, ranked: false };
-  }
-  hooks.onIntent(decomposed.intent || null);
-  hooks.onKeywordCount(decomposed.keywords.length);
-
-  // ── Phase 2: parallel multi-search ────────────────────────────────
-  hooks.onPhase('ai-multisearch');
-  // If decompose returned no keywords (model said "nothing actionable"),
-  // fall back to a single search with the raw query so we don't show
-  // nothing.
-  const keywords =
-    decomposed.keywords.length > 0 ? decomposed.keywords : [query];
-  const perSearch = await Promise.all(
-    keywords.map((kw) => api.catalog.search(kw, AI_PER_KEYWORD_LIMIT).catch(() => null)),
-  );
-  if (seqRef.current !== mySeq) {
-    return { skills: [], why: {}, ranked: false };
-  }
-  // Union + dedupe by (source, skillId). Preserves the order in which
-  // skills first appeared (first keyword's results come first).
-  const seen = new Set<string>();
-  const union: CatalogSearchResult[] = [];
-  for (const resp of perSearch) {
-    if (!resp) continue;
-    for (const s of resp.skills) {
-      const key = `${s.source}\x00${s.skillId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      union.push(s);
-    }
-  }
-  hooks.onCandidateCount(union.length);
-  if (union.length === 0) {
-    return { skills: [], why: {}, ranked: false };
-  }
-
-  // ── Phase 3: rerank against original intent ───────────────────────
-  hooks.onPhase('ai-ranking');
-  try {
-    // Cap candidates we send to the reranker to keep prompt size sane.
-    // skills.sh returns short rows (~80 chars each), so 100 fits well
-    // within the 4096-token output budget.
-    const ranked = await aiRerank(query, union.slice(0, 100));
-    if (seqRef.current !== mySeq) {
-      return { skills: [], why: {}, ranked: false };
-    }
-    if (ranked.length === 0) {
-      // LLM said "nothing matches well" — show union unranked rather
-      // than empty. User can scroll/filter manually.
-      return { skills: union, why: {}, ranked: false };
-    }
-    return {
-      skills: ranked.map((r) => r.skill),
-      why: Object.fromEntries(ranked.map((r) => [r.skill.skillId, r.why])),
-      ranked: true,
-    };
-  } catch (err) {
-    console.error('AI rerank failed', err);
-    return {
-      skills: union,
-      why: {},
-      ranked: false,
-      fallbackToast: 'AI rerank failed, showing keyword results',
-    };
-  }
-}
 
 /**
  * Phase 1 of the AI search pipeline: decompose the user's natural-language
