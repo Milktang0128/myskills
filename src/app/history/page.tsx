@@ -16,6 +16,7 @@ import { api, type SyncHistoryRow } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { confirmAction } from '@/components/ui/confirm-dialog';
+import { Toast } from '@/components/ui/toast';
 import { PlatformBadge } from '@/components/platform-badge';
 import { useT } from '@/lib/i18n';
 import { formatRelative } from '@/lib/utils';
@@ -67,11 +68,9 @@ export default function HistoryPage() {
     try {
       await api.sync.rollback(row.id);
       setToast(t('history.rollback.success'));
-      setTimeout(() => setToast(null), 3000);
       await refresh();
     } catch (err) {
       setToast(t('history.rollback.failure', { message: err instanceof Error ? err.message : String(err) }));
-      setTimeout(() => setToast(null), 6000);
     } finally {
       setBusyId(null);
     }
@@ -120,11 +119,7 @@ export default function HistoryPage() {
       </ScrollArea>
 
       {toast && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-6 flex justify-center">
-          <div className="pointer-events-auto rounded-md border bg-card px-4 py-2 text-sm shadow-lg">
-            {toast}
-          </div>
-        </div>
+        <Toast message={toast} durationMs={4000} onDismiss={() => setToast(null)} />
       )}
     </main>
   );

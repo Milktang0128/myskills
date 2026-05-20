@@ -12,6 +12,7 @@ import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView, ModeSegmented, type SearchMode } from '@/components/discover-view';
 import { OnboardingWizard } from '@/components/onboarding';
 import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
+import { Toast } from '@/components/ui/toast';
 import { useT } from '@/lib/i18n';
 
 export default function Workspace() {
@@ -177,8 +178,9 @@ export default function Workspace() {
   }, [scanning]);
 
   function showToast(msg: string) {
+    // Toast component owns its own auto-dismiss (with pause-on-hover).
+    // Setting a new message resets the timer via the keyed useEffect.
     setToast(msg);
-    setTimeout(() => setToast(null), 4000);
   }
 
   const headerTitle =
@@ -328,11 +330,7 @@ export default function Workspace() {
       />
 
       {toast && (
-        <div className="pointer-events-none fixed inset-x-0 bottom-6 flex justify-center">
-          <div className="pointer-events-auto rounded-md border bg-card px-4 py-2 text-sm shadow-lg">
-            {toast}
-          </div>
-        </div>
+        <Toast message={toast} onDismiss={() => setToast(null)} />
       )}
 
       {onboardingDone === false && (
