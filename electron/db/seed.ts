@@ -33,8 +33,14 @@ const DEFAULT_SCENARIOS: SeedScenario[] = [
   { key: 'knowledge', name: '知识', description: '笔记、Obsidian、可视化',    color: '#6366F1', icon: 'BookOpen',   sortOrder: 5 },
 ];
 
+// NOTE: schema_version is intentionally NOT seeded here. The authoritative
+// version is `schema_migrations` (one row per applied migration). A previous
+// version of this file seeded `settings.schema_version = '5'` via INSERT OR
+// IGNORE — but once a DB had been seeded at v1, that row was frozen and never
+// updated, producing the misleading inspection result `schema_version=1` on
+// DBs whose `schema_migrations` was actually at v5. Migration v6 deletes any
+// existing stale row.
 const DEFAULT_SETTINGS: Array<[string, string]> = [
-  ['schema_version', '5'],
   ['theme', 'system'],
   ['auto_scan_on_launch', '1'],
   ['default_sync_mode', 'symlink'],

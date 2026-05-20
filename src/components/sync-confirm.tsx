@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { PlatformBadge } from './platform-badge';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 const EXECUTE_TIMEOUT_MS = 30_000;
@@ -45,6 +46,7 @@ export function SyncConfirm({
   onOpenChange,
   onApplied,
 }: Props) {
+  const t = useT();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,12 +63,12 @@ export function SyncConfirm({
 
   const title =
     plan.operation === 'promote_to_canonical'
-      ? 'Promote to canonical'
-      : 'Sync from canonical';
+      ? t('syncConfirm.title.promote')
+      : t('syncConfirm.title.fromCanonical');
   const subtitle =
     plan.operation === 'promote_to_canonical'
-      ? `Copy each skill into ${canonicalPlatform}, then replace the original with a symlink.`
-      : `Source: ${canonicalPlatform}. Targets get a symlink to the canonical copy.`;
+      ? t('syncConfirm.subtitle.promoteFull', { platform: canonicalPlatform })
+      : t('syncConfirm.subtitle.fromCanonical', { platform: canonicalPlatform });
 
   async function apply() {
     if (!plan) return;
@@ -76,7 +78,7 @@ export function SyncConfirm({
       const result = await Promise.race([
         api.sync.execute(plan.token),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Sync timed out — check Application Support logs.')), EXECUTE_TIMEOUT_MS),
+          setTimeout(() => reject(new Error(t('syncConfirm.timedOut'))), EXECUTE_TIMEOUT_MS),
         ),
       ]);
       onApplied(result);
@@ -88,6 +90,16 @@ export function SyncConfirm({
     }
   }
 
+  const writeSummary = writeItems.length === 1
+    ? t('syncConfirm.summary.write', { count: writeItems.length })
+    : t('syncConfirm.summary.writes', { count: writeItems.length });
+  const skipSummary = skipItems.length > 0
+    ? t('syncConfirm.summary.alreadyInSync', { count: skipItems.length })
+    : '';
+  const conflictSummary = conflictItems.length > 0
+    ? t('syncConfirm.summary.needAttention', { count: conflictItems.length })
+    : '';
+
   return (
     <Dialog open={open} onOpenChange={(o) => !submitting && onOpenChange(o)}>
       <DialogContent className="max-w-2xl">
@@ -97,9 +109,7 @@ export function SyncConfirm({
             {subtitle}
             <br />
             <span className="text-xs">
-              {writeItems.length} write{writeItems.length === 1 ? '' : 's'}
-              {skipItems.length > 0 ? ` · ${skipItems.length} already in sync` : ''}
-              {conflictItems.length > 0 ? ` · ${conflictItems.length} need attention` : ''}
+              {writeSummary}{skipSummary}{conflictSummary}
             </span>
           </DialogDescription>
         </DialogHeader>
@@ -120,14 +130,16 @@ export function SyncConfirm({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button onClick={apply} disabled={submitting || writeItems.length === 0}>
             {submitting
-              ? 'Applying…'
+              ? t('syncConfirm.applying')
               : writeItems.length === 0
-              ? 'Nothing to apply'
-              : `Apply ${writeItems.length} write${writeItems.length === 1 ? '' : 's'}`}
+              ? t('syncConfirm.nothingToApply')
+              : writeItems.length === 1
+              ? t('syncConfirm.applyN.one', { count: writeItems.length })
+              : t('syncConfirm.applyN.many', { count: writeItems.length })}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -164,6 +176,7 @@ function GroupCard({ items }: { items: SyncPlanItem[] }) {
 }
 
 function ItemRow({ item }: { item: SyncPlanItem }) {
+  const t = useT();
   const Icon = iconFor(item);
   const tone = toneFor(item);
   return (
@@ -173,7 +186,7 @@ function ItemRow({ item }: { item: SyncPlanItem }) {
         <PlatformBadge platformId={item.sourcePlatformId} />
         <span className="text-muted-foreground">→</span>
         <PlatformBadge platformId={item.targetPlatformId} />
-        <span className={cn('text-[11px]', tone)}>{labelFor(item)}</span>
+        <span className={cn('text-[11px]', tone)}>{labelFor(item, t)}</span>
       </div>
       {(item.action === 'symlink_create' ||
         item.action === 'symlink_replace' ||
@@ -183,7 +196,7 @@ function ItemRow({ item }: { item: SyncPlanItem }) {
         </div>
       )}
       {item.action === 'conflict' && item.reason && (
-        <div className="mt-0.5 text-[11px] text-amber-700 pl-5">{reasonExplain(item.reason)}</div>
+        <div className="mt-0.5 text-[11px] text-amber-700 pl-5">{reasonExplain(item.reason, t)}</div>
       )}
     </div>
   );
@@ -221,41 +234,43 @@ function toneFor(item: SyncPlanItem): string {
   }
 }
 
-function labelFor(item: SyncPlanItem): string {
+function labelFor(item: SyncPlanItem, t: ReturnType<typeof useT>): string {
   switch (item.action) {
     case 'symlink_create':
-      return 'create symlink';
+      return t('syncConfirm.action.createSymlink');
     case 'symlink_replace':
-      return 'backup target → create symlink';
+      return t('syncConfirm.action.backupSymlink');
     case 'copy_to_canonical':
-      return 'copy into canonical';
+      return t('syncConfirm.action.copyToCanonical');
     case 'skip':
-      return item.reason === 'already_linked' ? 'already linked' : 'skip';
+      return item.reason === 'already_linked'
+        ? t('syncConfirm.action.alreadyLinked')
+        : t('syncConfirm.action.skip');
     case 'conflict':
-      return 'needs attention';
+      return t('syncConfirm.action.conflict');
     default:
       return item.action;
   }
 }
 
-function reasonExplain(reason: string): string {
+function reasonExplain(reason: string, t: ReturnType<typeof useT>): string {
   switch (reason) {
     case 'target_exists_dir':
-      return 'A real directory already exists at the target path. Promote it to canonical first to resolve.';
+      return t('syncConfirm.reason.target_exists_dir');
     case 'target_exists_symlink_other':
-      return 'A different symlink already exists here. Decide whether to replace it.';
+      return t('syncConfirm.reason.target_exists_symlink_other');
     case 'target_exists_file':
-      return 'A file (not directory) already exists at this path. Resolve manually.';
+      return t('syncConfirm.reason.target_exists_file');
     case 'canonical_missing':
-      return 'The canonical platform does not have this skill. Promote it first.';
+      return t('syncConfirm.reason.canonical_missing');
     case 'unsafe_target_name':
-      return 'The source directory has a name that is not safe to use as a filesystem path.';
+      return t('syncConfirm.reason.unsafe_target_name');
     case 'target_outside_root':
-      return 'Computed target is outside the platform’s skills_dir — refused for safety.';
+      return t('syncConfirm.reason.target_outside_root');
     case 'source_outside_roots':
-      return 'Source path is outside the configured skill roots.';
+      return t('syncConfirm.reason.source_outside_roots');
     case 'source_changed_since_plan':
-      return 'The source changed between plan and execute. Re-run the plan.';
+      return t('syncConfirm.reason.source_changed_since_plan');
     default:
       return reason;
   }

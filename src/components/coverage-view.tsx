@@ -18,7 +18,6 @@ import type {
   CoverageMatrix,
   CoverageRow,
   CoverageCellState,
-  PlatformId,
   SkillFilter,
   SyncExecuteResult,
   SyncPlan,
@@ -28,15 +27,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { PlatformBadge } from '@/components/platform-badge';
 import { SyncConfirm } from '@/components/sync-confirm';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-
-const MATRIX_FILTERS: { value: CoverageFilter; label: string; hint: string }[] = [
-  { value: 'all', label: 'All', hint: 'every skill in the filter set' },
-  { value: 'gaps', label: 'Has gaps', hint: 'a non-canonical platform is missing this skill' },
-  { value: 'orphans', label: 'Orphans', hint: 'present somewhere but missing from canonical' },
-  { value: 'drift', label: 'Drift', hint: 'content hash differs from canonical' },
-  { value: 'broken', label: 'Broken', hint: 'a symlink target is missing' },
-];
 
 interface Props {
   /** Sidebar/search filter from the workspace; matrix narrows rows accordingly. */
@@ -50,12 +42,24 @@ interface Props {
 }
 
 export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated }: Props) {
+  const t = useT();
   const [matrix, setMatrix] = useState<CoverageMatrix | null>(null);
   const [filter, setFilter] = useState<CoverageFilter>('all');
   const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
+
+  const MATRIX_FILTERS: { value: CoverageFilter; label: string; hint: string }[] = useMemo(
+    () => [
+      { value: 'all', label: t('matrix.filter.all'), hint: t('matrix.filter.all.hint') },
+      { value: 'gaps', label: t('matrix.filter.gaps'), hint: t('matrix.filter.gaps.hint') },
+      { value: 'orphans', label: t('matrix.filter.orphans'), hint: t('matrix.filter.orphans.hint') },
+      { value: 'drift', label: t('matrix.filter.drift'), hint: t('matrix.filter.drift.hint') },
+      { value: 'broken', label: t('matrix.filter.broken'), hint: t('matrix.filter.broken.hint') },
+    ],
+    [t],
+  );
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -236,11 +240,22 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
   }
 
   function onApplied(result: SyncExecuteResult) {
-    onToast(
-      `Applied ${result.applied.length} • Skipped ${result.skipped.length}${
-        result.failed.length ? ` • Failed ${result.failed.length}` : ''
-      }`,
-    );
+    if (result.failed.length) {
+      onToast(
+        t('matrix.toast.appliedFailed', {
+          applied: result.applied.length,
+          skipped: result.skipped.length,
+          failed: result.failed.length,
+        }),
+      );
+    } else {
+      onToast(
+        t('matrix.toast.applied', {
+          applied: result.applied.length,
+          skipped: result.skipped.length,
+        }),
+      );
+    }
     refresh();
     onMutated?.();
   }
@@ -266,7 +281,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
           ))}
           {matrix && (
             <span className="ml-2 inline-flex items-center gap-1 text-xs text-muted-foreground">
-              Canonical:
+              {t('matrix.canonicalLabel')}
               <PlatformBadge platformId={matrix.canonicalPlatform} />
               <Crown className="h-3 w-3 text-amber-500" />
             </span>
@@ -279,20 +294,28 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
               variant="outline"
               onClick={handlePromoteAll}
               disabled={busy}
-              title="Copy each orphan into the canonical platform, then symlink the original to it"
+              title={t('matrix.bulk.promote.title')}
             >
               <Upload className="mr-1.5 h-3.5 w-3.5" />
-              Promote {orphanTotal} orphan{orphanTotal === 1 ? '' : 's'}
+              {orphanTotal === 1
+                ? t('matrix.bulk.promote', { count: orphanTotal })
+                : t('matrix.bulk.promotePlural', { count: orphanTotal })}
             </Button>
           )}
           <Button
             size="sm"
             onClick={handleSyncAllGaps}
             disabled={busy || syncableTotal === 0}
-            title={syncableTotal === 0 ? 'Nothing to sync — every visible row is in sync or has no canonical source' : 'Includes missing and stale platforms'}
+            title={
+              syncableTotal === 0
+                ? t('matrix.bulk.sync.titleNone')
+                : t('matrix.bulk.sync.title')
+            }
           >
             <Zap className="mr-1.5 h-3.5 w-3.5" />
-            Sync {syncableTotal} {syncableTotal === 1 ? 'gap/stale' : 'gaps/stale'}
+            {syncableTotal === 1
+              ? t('matrix.bulk.sync', { count: syncableTotal })
+              : t('matrix.bulk.syncPlural', { count: syncableTotal })}
           </Button>
         </div>
       </div>
@@ -340,17 +363,18 @@ function Table({
   onSelectRow: (id: string) => void;
   busy: boolean;
 }) {
+  const t = useT();
   if (!matrix) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t('matrix.loading')}</div>;
   }
   if (rows.length === 0) {
-    return <div className="p-6 text-sm text-muted-foreground">No skills match this filter.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t('matrix.empty')}</div>;
   }
   return (
     <table className="w-full text-sm">
       <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
         <tr className="border-b">
-          <th className="px-3 py-2 text-left font-medium">Skill</th>
+          <th className="px-3 py-2 text-left font-medium">{t('matrix.col.skill')}</th>
           {matrix.platforms.map((p) => (
             <th
               key={p}
@@ -367,7 +391,7 @@ function Table({
               </div>
             </th>
           ))}
-          <th className="px-3 py-2 text-right font-medium w-44">Action</th>
+          <th className="px-3 py-2 text-right font-medium w-44">{t('matrix.col.action')}</th>
         </tr>
       </thead>
       <tbody>
@@ -385,16 +409,18 @@ function Table({
           if (isOrphan) {
             actionNode = (
               <Button size="sm" variant="outline" onClick={() => onPromoteRow(row)} disabled={busy}>
-                Promote
+                {t('matrix.action.promote')}
               </Button>
             );
           } else if (canSync) {
             const label =
               gapCount > 0 && staleCount > 0
-                ? `Sync ${gapCount + staleCount} total`
+                ? t('matrix.action.syncTotal', { count: gapCount + staleCount })
                 : staleCount > 0
-                ? `Replace ${staleCount} stale`
-                : `Fill ${gapCount} gap${gapCount === 1 ? '' : 's'}`;
+                ? t('matrix.action.replaceStale', { count: staleCount })
+                : gapCount === 1
+                ? t('matrix.action.fillGap', { count: gapCount })
+                : t('matrix.action.fillGaps', { count: gapCount });
             actionNode = (
               <Button
                 size="sm"
@@ -403,7 +429,7 @@ function Table({
                 disabled={busy}
                 title={
                   staleCount > 0
-                    ? `${staleCount} platform${staleCount === 1 ? '' : 's'} have stale content — they will be backed up and replaced with a symlink to canonical`
+                    ? t('matrix.action.syncTitle.stale', { count: staleCount })
                     : undefined
                 }
               >
@@ -411,7 +437,7 @@ function Table({
               </Button>
             );
           } else {
-            actionNode = <span className="text-[11px] text-emerald-600">in sync</span>;
+            actionNode = <span className="text-[11px] text-emerald-600">{t('matrix.action.inSync')}</span>;
           }
 
           return (
@@ -474,12 +500,13 @@ function CellGlyph({
   drift?: CoverageDrift;
   isCanonical: boolean;
 }) {
+  const t = useT();
   const stale = drift === 'stale';
-  const label = describeCell(state, drift, isCanonical);
+  const label = describeCell(state, drift, isCanonical, t);
   const wrapper = (icon: React.ReactNode, tone: string) => (
     <span className={cn('inline-flex items-center gap-1', tone)} title={label} aria-label={label}>
       {icon}
-      {stale && <span className="text-[9px] uppercase tracking-wider">stale</span>}
+      {stale && <span className="text-[9px] uppercase tracking-wider">{t('matrix.cellTag.stale')}</span>}
     </span>
   );
   switch (state) {
@@ -506,59 +533,61 @@ function describeCell(
   state: CoverageCellState,
   drift: CoverageDrift | undefined,
   isCanonical: boolean,
+  t: ReturnType<typeof useT>,
 ): string {
   switch (state) {
     case 'present':
-      if (isCanonical) return 'Canonical: source of truth for this skill';
-      if (drift === 'stale') return 'Stale — content differs from canonical. Open skill detail to Adopt this version, or use the row Sync to back this up and replace with canonical';
-      if (drift === 'only_here') return 'Present here only — canonical is missing this skill (orphan)';
-      return 'Present';
+      if (isCanonical) return t('matrix.cell.canonical');
+      if (drift === 'stale') return t('matrix.cell.stale');
+      if (drift === 'only_here') return t('matrix.cell.onlyHere');
+      return t('matrix.cell.present');
     case 'symlink':
-      return 'Symlinked into canonical (in sync)';
+      return t('matrix.cell.symlink');
     case 'symlink_other':
-      return 'Symlinked, but to a non-canonical location';
+      return t('matrix.cell.symlink_other');
     case 'broken':
-      return 'Symlink target is missing';
+      return t('matrix.cell.broken');
     case 'disabled':
-      return 'Disabled (moved to .disabled/)';
+      return t('matrix.cell.disabled');
     case 'missing':
     default:
-      return 'Missing on this platform';
+      return t('matrix.cell.missing');
   }
 }
 
 function Legend() {
+  const t = useT();
   return (
     <div className="mt-4 rounded-md border bg-card/40 px-3 py-2 text-[11px] text-muted-foreground">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
         <span className="inline-flex items-center gap-1">
-          <Crown className="h-3 w-3 text-amber-500" /> canonical column
+          <Crown className="h-3 w-3 text-amber-500" /> {t('matrix.legend.canonical')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Check className="h-3 w-3 text-emerald-600" /> present, in sync
+          <Check className="h-3 w-3 text-emerald-600" /> {t('matrix.legend.inSync')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Check className="h-3 w-3 text-amber-600" /> present, <em>stale</em>
+          <Check className="h-3 w-3 text-amber-600" /> {t('matrix.legend.stale')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Link2 className="h-3 w-3 text-blue-600" /> symlink → canonical
+          <Link2 className="h-3 w-3 text-blue-600" /> {t('matrix.legend.symlinkCanonical')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Link2 className="h-3 w-3 -rotate-45 text-amber-700" /> symlink → elsewhere
+          <Link2 className="h-3 w-3 -rotate-45 text-amber-700" /> {t('matrix.legend.symlinkOther')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <AlertTriangle className="h-3 w-3 text-destructive" /> broken
+          <AlertTriangle className="h-3 w-3 text-destructive" /> {t('matrix.legend.broken')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <EyeOff className="h-3 w-3 text-muted-foreground" /> disabled
+          <EyeOff className="h-3 w-3 text-muted-foreground" /> {t('matrix.legend.disabled')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Minus className="h-3 w-3 text-muted-foreground/40" /> missing
+          <Minus className="h-3 w-3 text-muted-foreground/40" /> {t('matrix.legend.missing')}
         </span>
       </div>
       <div className="mt-1 flex items-center gap-2">
         <HelpCircle className="h-3 w-3" />
-        Hover any cell for details. Change canonical platform in Settings.
+        {t('matrix.legend.help')}
       </div>
     </div>
   );

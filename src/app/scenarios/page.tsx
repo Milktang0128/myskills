@@ -9,9 +9,11 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { ScenarioForm } from '@/components/scenario-form';
 import { ScenarioRecommendations } from '@/components/scenario-recommendations';
 import { api } from '@/lib/api';
+import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 export default function ScenariosPage() {
+  const t = useT();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Scenario | null>(null);
@@ -56,7 +58,7 @@ export default function ScenariosPage() {
 
   const handleDelete = async (sc: Scenario) => {
     if (sc.isBuiltin) return;
-    if (!confirm(`Delete scenario "${sc.name}"? Skills will be unlinked but not deleted.`)) return;
+    if (!confirm(t('scenarios.delete.confirmShort', { name: sc.name }))) return;
     await api.scenarios.remove(sc.id);
     await refresh();
   };
@@ -74,7 +76,7 @@ export default function ScenariosPage() {
     try {
       parsed = JSON.parse(text) as ScenarioExport;
     } catch {
-      alert('Invalid JSON');
+      alert(t('scenarios.import.invalidJson'));
       return;
     }
     try {
@@ -82,7 +84,7 @@ export default function ScenariosPage() {
       setImportResult(result);
       await refresh();
     } catch (e) {
-      alert(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+      alert(t('scenarios.import.failed', { message: e instanceof Error ? e.message : String(e) }));
     }
   };
 
@@ -93,18 +95,18 @@ export default function ScenariosPage() {
           <Link
             href="/"
             className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
-            aria-label="Back"
+            aria-label={t('scenarios.back')}
           >
             <ArrowLeft className="h-4 w-4" />
           </Link>
-          <h1 className="text-sm font-semibold">Scenarios</h1>
+          <h1 className="text-sm font-semibold">{t('scenarios.title')}</h1>
         </div>
         <div className="titlebar-no-drag flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleImport}>
-            <Upload className="mr-1.5 h-3.5 w-3.5" /> Import
+            <Upload className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.import')}
           </Button>
           <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="mr-1.5 h-3.5 w-3.5" /> Export
+            <Download className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.export')}
           </Button>
           <Button
             size="sm"
@@ -113,24 +115,28 @@ export default function ScenariosPage() {
               setFormOpen(true);
             }}
           >
-            <Plus className="mr-1.5 h-3.5 w-3.5" /> New
+            <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.new')}
           </Button>
         </div>
       </header>
 
       {importResult && (
         <div className="border-b bg-secondary/40 px-4 py-2 text-xs">
-          Imported: {importResult.scenariosCreated} new, {importResult.scenariosMerged} merged, {importResult.skillsLinked} skills linked
+          {t('scenarios.import.summary.short', {
+            created: importResult.scenariosCreated,
+            merged: importResult.scenariosMerged,
+            linked: importResult.skillsLinked,
+          })}
           {importResult.skillsNotFound.length > 0 && (
             <span className="ml-2 text-muted-foreground">
-              ({importResult.skillsNotFound.length} skills not found locally)
+              {t('scenarios.import.notFound', { count: importResult.skillsNotFound.length })}
             </span>
           )}
           <button
             className="ml-3 text-muted-foreground hover:text-foreground"
             onClick={() => setImportResult(null)}
           >
-            dismiss
+            {t('scenarios.import.dismiss')}
           </button>
         </div>
       )}
@@ -166,7 +172,7 @@ export default function ScenariosPage() {
                     <h2 className="text-sm font-semibold">{sc.name}</h2>
                     {sc.isBuiltin && (
                       <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        built-in
+                        {t('scenarios.builtin')}
                       </span>
                     )}
                   </div>
@@ -178,7 +184,7 @@ export default function ScenariosPage() {
                         setFormOpen(true);
                       }}
                       className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                      aria-label="Edit"
+                      aria-label={t('scenarios.edit.aria')}
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
@@ -189,7 +195,7 @@ export default function ScenariosPage() {
                           handleDelete(sc);
                         }}
                         className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                        aria-label="Delete"
+                        aria-label={t('scenarios.delete.aria')}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -198,7 +204,7 @@ export default function ScenariosPage() {
                 </div>
                 <p className="mt-1 font-mono text-[10px] text-muted-foreground">{sc.key}</p>
                 {sc.description && <p className="mt-2 text-xs text-muted-foreground">{sc.description}</p>}
-                <p className="mt-3 text-xs text-muted-foreground">{sc.skillCount ?? 0} skills</p>
+                <p className="mt-3 text-xs text-muted-foreground">{t('scenarios.skillCount', { count: sc.skillCount ?? 0 })}</p>
               </div>
             );
           })}
@@ -226,19 +232,19 @@ export default function ScenariosPage() {
                   className="text-xs text-muted-foreground hover:text-foreground"
                   onClick={() => setSelectedId(null)}
                 >
-                  Close
+                  {t('scenarios.detail.close')}
                 </button>
               </div>
 
               <section className="mb-6 space-y-2">
                 <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Skills in this scenario ({selectedSkills.length})
+                  {t('scenarios.detail.skillsHeading', { count: selectedSkills.length })}
                 </div>
                 {skillsLoading ? (
-                  <p className="text-xs text-muted-foreground">Loading…</p>
+                  <p className="text-xs text-muted-foreground">{t('scenarios.detail.skillsLoading')}</p>
                 ) : selectedSkills.length === 0 ? (
                   <p className="text-xs text-muted-foreground">
-                    No skills are linked to this scenario yet.
+                    {t('scenarios.detail.skillsEmpty')}
                   </p>
                 ) : (
                   <ul className="flex flex-wrap gap-1.5">
