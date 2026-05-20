@@ -81,6 +81,19 @@ const MIGRATIONS: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 6,
+    name: 'drop_stale_schema_version_setting',
+    up: (db) => {
+      // The old seed wrote `settings.schema_version = '5'` via INSERT OR IGNORE,
+      // which froze the value at whatever version was current the very first
+      // time the user launched MySkills — so DBs seeded at v1 still showed
+      // `schema_version=1` after running every migration up to v5. The
+      // authoritative version tracker is `schema_migrations`, so just delete
+      // the misleading row.
+      db.prepare("DELETE FROM settings WHERE key = 'schema_version'").run();
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {
