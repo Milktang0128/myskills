@@ -792,56 +792,48 @@ function ResultRow({
     <button
       onClick={onClick}
       className={cn(
-        'block w-full rounded-md border bg-background px-3 py-2 text-left transition-colors',
-        selected ? 'border-primary/60 bg-accent/40' : 'hover:bg-accent/30',
+        'block w-full border-b border-rule border-l-2 border-l-transparent bg-transparent px-3 py-3 text-left transition-colors',
+        selected ? 'border-l-[var(--red)] bg-[rgba(225,70,43,0.06)]' : 'hover:bg-paper-alt/60',
+        'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ink',
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="truncate font-medium text-sm" title={result.name}>
+        <span className="t-cn truncate text-[15px] font-bold leading-tight text-ink" title={result.name}>
           {result.name}
         </span>
         {installed && (
           <span
-            className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+            className="shrink-0 border border-red-brand/60 bg-[rgba(225,70,43,0.08)] px-1.5 py-px font-mono text-[9.5px] font-semibold uppercase tracking-[0.08em] text-red-brand"
             title={t('discover.installedBadge.title')}
           >
-            {t('discover.installedBadge')}
+            ● {t('discover.installedBadge')}
           </span>
         )}
-        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
+        <span className="ml-auto shrink-0 font-mono text-[10.5px] tabular-nums uppercase tracking-[0.06em] text-mute">
           {formatInstalls(result.installs)} {t('discover.installs.label')}
         </span>
       </div>
       <div className="mt-0.5 flex items-center gap-2">
         <span
-          className="truncate rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground"
+          className="truncate font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute"
           title={result.source}
         >
-          {result.source}
+          BY {result.source.toUpperCase()}
         </span>
       </div>
-      {/* Description: shown when present, hidden (or shown as a thin
-          shimmer) when not. The enrichment IPC populates this in the
-          background after the initial render, so initially-empty rows
-          fill in within ~1 second on the first visit, instantly after.
-          Rows that genuinely have no description in frontmatter remain
-          empty — better than a sea of "(no description)" placeholders. */}
       {result.description?.trim() ? (
         <div
-          className="mt-1 line-clamp-2 text-xs text-muted-foreground"
+          className="mt-1.5 line-clamp-2 text-[12.5px] leading-[1.55] text-soft max-w-[64ch]"
           title={result.description.trim()}
         >
           {result.description.trim()}
         </div>
       ) : (
-        <div
-          aria-hidden="true"
-          className="mt-1 h-3 w-2/3 rounded bg-muted/40"
-        />
+        <div aria-hidden="true" className="mt-1.5 h-3 w-2/3 bg-paper-alt" />
       )}
       {why && (
         <div
-          className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80"
+          className="mt-1.5 line-clamp-2 text-[12px] italic leading-[1.55] text-mute max-w-[64ch]"
           title={why}
         >
           {why}

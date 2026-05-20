@@ -135,33 +135,25 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
   }
 
   return (
-    // flex-1 + min-h-0 instead of h-full: inside the workspace's flex-col
-    // shell, h-full would resolve to 100vh and overflow past the 48px header
-    // by exactly that amount, clipping the bottom of the scroll region.
     <div className="flex min-h-0 flex-1 flex-col">
-      {stale && (
-        <StaleBanner generating={generating} onRefresh={generate} />
-      )}
+      {stale && <StaleBanner generating={generating} onRefresh={generate} />}
       {error && (
-        <div className="flex items-center gap-2 border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-sm text-destructive">
-          <AlertCircle className="h-4 w-4 shrink-0" />
+        <div className="flex items-center gap-2 border-b border-red-brand/40 bg-[rgba(225,70,43,0.05)] px-4 py-2 font-mono text-[11px] uppercase tracking-[0.06em] text-red-brand">
+          <AlertCircle className="h-3 w-3 shrink-0" />
           <span className="flex-1">{error}</span>
         </div>
       )}
 
       <ScrollArea className="flex-1 scrollbar-thin">
-        <div className="mx-auto max-w-3xl space-y-6 px-6 py-6">
-          {/* Header: intro + metadata. The "regenerate" button lives here so
-              it's visible without scrolling but doesn't compete with the
-              stale banner. */}
-          <header className="space-y-2">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <MapIcon className="h-5 w-5 text-violet-500" aria-hidden="true" />
-                <h1 className="text-lg font-semibold">
-                  {t('map.heading', { count: overview.totalSkills })}
-                </h1>
-              </div>
+        <div className="mx-auto max-w-3xl space-y-7 px-7 py-7">
+          {/* Page header — kicker + CN H1 + intro + metadata caps */}
+          <header>
+            <div className="tk flex items-center gap-2">
+              <MapIcon className="h-3 w-3 text-red-brand" aria-hidden="true" />
+              MAP · {t('header.map').toUpperCase()}
+            </div>
+            <div className="mt-2 flex items-start justify-between gap-3">
+              <h1 className="t-cn-h1">{t('map.heading', { count: overview.totalSkills })}</h1>
               <Button
                 size="sm"
                 variant="outline"
@@ -174,21 +166,21 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
               >
                 {generating ? (
                   <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
                     {t('map.regenerating')}
                   </>
                 ) : (
                   <>
-                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                    <RefreshCw className="mr-1.5 h-3 w-3" />
                     {t('map.regenerate')}
                   </>
                 )}
               </Button>
             </div>
             {overview.intro && (
-              <p className="text-sm text-muted-foreground">{overview.intro}</p>
+              <p className="mt-3 text-[13.5px] leading-[1.6] text-soft max-w-[56ch]">{overview.intro}</p>
             )}
-            <p className="text-[11px] text-muted-foreground">
+            <p className="mt-3 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute">
               {t('map.metadata', {
                 when: formatRelative(overview.generatedAt),
                 model: overview.model,
@@ -196,20 +188,19 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
             </p>
           </header>
 
-          {/* Clusters */}
-          <div className="space-y-5">
+          <div className="space-y-6">
             {overview.clusters.map((c) => (
-              <section key={c.key} className="rounded-lg border bg-card p-4">
-                <header className="mb-2 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">{c.name}</h2>
-                  <span className="text-[11px] text-muted-foreground">
+              <section key={c.key} className="border-t border-rule pt-4">
+                <header className="mb-2 flex items-baseline justify-between gap-3">
+                  <h2 className="t-cn text-[18px] leading-tight">{c.name}</h2>
+                  <span className="font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute shrink-0">
                     {t('map.cluster.count', { count: c.skills.length })}
                   </span>
                 </header>
                 {c.purpose && (
-                  <p className="mb-3 text-xs text-muted-foreground">{c.purpose}</p>
+                  <p className="mb-3 text-[12.5px] leading-[1.55] text-soft max-w-[56ch]">{c.purpose}</p>
                 )}
-                <ul className="space-y-1">
+                <ul className="space-y-0">
                   {c.skills.map((s) => (
                     <SkillRow key={s.skillId} entry={s} onClick={() => onSelectSkill(s.skillId)} />
                   ))}
@@ -217,23 +208,20 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
               </section>
             ))}
 
-            {/* Uncategorized: shown as its own section ONLY if non-empty.
-                It's not a normal cluster — it's a "the AI didn't fit these"
-                signal. Often empty after a fresh generation. */}
             {overview.uncategorized.length > 0 && (
-              <section className="rounded-lg border border-dashed bg-muted/20 p-4">
-                <header className="mb-2 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold text-muted-foreground">
+              <section className="border-t border-dashed border-rule pt-4">
+                <header className="mb-2 flex items-baseline justify-between gap-3">
+                  <h2 className="t-cn text-[18px] leading-tight text-mute">
                     {t('map.uncategorized.heading')}
                   </h2>
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute shrink-0">
                     {t('map.cluster.count', { count: overview.uncategorized.length })}
                   </span>
                 </header>
-                <p className="mb-3 text-xs text-muted-foreground">
+                <p className="mb-3 text-[12.5px] leading-[1.55] text-soft max-w-[56ch]">
                   {t('map.uncategorized.body')}
                 </p>
-                <ul className="space-y-1">
+                <ul className="space-y-0">
                   {overview.uncategorized.map((s) => (
                     <SkillRow key={s.skillId} entry={s} onClick={() => onSelectSkill(s.skillId)} />
                   ))}
@@ -263,11 +251,11 @@ function SkillRow({
       <button
         type="button"
         onClick={onClick}
-        className="flex w-full items-baseline gap-3 rounded px-2 py-1 text-left text-sm hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full items-baseline gap-3 border-l-2 border-l-transparent px-2 py-1.5 text-left text-[13px] hover:bg-paper-alt/60 hover:border-l-rule focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ink"
         title={entry.name}
       >
-        <span className="min-w-0 flex-1 truncate font-medium">{entry.name}</span>
-        <span className="shrink-0 max-w-[40%] truncate text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate font-medium text-ink">{entry.name}</span>
+        <span className="shrink-0 max-w-[40%] truncate font-mono text-[10.5px] uppercase tracking-[0.04em] text-mute">
           {entry.brief}
         </span>
       </button>
@@ -284,20 +272,20 @@ function StaleBanner({
 }) {
   const t = useT();
   return (
-    <div className="flex items-center gap-3 border-b border-amber-200/60 bg-amber-50/60 px-4 py-2 text-sm dark:border-amber-900/40 dark:bg-amber-950/20">
-      <Sparkles className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
-      <span className="flex-1 text-amber-900 dark:text-amber-200">
+    <div className="flex items-center gap-3 border-b border-red-brand/40 bg-[rgba(225,70,43,0.04)] px-4 py-2.5">
+      <Sparkles className="h-3.5 w-3.5 shrink-0 text-red-brand" aria-hidden="true" />
+      <span className="flex-1 font-mono text-[11px] uppercase tracking-[0.06em] text-ink">
         {t('map.stale.message')}
       </span>
       <Button size="sm" variant="outline" onClick={onRefresh} disabled={generating}>
         {generating ? (
           <>
-            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+            <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
             {t('map.regenerating')}
           </>
         ) : (
           <>
-            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            <RefreshCw className="mr-1.5 h-3 w-3" />
             {t('map.stale.refresh')}
           </>
         )}
@@ -319,30 +307,26 @@ function EmptyState({
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="max-w-md text-center">
-        <MapIcon className="mx-auto h-10 w-10 text-violet-500" aria-hidden="true" />
-        <h2 className="mt-3 text-base font-semibold">{t('map.empty.title')}</h2>
-        <p className="mt-2 text-sm text-muted-foreground">{t('map.empty.body')}</p>
-        <Button
-          size="sm"
-          onClick={onGenerate}
-          disabled={generating}
-          className="mt-4 bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
-        >
+        <MapIcon className="mx-auto h-9 w-9 text-red-brand" aria-hidden="true" />
+        <div className="tk mt-3">MAP</div>
+        <h2 className="t-cn-h2 mt-1">{t('map.empty.title')}</h2>
+        <p className="mt-3 text-[13.5px] leading-[1.6] text-soft">{t('map.empty.body')}</p>
+        <Button onClick={onGenerate} disabled={generating} className="mt-5">
           {generating ? (
             <>
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
               {t('map.empty.generating')}
             </>
           ) : (
             <>
-              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              <Sparkles className="mr-1.5 h-3 w-3" />
               {t('map.empty.generate')}
             </>
           )}
         </Button>
         {error && (
-          <p className="mt-3 inline-flex items-center gap-1 text-xs text-destructive">
-            <AlertCircle className="h-3.5 w-3.5" /> {error}
+          <p className="mt-3 inline-flex items-center gap-1 font-mono text-[11px] uppercase tracking-[0.06em] text-red-brand">
+            <AlertCircle className="h-3 w-3" /> {error}
           </p>
         )}
       </div>
@@ -355,9 +339,10 @@ function LlmGate() {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="max-w-md text-center">
-        <Sparkles className="mx-auto h-10 w-10 text-muted-foreground" aria-hidden="true" />
-        <h2 className="mt-3 text-base font-semibold">{t('map.llmRequired.title')}</h2>
-        <p className="mt-2 text-sm text-muted-foreground">{t('map.llmRequired.body')}</p>
+        <Sparkles className="mx-auto h-9 w-9 text-mute" aria-hidden="true" />
+        <div className="tk-muted mt-3">SETUP</div>
+        <h2 className="t-cn-h2 mt-1">{t('map.llmRequired.title')}</h2>
+        <p className="mt-3 text-[13.5px] leading-[1.6] text-soft">{t('map.llmRequired.body')}</p>
       </div>
     </div>
   );

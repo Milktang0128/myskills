@@ -59,14 +59,16 @@ export function SkillList({
       )}
 
       {hideOwnHeader && (
-        <div className="flex items-center justify-between border-b px-4 py-2 text-xs">
-          <h2 className="font-medium">{headerTitle}</h2>
-          <span className="text-muted-foreground">{headerSubtitle}</span>
+        // Page header band: kicker + CN H1 + meta count, matching the
+        // editorial pattern used in matrix and history.
+        <div className="border-b border-rule px-7 pt-7 pb-4">
+          <div className="tk">{(headerSubtitle ?? '').toUpperCase()}</div>
+          <h1 className="t-cn-h1 mt-2">{headerTitle}</h1>
         </div>
       )}
 
       <ScrollArea className="flex-1 scrollbar-thin">
-        <div className={cn('flex flex-col gap-1.5 p-3', loading && 'opacity-50')}>
+        <div className={cn('flex flex-col', loading && 'opacity-50')}>
           {skills.length === 0 ? (
             <EmptyState
               title={loading ? t('list.empty.loading') : t('list.empty.title')}

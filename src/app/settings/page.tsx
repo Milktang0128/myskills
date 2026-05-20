@@ -340,17 +340,21 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="flex h-screen w-screen flex-col overflow-hidden">
-      <header className="titlebar-drag flex h-12 shrink-0 items-center justify-between border-b pl-[88px] pr-4">
+    <main className="flex h-screen w-screen flex-col overflow-hidden bg-paper">
+      <header className="titlebar-drag flex h-11 shrink-0 items-center justify-between border-b border-rule pl-[88px] pr-4">
         <div className="titlebar-no-drag flex items-center gap-2">
           <Link
             href="/"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
+            className="inline-flex h-6 w-6 items-center justify-center text-mute hover:text-ink"
             aria-label={t('settings.back')}
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="h-3.5 w-3.5" />
           </Link>
-          <h1 className="text-sm font-semibold">{t('settings.title')}</h1>
+          <div className="flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold">
+            <span className="text-red-brand">MYSKILLS</span>
+            <span className="text-mute">·</span>
+            <span className="text-ink">{t('settings.title')}</span>
+          </div>
         </div>
         <div className="titlebar-no-drag">
           <LangToggle />
