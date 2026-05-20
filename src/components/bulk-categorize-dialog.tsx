@@ -326,7 +326,10 @@ function ProposedRow({
     <label
       className={cn(
         'flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-1.5 text-xs',
-        dropped ? 'opacity-50 border-border' : 'border-amber-300/60 bg-amber-50/30 dark:bg-amber-950/10',
+        // Violet (the app's AI accent) instead of amber — amber is reserved
+        // for caution states (broken/missing/stale). AI-proposed items
+        // should read as "AI suggestion", not "warning".
+        dropped ? 'opacity-50 border-border' : 'border-violet-300/60 bg-violet-50/30 dark:bg-violet-950/10',
       )}
     >
       <input
@@ -338,7 +341,7 @@ function ProposedRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="font-medium">{proposal.name}</span>
-          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-violet-900 dark:bg-violet-950 dark:text-violet-200">
             {t('bulkCat.newBadge')}
           </span>
           <span className="font-mono text-[10px] text-muted-foreground">

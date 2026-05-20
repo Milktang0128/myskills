@@ -394,7 +394,11 @@ function Table({
               key={p}
               className={cn(
                 'px-3 py-2 text-center font-medium',
-                p === matrix.canonicalPlatform && 'bg-amber-50/60 dark:bg-amber-950/20',
+                // Canonical column gets a subtle left/right border instead of
+                // a saturated amber tint — Crown icon already says "canonical"
+                // and the row-level amber competed with warn states (broken,
+                // drift) for the user's attention.
+                p === matrix.canonicalPlatform && 'border-x border-amber-200/60 dark:border-amber-900/40',
               )}
             >
               <div className="inline-flex items-center gap-1">
@@ -483,7 +487,9 @@ function Table({
                     key={p}
                     className={cn(
                       'px-3 py-2 text-center',
-                      p === matrix.canonicalPlatform && 'bg-amber-50/40 dark:bg-amber-950/10',
+                      // Match the header: subtle vertical rule instead of
+                      // a row-wide amber tint.
+                      p === matrix.canonicalPlatform && 'border-x border-amber-200/40 dark:border-amber-900/30',
                     )}
                   >
                     <CellGlyph
