@@ -451,7 +451,17 @@ function CanonicalStep() {
         api.settings.get('canonical_platform'),
         api.settings.stats(),
       ]);
-      setPlatforms(pls.filter((p) => p.enabled));
+      // Sort enabled platforms with the cross-tool agents folder ('shared')
+      // pinned at the top — matches the discovery list order in step 2 and
+      // matches our recommendation in `onboarding.canonical.sharedHint`.
+      // Stable for the rest so users don't get surprises if they've reordered
+      // platforms elsewhere.
+      const enabled = pls.filter((p) => p.enabled);
+      const reordered = [
+        ...enabled.filter((p) => p.id === 'shared'),
+        ...enabled.filter((p) => p.id !== 'shared'),
+      ];
+      setPlatforms(reordered);
       if (c) setCanonical(c);
       setSkillCounts(stats.byPlatform ?? {});
     })();
