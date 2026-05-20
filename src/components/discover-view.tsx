@@ -21,6 +21,14 @@ import { cn } from '@/lib/utils';
 interface Props {
   /** Live query from the workspace top-bar search input. */
   query: string;
+  /** Mode is owned by the workspace so the toggle can live next to the
+   *  search input in the page header. DiscoverView consumes + reports
+   *  changes via onModeChange. */
+  mode: SearchMode;
+  onModeChange: (mode: SearchMode) => void;
+  /** Whether AI mode is enabled (LLM key + feature toggle). Owned by the
+   *  workspace so the header toggle can render correctly too. */
+  aiAvailable: boolean;
   onToast: (msg: string) => void;
 }
 
@@ -28,7 +36,7 @@ const DEBOUNCE_MS = 300;
 const MIN_QUERY_LEN = 2;
 
 /** Search mode the user has picked in the top-bar segmented control. */
-type SearchMode = 'keyword' | 'ai';
+export type SearchMode = 'keyword' | 'ai';
 
 /** AI rerank candidate pool — broader than the default keyword view (30). */
 const AI_CANDIDATE_LIMIT = 50;
@@ -113,7 +121,7 @@ function shouldSkipDecompose(query: string): boolean {
   return tokens.every((t) => /^[A-Za-z0-9._-]+$/.test(t));
 }
 
-export function DiscoverView({ query, onToast }: Props) {
+export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }: Props) {
   const t = useT();
   const [bridgeReady, setBridgeReady] = useState(false);
   const [results, setResults] = useState<CatalogSearchResult[]>([]);
@@ -173,11 +181,6 @@ export function DiscoverView({ query, onToast }: Props) {
   // Master kill-switch from settings — when off, skip every network call.
   const [networkAllowed, setNetworkAllowed] = useState<boolean | null>(null);
 
-  // AI search gating. `null` while loading so we don't flicker the segmented
-  // control's disabled state on first render.
-  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
-  const [mode, setMode] = useState<SearchMode>('keyword');
-
   // Used to ignore stale search responses (the user typed faster than the API).
   const searchSeqRef = useRef(0);
   // Separate sequence for enrichment so a slow GitHub batch from a previous
@@ -200,19 +203,18 @@ export function DiscoverView({ query, onToast }: Props) {
     return () => clearInterval(iv);
   }, []);
 
-  // Load one-shot meta on mount: platforms, canonical, network gate, LLM availability.
+  // Load one-shot meta on mount: platforms, canonical, network gate.
+  // (LLM availability is owned by the workspace — it drives the header
+  // toggle too — and arrives via the `aiAvailable` prop.)
   useEffect(() => {
     if (!bridgeReady) return;
     let cancelled = false;
     (async () => {
       try {
-        const [pls, canon, gate, llmCfg, llmFeatures] = await Promise.all([
+        const [pls, canon, gate] = await Promise.all([
           api.platforms.list(),
           api.settings.get('canonical_platform'),
           api.settings.get('allow_external_network'),
-          // Tolerate LLM IPC failure — AI search simply stays disabled.
-          api.llm.getConfig().catch(() => null),
-          api.llm.getFeatures().catch(() => null),
         ]);
         if (cancelled) return;
         setPlatforms(pls);
@@ -223,8 +225,6 @@ export function DiscoverView({ query, onToast }: Props) {
         setSelectedPlatforms(new Set([canonId]));
         // '0' means explicitly disabled; missing key / '1' means allowed.
         setNetworkAllowed(gate !== '0');
-        // AI search needs BOTH the feature toggle on AND a stored API key.
-        setAiAvailable(Boolean(llmFeatures?.search && llmCfg?.hasApiKey));
       } catch (e) {
         if (!cancelled) console.error('discover meta load failed', e);
       }
@@ -234,12 +234,12 @@ export function DiscoverView({ query, onToast }: Props) {
     };
   }, [bridgeReady]);
 
-  // If AI becomes unavailable after the user has already picked it (e.g. settings
-  // change in another window), force the mode back to Keyword so we don't sit in
-  // a broken state.
+  // If AI becomes unavailable after the user picked it (settings changed
+  // in another window), force back to keyword. The parent owns `mode`
+  // but we know first when network/results bail.
   useEffect(() => {
-    if (aiAvailable === false && mode === 'ai') setMode('keyword');
-  }, [aiAvailable, mode]);
+    if (!aiAvailable && mode === 'ai') onModeChange('keyword');
+  }, [aiAvailable, mode, onModeChange]);
 
   const trimmedQuery = query.trim();
   const queryReady = trimmedQuery.length >= MIN_QUERY_LEN;
@@ -629,16 +629,10 @@ export function DiscoverView({ query, onToast }: Props) {
   return (
     <div className="flex h-full min-w-0 flex-1">
       <div className="flex h-full flex-1 flex-col">
+        {/* Status row — the Keyword/AI toggle used to live here but moved
+            to the workspace header so it groups with the search input. */}
         <div className="flex items-center justify-between gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="truncate">{statusLine}</span>
-            <ModeSegmented
-              mode={mode}
-              aiAvailable={aiAvailable ?? false}
-              queryReady={queryReady}
-              onChange={setMode}
-            />
-          </div>
+          <span className="truncate">{statusLine}</span>
           <span className="shrink-0">{t('discover.via')}</span>
         </div>
 
@@ -805,7 +799,7 @@ function ResultRow({
  *   3. Otherwise → enabled, switching triggers an AI rerank on the next
  *      search response.
  */
-function ModeSegmented({
+export function ModeSegmented({
   mode,
   aiAvailable,
   queryReady,

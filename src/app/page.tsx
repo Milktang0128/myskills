@@ -9,7 +9,7 @@ import { SkillList } from '@/components/skill-list';
 import { SkillDetail } from '@/components/skill-detail';
 import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
-import { DiscoverView } from '@/components/discover-view';
+import { DiscoverView, ModeSegmented, type SearchMode } from '@/components/discover-view';
 import { OnboardingWizard } from '@/components/onboarding';
 import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { useT } from '@/lib/i18n';
@@ -39,6 +39,13 @@ export default function Workspace() {
   // changes settings or the apply flow created scenarios).
   const [llmConfigured, setLlmConfigured] = useState(false);
   const [bulkCatOpen, setBulkCatOpen] = useState(false);
+  // Discover mode lives at the workspace level so the Keyword/AI toggle
+  // can render in the page header next to the search input (grouped with
+  // the search affordance instead of buried in the status row).
+  const [discoverMode, setDiscoverMode] = useState<SearchMode>('keyword');
+  // Whether AI search is usable: API key stored AND search feature enabled.
+  // Used to disable the AI tab in the header toggle.
+  const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
 
   const reqIdRef = useRef(0);
 
@@ -99,18 +106,23 @@ export default function Workspace() {
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
 
-  // Check whether an LLM key is configured (drives bulk-categorize CTA state).
+  // Check LLM availability for two consumers:
+  //   - bulk-categorize CTA (requires any LLM key configured)
+  //   - Discover AI mode (requires key AND the AI-search feature toggle)
+  // Single round trip on bridge-ready; both consumers read different
+  // booleans off the same fetch.
   useEffect(() => {
     if (!bridgeReady) return;
     let cancelled = false;
-    api.llm
-      .getConfig()
-      .then((cfg) => {
-        if (!cancelled) setLlmConfigured(Boolean(cfg.hasApiKey && cfg.model));
-      })
-      .catch(() => {
-        if (!cancelled) setLlmConfigured(false);
-      });
+    Promise.all([
+      api.llm.getConfig().catch(() => null),
+      api.llm.getFeatures().catch(() => null),
+    ]).then(([cfg, features]) => {
+      if (cancelled) return;
+      const configured = Boolean(cfg?.hasApiKey && cfg?.model);
+      setLlmConfigured(configured);
+      setAiSearchAvailable(configured && Boolean(features?.search));
+    });
     return () => {
       cancelled = true;
     };
@@ -215,14 +227,24 @@ export default function Workspace() {
           <div className="w-[68px]" />
           <div className="titlebar-no-drag flex flex-1 items-center gap-3">
             <h1 className="text-sm font-semibold">{headerTitle}</h1>
-            <div className="relative ml-auto max-w-md flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={searchPlaceholder}
-                className="h-7 w-full rounded-md border bg-background pl-8 pr-2 text-xs"
-              />
+            <div className="ml-auto flex items-center gap-2">
+              {view === 'discover' && (
+                <ModeSegmented
+                  mode={discoverMode}
+                  aiAvailable={aiSearchAvailable}
+                  queryReady={search.trim().length >= 2}
+                  onChange={setDiscoverMode}
+                />
+              )}
+              <div className="relative w-[280px]">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={searchPlaceholder}
+                  className="h-7 w-full rounded-md border bg-background pl-8 pr-2 text-xs"
+                />
+              </div>
             </div>
           </div>
         </header>
@@ -236,7 +258,13 @@ export default function Workspace() {
             onMutated={refreshMeta}
           />
         ) : view === 'discover' ? (
-          <DiscoverView query={search} onToast={showToast} />
+          <DiscoverView
+            query={search}
+            mode={discoverMode}
+            onModeChange={setDiscoverMode}
+            aiAvailable={aiSearchAvailable}
+            onToast={showToast}
+          />
         ) : (
           <>
             {/* Bulk-categorize CTA — only shows on the 未分类 view, when
