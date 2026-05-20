@@ -883,17 +883,17 @@ export function ModeSegmented({
     <div
       role="tablist"
       aria-label={t('discover.mode.label')}
-      className="flex shrink-0 items-center rounded-md border bg-background p-0.5 text-[11px]"
+      className="inline-flex shrink-0 items-center border border-rule font-mono text-[10px] uppercase tracking-[0.06em]"
     >
       <button
         role="tab"
         aria-selected={mode === 'keyword'}
         onClick={() => onChange('keyword')}
         className={cn(
-          'rounded px-2 py-0.5 transition-colors',
+          'px-2 py-1 transition-colors',
           mode === 'keyword'
-            ? 'bg-accent text-foreground'
-            : 'text-muted-foreground hover:text-foreground',
+            ? 'bg-ink text-[#f2eee2]'
+            : 'text-mute hover:text-ink',
         )}
       >
         {t('discover.mode.keyword.label')}
@@ -905,11 +905,9 @@ export function ModeSegmented({
         title={aiTitle}
         onClick={() => aiClickable && onChange('ai')}
         className={cn(
-          'flex items-center gap-1 rounded px-2 py-0.5 transition-colors',
-          mode === 'ai' && aiClickable
-            ? 'bg-accent text-foreground'
-            : 'text-muted-foreground hover:text-foreground',
-          !aiClickable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
+          'flex items-center gap-1 px-2 py-1 transition-colors',
+          mode === 'ai' && aiClickable ? 'bg-ink text-[#f2eee2]' : 'text-mute hover:text-ink',
+          !aiClickable && 'cursor-not-allowed opacity-50 hover:text-mute',
         )}
       >
         <Sparkles className="h-3 w-3" />

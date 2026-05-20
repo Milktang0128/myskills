@@ -231,11 +231,18 @@ export default function Workspace() {
       />
 
       <div className="flex flex-1 min-w-0 flex-col">
-        <header className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b pr-3">
-          {/* Reserve room for macOS traffic lights */}
-          <div className="w-[68px]" />
-          <div className="titlebar-no-drag flex flex-1 items-center gap-3">
-            <h1 className="text-sm font-semibold">{headerTitle}</h1>
+        {/* Topbar: kicker breadcrumb (MYSKILLS · CURRENT_PAGE) on the left,
+            search input + ModeSegmented + lang quick-toggle on the right.
+            Drag region covers the whole strip; the no-drag wrapper holds
+            anything interactive. Sidebar reserves traffic-light space, so
+            this strip is full-width from its left edge. */}
+        <header className="titlebar-drag flex h-11 shrink-0 items-center gap-3 border-b border-rule px-4 bg-paper">
+          <div className="titlebar-no-drag flex flex-1 items-center gap-3 min-w-0">
+            <div className="flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold min-w-0">
+              <span className="text-red-brand shrink-0">MYSKILLS</span>
+              <span className="text-mute">·</span>
+              <span className="text-ink truncate">{headerTitle}</span>
+            </div>
             <div className="ml-auto flex items-center gap-2">
               {view === 'discover' && (
                 <ModeSegmented
@@ -246,30 +253,30 @@ export default function Workspace() {
                 />
               )}
               {view !== 'map' && (
-              <div className="relative w-[280px]">
-                <Search
-                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden="true"
-                />
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={searchPlaceholder}
-                  aria-label={searchPlaceholder}
-                  className="h-7 w-full rounded-md border bg-background pl-8 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-                />
-                {search && (
-                  <button
-                    type="button"
-                    onClick={() => setSearch('')}
-                    aria-label={t('common.clear')}
-                    className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <span aria-hidden="true" className="text-[14px] leading-none">×</span>
-                  </button>
-                )}
-              </div>
+                <div className="relative w-[280px]">
+                  <Search
+                    className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-mute"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder={searchPlaceholder}
+                    aria-label={searchPlaceholder}
+                    className="h-7 w-full border border-rule bg-paper-white pl-8 pr-7 text-[12px] text-ink outline-none focus:border-ink focus-visible:border-ink"
+                  />
+                  {search && (
+                    <button
+                      type="button"
+                      onClick={() => setSearch('')}
+                      aria-label={t('common.clear')}
+                      className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center text-mute hover:bg-paper-alt hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink"
+                    >
+                      <span aria-hidden="true" className="text-[14px] leading-none">×</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           </div>

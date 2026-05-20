@@ -2,50 +2,80 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+ * MySkills × 世界之窗 — design tokens
+ * ------------------------------------------------------------
+ * Two parallel registers:
+ *   1. shadcn-compatible HSL channels (--background, --primary…)
+ *      so every existing `bg-card / border / text-muted-foreground`
+ *      class automatically adopts the paper palette.
+ *   2. Raw brand variables (--paper / --ink / --red / --mono /
+ *      --sans-cn) for the editorial flourishes that don't map
+ *      onto shadcn semantics (kicker labels, CN display heads).
+ *
+ * v1 is paper-only. No dark mode. The .dark block from the old
+ * shadcn boilerplate is intentionally removed.
+ * ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700;900&display=swap');
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 224 9% 14%;
-    --card: 0 0% 100%;
-    --card-foreground: 224 9% 14%;
-    --primary: 224 9% 14%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 224 9% 14%;
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
-    --accent: 220 14% 94%;
-    --accent-foreground: 224 9% 14%;
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 224 9% 14%;
-    --radius: 0.5rem;
+    /* ── shadcn HSL channels — mapped to paper palette ────── */
+    --background: 45 38% 92%;        /* paper #f2eee2 */
+    --foreground: 43 21% 6%;         /* ink   #14120d */
+    --card: 45 41% 94%;              /* paper-panel #f7f3e8 — used by drawer & sidebar cards */
+    --card-foreground: 43 21% 6%;
+    --popover: 45 78% 98%;           /* near-white #fffdf8 — used by dialog */
+    --popover-foreground: 43 21% 6%;
+    --primary: 43 21% 6%;            /* ink — primary buttons fill */
+    --primary-foreground: 45 38% 92%;
+    --secondary: 43 30% 87%;         /* paper-alt #ebe5d4 — hover/press wash */
+    --secondary-foreground: 43 21% 6%;
+    --muted: 43 30% 87%;
+    --muted-foreground: 34 9% 48%;   /* text-mute #857d71 */
+    --accent: 43 30% 87%;            /* same as secondary; hovers */
+    --accent-foreground: 43 21% 6%;
+    --destructive: 9 75% 53%;        /* red #e1462b — but used SPARINGLY */
+    --destructive-foreground: 45 38% 92%;
+    --border: 40 24% 78%;            /* rule #d4cbb8 — hairlines */
+    --input: 40 24% 78%;
+    --ring: 43 21% 6%;               /* ink for focus rings */
+    --radius: 0;                     /* SQUARE corners. The brand. */
 
+    /* ── Raw brand vars ────────────────────────────────────── */
+    --paper:        #f2eee2;
+    --paper-alt:    #ebe5d4;
+    --paper-panel:  #f7f3e8;
+    --paper-white:  #fffdf8;
+    --ink:          #14120d;
+    --text:         #14120d;
+    --text-soft:    #514c42;
+    --text-mute:    #857d71;
+    --rule:         #d4cbb8;
+    --rule-dark:    rgba(20, 18, 13, 0.44);
+    --red:          #e1462b;
+    --red-soft:     #efd8ce;
+    --amber:        #b56011;         /* repurposed for stale/warn states */
+
+    /* ── Font stacks ───────────────────────────────────────── */
+    --mono:       "SFMono-Regular", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans-cn:    "Noto Sans SC", -apple-system, BlinkMacSystemFont,
+                  "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --display-la: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
+                  "Helvetica Neue", sans-serif;
+    --sans-la:    -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+                  "PingFang SC", "Microsoft YaHei", sans-serif;
+    --sans:       var(--sans-la);
+
+    /* ── Tracking ──────────────────────────────────────────── */
+    --wide:   0.12em;
+    --widest: 0.22em;
+
+    /* ── Platform colors (kept from old config for badge dots) */
     --platform-claude: 24 95% 53%;
     --platform-codex: 271 91% 65%;
     --platform-shared: 142 76% 36%;
-  }
-
-  .dark {
-    --background: 222 14% 8%;
-    --foreground: 0 0% 95%;
-    --card: 222 14% 11%;
-    --card-foreground: 0 0% 95%;
-    --primary: 0 0% 95%;
-    --primary-foreground: 222 14% 8%;
-    --secondary: 222 14% 16%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 222 14% 16%;
-    --muted-foreground: 220 9% 65%;
-    --accent: 222 14% 20%;
-    --accent-foreground: 0 0% 95%;
-    --destructive: 0 62% 50%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 222 14% 18%;
-    --input: 222 14% 18%;
-    --ring: 0 0% 80%;
   }
 
   * {
@@ -55,13 +85,17 @@
     height: 100%;
   }
   body {
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
-    font-feature-settings: 'rlig' 1, 'calt' 1;
+    background-color: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-feature-settings: 'kern', 'tnum';
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
-  /* Make the title bar drag region work with macOS hidden-inset */
+  ::selection { background: var(--red); color: var(--paper); }
+
+  /* Title bar drag region (macOS hidden-inset) */
   .titlebar-drag {
     -webkit-app-region: drag;
   }
@@ -70,13 +104,96 @@
   }
 }
 
+@layer components {
+  /* ── Kicker: mono uppercase red label ────────────────────── */
+  .tk {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: var(--widest);
+    text-transform: uppercase;
+    color: var(--red);
+    font-weight: 600;
+  }
+  .tk-muted {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: var(--widest);
+    text-transform: uppercase;
+    color: var(--text-mute);
+    font-weight: 600;
+  }
+
+  /* ── Meta caps: mono uppercase muted, slightly larger track ── */
+  .t-meta {
+    font-family: var(--mono);
+    color: var(--text-soft);
+    font-size: 10px;
+    letter-spacing: var(--widest);
+    text-transform: uppercase;
+  }
+
+  /* ── CN display heading ──────────────────────────────────── */
+  .t-cn {
+    font-family: var(--sans-cn);
+    font-weight: 900;
+    letter-spacing: -0.02em;
+  }
+  .t-cn-h1 {
+    font-family: var(--sans-cn);
+    font-weight: 900;
+    font-size: 30px;
+    line-height: 1.1;
+    letter-spacing: -0.03em;
+  }
+  .t-cn-h2 {
+    font-family: var(--sans-cn);
+    font-weight: 900;
+    font-size: 22px;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+  }
+
+  /* ── Italic Latin subtitle (kept available for future bi mode) ── */
+  .t-la {
+    font-family: var(--display-la);
+    font-style: italic;
+    color: var(--text-soft);
+    font-size: 13px;
+  }
+
+  /* ── Mono body ─────────────────────────────────────────── */
+  .t-mono {
+    font-family: var(--mono);
+  }
+}
+
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background-color: hsl(var(--border));
-    border-radius: 4px;
+    background-color: var(--rule);
   }
+
+  /* Text-color utilities mapping to brand vars (handy in places
+     where Tailwind's muted-foreground / soft variants don't land
+     where we want). */
+  .text-ink         { color: var(--ink); }
+  .text-soft        { color: var(--text-soft); }
+  .text-mute        { color: var(--text-mute); }
+  .text-red-brand   { color: var(--red); }
+  .text-amber-warn  { color: var(--amber); }
+
+  .bg-paper       { background-color: var(--paper); }
+  .bg-paper-alt   { background-color: var(--paper-alt); }
+  .bg-paper-panel { background-color: var(--paper-panel); }
+  .bg-paper-white { background-color: var(--paper-white); }
+  .bg-ink         { background-color: var(--ink); }
+  .bg-red-brand   { background-color: var(--red); }
+
+  .border-rule       { border-color: var(--rule); }
+  .border-rule-dark  { border-color: var(--rule-dark); }
+  .border-ink        { border-color: var(--ink); }
+  .border-red-brand  { border-color: var(--red); }
 }

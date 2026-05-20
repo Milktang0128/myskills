@@ -18,13 +18,18 @@ interface Props {
 
 export function LangToggle({ className, size = 'md' }: Props) {
   const { locale, setLocale, t } = useI18n();
-  const sizeCls = size === 'sm' ? 'h-6 px-1.5 text-[10px]' : 'h-7 px-2 text-xs';
+  // Sharp-corner, mono-uppercase segmented control matching the design's
+  // "lang-pill" pattern. The sidebar version (size=sm) sits on the dark
+  // ink band, so colors flip to paper-on-ink when inactive.
+  const sizeCls = size === 'sm' ? 'h-5 px-2 text-[10px]' : 'h-6 px-2.5 text-[10px]';
+  const isOnInk = size === 'sm';
   return (
     <div
       role="group"
       aria-label={t('app.lang.label')}
       className={cn(
-        'inline-flex items-center rounded-md border bg-card p-0.5',
+        'inline-flex items-center border font-mono uppercase tracking-[0.06em]',
+        isOnInk ? 'border-[rgba(212,203,184,0.25)]' : 'border-rule',
         className,
       )}
     >
@@ -32,6 +37,7 @@ export function LangToggle({ className, size = 'md' }: Props) {
         active={locale === 'en'}
         onClick={() => setLocale('en')}
         sizeCls={sizeCls}
+        onInk={isOnInk}
         aria-label="Switch to English"
       >
         {t('app.lang.en')}
@@ -40,6 +46,7 @@ export function LangToggle({ className, size = 'md' }: Props) {
         active={locale === 'zh'}
         onClick={() => setLocale('zh')}
         sizeCls={sizeCls}
+        onInk={isOnInk}
         aria-label="切换到中文"
       >
         {t('app.lang.zh')}
@@ -52,12 +59,14 @@ function Half({
   active,
   onClick,
   sizeCls,
+  onInk,
   children,
   ...rest
 }: {
   active: boolean;
   onClick: () => void;
   sizeCls: string;
+  onInk: boolean;
   children: React.ReactNode;
   'aria-label'?: string;
 }) {
@@ -67,11 +76,15 @@ function Half({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        'rounded-[5px] font-medium leading-none transition-colors',
+        'leading-none transition-colors',
         sizeCls,
-        active
-          ? 'bg-primary text-primary-foreground'
-          : 'text-muted-foreground hover:text-foreground',
+        onInk
+          ? active
+            ? 'bg-[#f2eee2] text-ink'
+            : 'text-[rgba(212,203,184,0.65)] hover:text-[#f2eee2]'
+          : active
+            ? 'bg-ink text-[#f2eee2]'
+            : 'text-mute hover:text-ink',
       )}
       {...rest}
     >

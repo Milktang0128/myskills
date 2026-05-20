@@ -3,23 +3,46 @@ import { Slot } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
+/**
+ * Button — adapted for the paper × ink design.
+ *
+ * Sharp corners (no radius), mono uppercase labels, hairline borders. The
+ * brand's "vermillion red" is reserved for primary-hover and destructive
+ * — never the default rest state, so it stays a meaningful signal.
+ *
+ * Variants:
+ *   - default: ink button on paper; hover slides to red (matches the
+ *     prototype's "ink → red" hover for primary CTAs).
+ *   - outline: paper button with ink border (matches the prototype's
+ *     standard secondary button — ink border, ink text, ink-fill on hover).
+ *   - ghost:   borderless, used for tertiary actions inside table rows.
+ *   - destructive: explicit red fill for irreversible actions only.
+ *   - link / secondary: kept for places that already use them.
+ */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex items-center justify-center whitespace-nowrap font-mono text-[11.5px] uppercase tracking-[0.06em] transition-colors ' +
+    'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink focus-visible:ring-offset-0 ' +
+    'disabled:pointer-events-none disabled:opacity-40',
   {
     variants: {
       variant: {
-        default: 'bg-primary text-primary-foreground hover:bg-primary/90',
-        destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
-        outline: 'border border-input bg-background hover:bg-accent hover:text-accent-foreground',
-        secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        ghost: 'hover:bg-accent hover:text-accent-foreground',
-        link: 'underline-offset-4 hover:underline text-primary',
+        default:
+          'border border-ink bg-ink text-[#f2eee2] hover:bg-red-brand hover:border-red-brand',
+        outline:
+          'border border-ink bg-paper text-ink hover:bg-ink hover:text-[#f2eee2]',
+        secondary:
+          'border border-rule bg-paper-alt text-ink hover:border-ink',
+        ghost:
+          'border border-rule bg-transparent text-soft hover:border-ink hover:text-ink',
+        destructive:
+          'border border-red-brand bg-red-brand text-[#f2eee2] hover:bg-[#c33b22] hover:border-[#c33b22]',
+        link: 'text-ink underline-offset-4 hover:underline normal-case tracking-normal font-sans',
       },
       size: {
-        default: 'h-9 px-4 py-2',
-        sm: 'h-8 rounded-md px-3 text-xs',
-        lg: 'h-10 rounded-md px-8',
-        icon: 'h-9 w-9',
+        default: 'h-7 px-3',
+        sm: 'h-6 px-2.5 text-[10.5px]',
+        lg: 'h-8 px-4 text-[12px]',
+        icon: 'h-7 w-7 px-0',
       },
     },
     defaultVariants: { variant: 'default', size: 'default' },

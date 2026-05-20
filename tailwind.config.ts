@@ -51,8 +51,14 @@ const config: Config = {
         sm: 'calc(var(--radius) - 4px)',
       },
       fontFamily: {
+        // Latin UI sans — used for body, buttons, chrome.
         sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"Helvetica Neue"', 'sans-serif'],
-        mono: ['"SF Mono"', 'Menlo', 'monospace'],
+        // Mono — kicker labels, version tags, status caps, paths.
+        mono: ['"SFMono-Regular"', '"SF Mono"', 'ui-monospace', 'Menlo', 'Consolas', 'monospace'],
+        // CN display — page H1/H2, brand wordmark. Loaded from Google Fonts.
+        'sans-cn': ['"Noto Sans SC"', '-apple-system', 'BlinkMacSystemFont', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', 'sans-serif'],
+        // Italic Latin display — subtitles (reserved for future bilingual mode).
+        'display-la': ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"Segoe UI"', '"Helvetica Neue"', 'sans-serif'],
       },
     },
   },
