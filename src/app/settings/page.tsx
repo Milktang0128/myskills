@@ -767,6 +767,29 @@ export default function SettingsPage() {
           <Separator />
 
           <section className="space-y-3">
+            <h2 className="text-base font-semibold">{t('settings.onboarding.rerun')}</h2>
+            <p className="text-xs text-muted-foreground">{t('settings.onboarding.rerun.help')}</p>
+            <div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  // Re-running = clear the completion timestamp + send the user
+                  // back to the workspace, where the wizard will re-mount.
+                  await api.settings.set('onboarding_completed_at', '');
+                  // Use replace so the back button doesn't return to settings.
+                  window.location.assign('/');
+                }}
+              >
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                {t('settings.onboarding.rerun')}
+              </Button>
+            </div>
+          </section>
+
+          <Separator />
+
+          <section className="space-y-3">
             <h2 className="text-base font-semibold">{t('settings.stats.header')}</h2>
             {stats && (
               <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">

@@ -10,6 +10,7 @@ import { SkillDetail } from '@/components/skill-detail';
 import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView } from '@/components/discover-view';
+import { OnboardingWizard } from '@/components/onboarding';
 import { useT } from '@/lib/i18n';
 
 export default function Workspace() {
@@ -27,6 +28,11 @@ export default function Workspace() {
   const [scanning, setScanning] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Onboarding state:
+  //   null  → unknown (still resolving — don't flash either UI)
+  //   true  → completed previously, hide wizard
+  //   false → first launch, show wizard
+  const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
 
   const reqIdRef = useRef(0);
 
@@ -86,6 +92,26 @@ export default function Workspace() {
     if (!bridgeReady) return;
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
+
+  // Resolve onboarding completion on first render. Re-resolves whenever the
+  // bridge becomes ready (e.g. window restart after a settings reset).
+  useEffect(() => {
+    if (!bridgeReady) return;
+    let cancelled = false;
+    api.settings
+      .get('onboarding_completed_at')
+      .then((v) => {
+        if (!cancelled) setOnboardingDone(v != null && v !== '');
+      })
+      .catch(() => {
+        // If we can't tell, assume done — never block the workspace on a
+        // setting read failure.
+        if (!cancelled) setOnboardingDone(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady]);
 
   useEffect(() => {
     refreshSkills();
@@ -227,6 +253,18 @@ export default function Workspace() {
             {toast}
           </div>
         </div>
+      )}
+
+      {onboardingDone === false && (
+        <OnboardingWizard
+          onDone={() => {
+            setOnboardingDone(true);
+            // Re-pull platforms/scenarios/stats — wizard may have enabled
+            // platforms or changed the canonical, so the workspace needs
+            // to re-render with the new context.
+            refreshMeta();
+          }}
+        />
       )}
     </main>
   );
