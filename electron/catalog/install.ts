@@ -17,19 +17,17 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { app } from 'electron';
 import { randomUUID, createHash } from 'node:crypto';
 import matter from 'gray-matter';
 import type { PlatformId, SyncPlan } from '../../shared/types';
 import { fetchSkillContent } from './skillssh';
 import { planInstallFromStaging } from '../sync/symlink';
+import { getStagingRoot } from '../paths';
 
 const STAGING_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — well past plan TTL
 
 function stagingRoot(): string {
-  const root = path.join(app.getPath('userData'), 'staging');
-  fs.mkdirSync(root, { recursive: true });
-  return root;
+  return getStagingRoot();
 }
 
 /**

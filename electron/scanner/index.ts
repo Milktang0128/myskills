@@ -1,15 +1,31 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { WebContents } from 'electron';
 import { getDb } from '../db';
-import { IPC } from '../../shared/ipc-channels';
 import type { ScanError, ScanResult } from '../../shared/types';
 import { parseSkill, SkillParseError } from './parser';
 import { checkPlatformRoot, isDisabledContainer, listPlatforms } from './platforms';
 import { enqueueSkill } from '../ai/categorize';
 import { hasSecret } from '../secrets/safe-storage';
 import { isExternalNetworkAllowed } from '../secrets/network-gate';
+
+/**
+ * Progress events emitted during a scan. The IPC layer translates these into
+ * `IPC.events.scan*` channel sends; CLI / test shells can subscribe directly.
+ */
+export type ScanProgressEvent =
+  | { type: 'started'; startedAt: number }
+  | {
+      type: 'platformDone';
+      platformId: string;
+      index: number;
+      total: number;
+      found: number;
+      skipped: boolean;
+    }
+  | { type: 'finished'; result: ScanResult };
+
+export type ScanProgressListener = (event: ScanProgressEvent) => void;
 
 interface DiscoveredSkill {
   parsed: NonNullable<ReturnType<typeof parseSkill>>;
@@ -25,11 +41,11 @@ interface DiscoveredSkill {
 // rather than racing on the FS or on module-level state.
 let inFlightScan: Promise<ScanResult> | null = null;
 
-export async function scanAll(sender?: WebContents): Promise<ScanResult> {
+export async function scanAll(onProgress?: ScanProgressListener): Promise<ScanResult> {
   if (inFlightScan) return inFlightScan;
   inFlightScan = (async () => {
     try {
-      return await doScan(sender);
+      return await doScan(onProgress);
     } finally {
       inFlightScan = null;
     }
@@ -37,10 +53,19 @@ export async function scanAll(sender?: WebContents): Promise<ScanResult> {
   return inFlightScan;
 }
 
-async function doScan(sender?: WebContents): Promise<ScanResult> {
+async function doScan(onProgress?: ScanProgressListener): Promise<ScanResult> {
+  const emit = (event: ScanProgressEvent): void => {
+    if (!onProgress) return;
+    try {
+      onProgress(event);
+    } catch {
+      /* listener errors must never abort a scan */
+    }
+  };
+
   const startedAt = Date.now();
   console.log('[scan] starting');
-  if (sender) safeSend(sender, IPC.events.scanStarted, { startedAt });
+  emit({ type: 'started', startedAt });
 
   const db = getDb();
   const errors: ScanError[] = [];
@@ -51,7 +76,8 @@ async function doScan(sender?: WebContents): Promise<ScanResult> {
     const platform = enabledPlatforms[i]!;
     const status = checkPlatformRoot(platform);
     if (!status.exists || !status.readable) {
-      if (sender) safeSend(sender, IPC.events.scanPlatformDone, {
+      emit({
+        type: 'platformDone',
         platformId: platform.id,
         index: i,
         total: enabledPlatforms.length,
@@ -70,7 +96,8 @@ async function doScan(sender?: WebContents): Promise<ScanResult> {
       const dErrors = scanDir(disabledPath, platform.id, true, discovered);
       errors.push(...dErrors);
     }
-    if (sender) safeSend(sender, IPC.events.scanPlatformDone, {
+    emit({
+      type: 'platformDone',
       platformId: platform.id,
       index: i,
       total: enabledPlatforms.length,
@@ -122,16 +149,16 @@ async function doScan(sender?: WebContents): Promise<ScanResult> {
   console.log(
     `[scan] finished: total=${result.totalFound} new=${result.newSkills} updated=${result.updatedSkills} removed=${result.removedSkills} errors=${result.errors.length} duration=${result.durationMs}ms`,
   );
-  if (sender) safeSend(sender, IPC.events.scanFinished, result);
+  emit({ type: 'finished', result });
   return result;
 }
 
-export async function maybeAutoScan(sender: WebContents): Promise<void> {
+export async function maybeAutoScan(onProgress?: ScanProgressListener): Promise<void> {
   const row = getDb()
     .prepare("SELECT value FROM settings WHERE key = 'auto_scan_on_launch'")
     .get() as { value: string } | undefined;
   if (row?.value !== '1') return;
-  await scanAll(sender);
+  await scanAll(onProgress);
 }
 
 export function getLastScanResult(): ScanResult | null {
@@ -415,13 +442,5 @@ function safeIsDir(p: string): boolean {
     return fs.statSync(p).isDirectory();
   } catch {
     return false;
-  }
-}
-
-function safeSend(sender: WebContents, channel: string, payload: unknown): void {
-  try {
-    if (!sender.isDestroyed()) sender.send(channel, payload);
-  } catch {
-    /* ignore */
   }
 }

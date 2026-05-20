@@ -1,21 +1,15 @@
 /**
  * Backup helpers used by replace-mode sync.
- * Backups live under app.getPath('userData')/backups/ so they never touch
- * the user's skill directories (preserves SPEC §5.3 D6).
+ * Backups live under <userDataDir>/backups/ (resolved via paths.ts) so they
+ * never touch the user's skill directories (preserves SPEC §5.3 D6).
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { app } from 'electron';
-
-let _backupRoot: string | null = null;
+import { getBackupRoot } from '../paths';
 
 export function backupRoot(): string {
-  if (_backupRoot) return _backupRoot;
-  const root = path.join(app.getPath('userData'), 'backups');
-  fs.mkdirSync(root, { recursive: true });
-  _backupRoot = root;
-  return root;
+  return getBackupRoot();
 }
 
 /**
