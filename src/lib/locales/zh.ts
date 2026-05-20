@@ -595,11 +595,11 @@ export const zh: Dict = {
   // 已知平台的本地化标签（仅在 onboarding 向导中替换）。
   // 通用概念类平台（如 shared）使用 i18n 文案；产品名类平台
   // （Claude Code、Codex、OpenCode、OpenClaw）保持英文原名。
-  'platform.shared.label': '用户级 Agent 文件夹',
+  'platform.shared.label': '通用 Agent 目录',
 
   'onboarding.canonical.title': '选定核心库平台',
   'onboarding.canonical.subtitle': '核心库平台是唯一来源。同步会让其他平台通过软链接指向它，让所有工具看到同一份文件。',
-  'onboarding.canonical.sharedHint': '用户级 Agent 文件夹是最稳妥的默认选择 —— 各工具都通过软链接看到这个中立目录。',
+  'onboarding.canonical.sharedHint': '通用 Agent 目录是最稳妥的默认选择 —— 各工具都通过软链接看到这个中立目录。',
   'onboarding.canonical.skillsLabel': '{{count}} 个技能',
 
   'onboarding.llm.title': '连接一个大语言模型（可选）',
