@@ -303,9 +303,12 @@ function PlatformsStep() {
               : cand.skillCount === 1
               ? t('onboarding.platforms.found', { count: cand.skillCount })
               : t('onboarding.platforms.foundMany', { count: cand.skillCount });
-            // Localized display label: built-in generic concepts like 'shared'
-            // get translated. Product-name platforms keep their English name.
+            // Localized display label + description: built-in generic concepts
+            // like 'shared' get translated. Product-name platforms (Claude
+            // Code etc.) keep their English brand/description.
             const displayLabel = cand.id === 'shared' ? t('platform.shared.label') : cand.label;
+            const displayDescription =
+              cand.id === 'shared' ? t('platform.shared.description') : cand.description;
             return (
               <div
                 key={cand.id}
@@ -325,7 +328,7 @@ function PlatformsStep() {
                     {cand.defaultDir}
                   </div>
                   <div className="text-[11px] text-muted-foreground">
-                    {cand.description} · {skillsHint}
+                    {displayDescription} · {skillsHint}
                   </div>
                 </div>
                 {isEnabled ? (

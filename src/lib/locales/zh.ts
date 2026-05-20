@@ -596,6 +596,7 @@ export const zh: Dict = {
   // 通用概念类平台（如 shared）使用 i18n 文案；产品名类平台
   // （Claude Code、Codex、OpenCode、OpenClaw）保持英文原名。
   'platform.shared.label': '通用 Agent 目录',
+  'platform.shared.description': '多个 Agent 工具按约定共用的用户目录，OpenClaw 等也读取这里',
 
   'onboarding.canonical.title': '选定核心库平台',
   'onboarding.canonical.subtitle': '核心库平台是唯一来源。同步会让其他平台通过软链接指向它，让所有工具看到同一份文件。',

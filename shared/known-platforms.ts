@@ -45,6 +45,17 @@ export interface KnownPlatformCandidate {
 }
 
 export const KNOWN_PLATFORMS: KnownPlatformCandidate[] = [
+  // `shared` first: it's the recommended canonical platform (and the safest
+  // default in the onboarding canonical-pick step). Putting it at the top of
+  // the discovery list keeps the wizard's two suggestions consistent and
+  // makes the cross-tool concept the first thing users see.
+  {
+    id: 'shared',
+    label: 'User Agents Folder',
+    defaultDir: '~/.agents/skills',
+    description:
+      'User-scoped folder shared across agent tools — OpenClaw and others read from here by convention',
+  },
   {
     id: 'claude',
     label: 'Claude Code',
@@ -68,12 +79,5 @@ export const KNOWN_PLATFORMS: KnownPlatformCandidate[] = [
     label: 'OpenClaw',
     defaultDir: '~/.openclaw/skills',
     description: 'OpenClaw — open-source Claude-Code-compatible agent',
-  },
-  {
-    id: 'shared',
-    label: 'User Agents Folder',
-    defaultDir: '~/.agents/skills',
-    description:
-      'User-scoped folder shared across agent tools — OpenClaw and others read from here by convention',
   },
 ];

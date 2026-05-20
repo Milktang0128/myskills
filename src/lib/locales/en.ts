@@ -596,6 +596,8 @@ export const en = {
   // Product-name platforms (Claude Code, Codex, OpenCode, OpenClaw) use
   // their DB label verbatim.
   'platform.shared.label': 'User Agents Folder',
+  'platform.shared.description':
+    'User-scoped folder shared across agent tools — OpenClaw and others read from here by convention',
 
   'onboarding.canonical.title': 'Pick a canonical platform',
   'onboarding.canonical.subtitle': 'The canonical platform is the source of truth. Sync creates symlinks on other platforms pointing at it, so all your tools see the same file.',
