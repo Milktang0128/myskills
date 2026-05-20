@@ -72,7 +72,7 @@ export const en = {
   'matrix.empty.guidance.discover.title': 'Browse popular skills in Discover',
   'matrix.empty.guidance.discover.body': 'Switch to the Discover tab in the sidebar to install community skills with one click.',
   'matrix.empty.guidance.settings.title': 'Add a platform in Settings',
-  'matrix.empty.guidance.settings.body': 'Point MySkills at your Claude / Codex / OpenCode skill folder so it can index what you already have.',
+  'matrix.empty.guidance.settings.body': 'Point MySkills at your Claude / Codex / OpenClaw skill folder so it can index what you already have.',
   'matrix.empty.guidance.rescan.title': 'Rescan',
   'matrix.empty.guidance.rescan.body': 'If you just added a SKILL.md file by hand, use the Rescan button in the sidebar.',
   'matrix.action.promote': 'Promote',

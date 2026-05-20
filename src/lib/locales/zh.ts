@@ -74,7 +74,7 @@ export const zh: Dict = {
   'matrix.empty.guidance.discover.title': '在「发现」浏览热门技能',
   'matrix.empty.guidance.discover.body': '切换侧边栏的「发现」标签，一键安装社区技能。',
   'matrix.empty.guidance.settings.title': '在「设置」添加平台',
-  'matrix.empty.guidance.settings.body': '把 Claude / Codex / OpenCode 的技能目录告诉 MySkills，它会自动索引你已有的技能。',
+  'matrix.empty.guidance.settings.body': '把 Claude / Codex / OpenClaw 的技能目录告诉 MySkills，它会自动索引你已有的技能。',
   'matrix.empty.guidance.rescan.title': '重新扫描',
   'matrix.empty.guidance.rescan.body': '如果你刚刚手动添加了 SKILL.md 文件，点击侧边栏的「重新扫描」按钮。',
   'matrix.action.promote': '提升',
