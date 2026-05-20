@@ -277,7 +277,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
               onClick={() => setFilter(f.value)}
               aria-pressed={filter === f.value}
               className={cn(
-                '-mr-px inline-flex items-center gap-1.5 border border-rule px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.06em] transition-colors',
+                '-mr-px inline-flex items-center gap-1.5 border border-rule px-2.5 py-1.5 font-mono text-[10.5px] uppercase leading-none tracking-[0.06em] transition-colors',
                 'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ink',
                 filter === f.value
                   ? 'relative z-[1] border-ink bg-ink text-[#f2eee2]'
@@ -289,10 +289,10 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             </button>
           ))}
           {matrix && (
-            <span className="ml-3 inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute">
+            <span className="ml-3 inline-flex items-center gap-1.5 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] text-mute">
               {t('matrix.canonicalLabel')}
               <PlatformBadge platformId={matrix.canonicalPlatform} canonical />
-              <Crown className="h-2.5 w-2.5 text-red-brand" />
+              <Crown className="h-2.5 w-2.5 -translate-y-px text-red-brand" />
             </span>
           )}
         </div>
@@ -410,7 +410,7 @@ function Table({
               >
                 <div className="inline-flex items-center gap-1">
                   {isCanon && (
-                    <Crown className="h-2.5 w-2.5 text-red-brand" aria-label="canonical platform" />
+                    <Crown className="h-2.5 w-2.5 -translate-y-px text-red-brand" aria-label="canonical platform" />
                   )}
                   <PlatformBadge platformId={p} canonical={isCanon} />
                 </div>
@@ -466,7 +466,7 @@ function Table({
             );
           } else {
             actionNode = (
-              <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-soft">
+              <span className="font-mono text-[10px] uppercase leading-none tracking-[0.08em] text-soft">
                 {t('matrix.action.inSync')}
               </span>
             );
@@ -489,7 +489,7 @@ function Table({
                 </div>
                 {row.description && (
                   <div
-                    className="truncate text-[11.5px] text-mute max-w-[280px] mt-0.5"
+                    className="truncate text-[11.5px] leading-[1.4] text-mute max-w-[280px] mt-0.5"
                     title={row.description}
                   >
                     {row.description}
@@ -599,31 +599,31 @@ function Legend() {
     // Mono-uppercase legend on a hairline top rule — same editorial
     // language as the prototype's footer compliance row. No card; the
     // rule does the separation work.
-    <div className="mt-6 border-t border-rule pt-3 font-mono text-[10px] uppercase tracking-[0.06em] text-mute">
+    <div className="mt-6 border-t border-rule pt-3 font-mono text-[10px] uppercase leading-none tracking-[0.06em] text-mute">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
         <span className="inline-flex items-center gap-1.5">
-          <Crown className="h-2.5 w-2.5 text-red-brand" /> {t('matrix.legend.canonical')}
+          <Crown className="h-2.5 w-2.5 -translate-y-px text-red-brand" /> {t('matrix.legend.canonical')}
         </span>
         <span className="inline-flex items-center gap-1.5 text-soft">
-          <Check className="h-2.5 w-2.5" /> {t('matrix.legend.inSync')}
+          <Check className="h-2.5 w-2.5 -translate-y-px" /> {t('matrix.legend.inSync')}
         </span>
         <span className="inline-flex items-center gap-1.5 text-amber-warn">
-          <Check className="h-2.5 w-2.5" /> {t('matrix.legend.stale')}
+          <Check className="h-2.5 w-2.5 -translate-y-px" /> {t('matrix.legend.stale')}
         </span>
         <span className="inline-flex items-center gap-1.5 text-soft">
-          <Link2 className="h-2.5 w-2.5" /> {t('matrix.legend.symlinkCanonical')}
+          <Link2 className="h-2.5 w-2.5 -translate-y-px" /> {t('matrix.legend.symlinkCanonical')}
         </span>
         <span className="inline-flex items-center gap-1.5 text-amber-warn">
-          <Link2 className="h-2.5 w-2.5 -rotate-45" /> {t('matrix.legend.symlinkOther')}
+          <Link2 className="h-2.5 w-2.5 -translate-y-px -rotate-45" /> {t('matrix.legend.symlinkOther')}
         </span>
         <span className="inline-flex items-center gap-1.5 text-red-brand">
-          <AlertTriangle className="h-2.5 w-2.5" /> {t('matrix.legend.broken')}
+          <AlertTriangle className="h-2.5 w-2.5 -translate-y-px" /> {t('matrix.legend.broken')}
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <EyeOff className="h-2.5 w-2.5" /> {t('matrix.legend.disabled')}
+          <EyeOff className="h-2.5 w-2.5 -translate-y-px" /> {t('matrix.legend.disabled')}
         </span>
         <span className="inline-flex items-center gap-1.5 opacity-50">
-          <Minus className="h-2.5 w-2.5" /> {t('matrix.legend.missing')}
+          <Minus className="h-2.5 w-2.5 -translate-y-px" /> {t('matrix.legend.missing')}
         </span>
       </div>
       <div className="mt-2 flex items-center gap-2 normal-case tracking-normal">

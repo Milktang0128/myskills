@@ -20,7 +20,10 @@ import { cn } from '@/lib/utils';
  *   - link / secondary: kept for places that already use them.
  */
 const buttonVariants = cva(
-  'inline-flex items-center justify-center whitespace-nowrap font-mono text-[11.5px] uppercase tracking-[0.06em] transition-colors ' +
+  // leading-none is critical: body's line-height: 1.55 inflates the text box
+  // inside fixed-height buttons (h-7 / h-8) and pushes glyphs above optical
+  // center. Especially visible with CJK labels (重新生成 etc).
+  'inline-flex items-center justify-center whitespace-nowrap font-mono text-[11.5px] uppercase leading-none tracking-[0.06em] transition-colors ' +
     'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink focus-visible:ring-offset-0 ' +
     'disabled:pointer-events-none disabled:opacity-40',
   {

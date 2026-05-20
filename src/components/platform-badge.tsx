@@ -26,7 +26,7 @@ export function PlatformBadge({ platformId, className, canonical }: Props) {
   return (
     <span
       className={cn(
-        'inline-flex items-center border px-1.5 py-px font-mono text-[10px] font-semibold uppercase tracking-[0.08em]',
+        'inline-flex items-center border px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase leading-none tracking-[0.08em]',
         canonical ? 'border-red-brand text-red-brand' : 'border-rule text-soft',
         className,
       )}

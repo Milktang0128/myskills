@@ -350,7 +350,7 @@ export default function SettingsPage() {
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </Link>
-          <div className="flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold">
+          <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase leading-none tracking-[var(--widest)] font-semibold">
             <span className="text-red-brand">MYSKILLS</span>
             <span className="text-mute">·</span>
             <span className="text-ink">{t('settings.title')}</span>

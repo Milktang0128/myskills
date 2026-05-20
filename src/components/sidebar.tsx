@@ -92,7 +92,7 @@ export function Sidebar({
         <div className="w-[68px] shrink-0" /> {/* traffic-light reservation */}
         <div className="titlebar-no-drag flex h-full flex-1 items-center gap-2.5 px-3.5 min-w-0">
           <BrandMark />
-          <span className="t-cn truncate text-[14px] leading-tight">MySkills</span>
+          <span className="t-cn truncate text-[14px] leading-none">MySkills</span>
         </div>
       </div>
 
@@ -100,7 +100,7 @@ export function Sidebar({
       <button
         onClick={onRescan}
         disabled={scanning}
-        className="mx-2 mt-2 flex h-8 shrink-0 items-center gap-2 border border-[rgba(212,203,184,0.22)] bg-transparent px-2.5 font-mono text-[10px] uppercase tracking-[var(--wide)] text-[#f2eee2] transition-colors hover:border-[rgba(212,203,184,0.4)] hover:bg-[rgba(255,255,255,0.05)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(212,203,184,0.5)]"
+        className="mx-2 mt-2 flex h-8 shrink-0 items-center gap-2 border border-[rgba(212,203,184,0.22)] bg-transparent px-2.5 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] text-[#f2eee2] transition-colors hover:border-[rgba(212,203,184,0.4)] hover:bg-[rgba(255,255,255,0.05)] disabled:opacity-60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(212,203,184,0.5)]"
       >
         <RefreshCw className={cn('h-3 w-3', scanning && 'animate-spin')} />
         {scanning ? t('sidebar.scanning') : t('sidebar.rescan')}
@@ -160,7 +160,7 @@ export function Sidebar({
           {scenarios.length === 0 ? (
             <button
               onClick={onCreateScenario}
-              className="block w-full px-2.5 py-1.5 text-left font-mono text-[10px] uppercase tracking-[var(--wide)] text-[rgba(212,203,184,0.55)] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#f2eee2] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(212,203,184,0.5)]"
+              className="block w-full px-2.5 py-1.5 text-left font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] text-[rgba(212,203,184,0.55)] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#f2eee2] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[rgba(212,203,184,0.5)]"
             >
               {t('sidebar.scenarios.empty')}
             </button>
@@ -264,7 +264,7 @@ function SidebarRow({
       {typeof count === 'number' && count > 0 ? (
         <span
           className={cn(
-            'font-mono text-[10.5px] tabular-nums',
+            'font-mono text-[10.5px] leading-none tabular-nums',
             active ? 'text-[rgba(242,238,226,0.7)]' : 'text-[rgba(212,203,184,0.45)]',
             warnCount && 'text-[#e6b56b]',
             dangerCount && 'text-[var(--red)]',

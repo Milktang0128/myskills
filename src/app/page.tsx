@@ -238,7 +238,7 @@ export default function Workspace() {
             this strip is full-width from its left edge. */}
         <header className="titlebar-drag flex h-11 shrink-0 items-center gap-3 border-b border-rule px-4 bg-paper">
           <div className="titlebar-no-drag flex flex-1 items-center gap-3 min-w-0">
-            <div className="flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold min-w-0">
+            <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase leading-none tracking-[var(--widest)] font-semibold min-w-0">
               <span className="text-red-brand shrink-0">MYSKILLS</span>
               <span className="text-mute">·</span>
               <span className="text-ink truncate">{headerTitle}</span>

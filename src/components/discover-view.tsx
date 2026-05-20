@@ -815,7 +815,7 @@ function ResultRow({
       </div>
       <div className="mt-0.5 flex items-center gap-2">
         <span
-          className="truncate font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute"
+          className="truncate font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] text-mute"
           title={result.source}
         >
           BY {result.source.toUpperCase()}
@@ -875,14 +875,14 @@ export function ModeSegmented({
     <div
       role="tablist"
       aria-label={t('discover.mode.label')}
-      className="inline-flex shrink-0 items-center border border-rule font-mono text-[10px] uppercase tracking-[0.06em]"
+      className="inline-flex shrink-0 items-center border border-rule font-mono text-[10px] uppercase leading-none tracking-[0.06em]"
     >
       <button
         role="tab"
         aria-selected={mode === 'keyword'}
         onClick={() => onChange('keyword')}
         className={cn(
-          'px-2 py-1 transition-colors',
+          'px-2.5 py-1.5 transition-colors',
           mode === 'keyword'
             ? 'bg-ink text-[#f2eee2]'
             : 'text-mute hover:text-ink',
@@ -897,12 +897,12 @@ export function ModeSegmented({
         title={aiTitle}
         onClick={() => aiClickable && onChange('ai')}
         className={cn(
-          'flex items-center gap-1 px-2 py-1 transition-colors',
+          'flex items-center gap-1 px-2.5 py-1.5 transition-colors',
           mode === 'ai' && aiClickable ? 'bg-ink text-[#f2eee2]' : 'text-mute hover:text-ink',
           !aiClickable && 'cursor-not-allowed opacity-50 hover:text-mute',
         )}
       >
-        <Sparkles className="h-3 w-3" />
+        <Sparkles className="h-3 w-3 -translate-y-px" />
         {t('discover.mode.ai')}
       </button>
     </div>

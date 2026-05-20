@@ -148,8 +148,8 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
         <div className="mx-auto max-w-3xl space-y-7 px-7 py-7">
           {/* Page header — kicker + CN H1 + intro + metadata caps */}
           <header>
-            <div className="tk flex items-center gap-2">
-              <MapIcon className="h-3 w-3 text-red-brand" aria-hidden="true" />
+            <div className="tk flex items-center gap-2 leading-none">
+              <MapIcon className="h-3 w-3 -translate-y-px text-red-brand" aria-hidden="true" />
               MAP · {t('header.map').toUpperCase()}
             </div>
             <div className="mt-2 flex items-start justify-between gap-3">
@@ -180,7 +180,7 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
             {overview.intro && (
               <p className="mt-3 text-[13.5px] leading-[1.6] text-soft max-w-[56ch]">{overview.intro}</p>
             )}
-            <p className="mt-3 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute">
+            <p className="mt-3 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] tabular-nums text-mute">
               {t('map.metadata', {
                 when: formatRelative(overview.generatedAt),
                 model: overview.model,
@@ -191,9 +191,9 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
           <div className="space-y-6">
             {overview.clusters.map((c) => (
               <section key={c.key} className="border-t border-rule pt-4">
-                <header className="mb-2 flex items-baseline justify-between gap-3">
+                <header className="mb-2 flex items-center justify-between gap-3">
                   <h2 className="t-cn text-[18px] leading-tight">{c.name}</h2>
-                  <span className="font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute shrink-0">
+                  <span className="font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] tabular-nums text-mute shrink-0">
                     {t('map.cluster.count', { count: c.skills.length })}
                   </span>
                 </header>
@@ -210,11 +210,11 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
 
             {overview.uncategorized.length > 0 && (
               <section className="border-t border-dashed border-rule pt-4">
-                <header className="mb-2 flex items-baseline justify-between gap-3">
+                <header className="mb-2 flex items-center justify-between gap-3">
                   <h2 className="t-cn text-[18px] leading-tight text-mute">
                     {t('map.uncategorized.heading')}
                   </h2>
-                  <span className="font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute shrink-0">
+                  <span className="font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] tabular-nums text-mute shrink-0">
                     {t('map.cluster.count', { count: overview.uncategorized.length })}
                   </span>
                 </header>
@@ -251,11 +251,11 @@ function SkillRow({
       <button
         type="button"
         onClick={onClick}
-        className="flex w-full items-baseline gap-3 border-l-2 border-l-transparent px-2 py-1.5 text-left text-[13px] hover:bg-paper-alt/60 hover:border-l-rule focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ink"
+        className="flex w-full items-center gap-3 border-l-2 border-l-transparent px-2 py-1.5 text-left text-[13px] hover:bg-paper-alt/60 hover:border-l-rule focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ink"
         title={entry.name}
       >
-        <span className="min-w-0 flex-1 truncate font-medium text-ink">{entry.name}</span>
-        <span className="shrink-0 max-w-[40%] truncate font-mono text-[10.5px] uppercase tracking-[0.04em] text-mute">
+        <span className="min-w-0 flex-1 truncate font-medium text-ink leading-tight">{entry.name}</span>
+        <span className="shrink-0 max-w-[40%] truncate font-mono text-[10.5px] uppercase leading-none tracking-[0.04em] text-mute">
           {entry.brief}
         </span>
       </button>
@@ -273,8 +273,8 @@ function StaleBanner({
   const t = useT();
   return (
     <div className="flex items-center gap-3 border-b border-red-brand/40 bg-[rgba(225,70,43,0.04)] px-4 py-2.5">
-      <Sparkles className="h-3.5 w-3.5 shrink-0 text-red-brand" aria-hidden="true" />
-      <span className="flex-1 font-mono text-[11px] uppercase tracking-[0.06em] text-ink">
+      <Sparkles className="h-3.5 w-3.5 -translate-y-px shrink-0 text-red-brand" aria-hidden="true" />
+      <span className="flex-1 font-mono text-[11px] uppercase leading-none tracking-[0.06em] text-ink">
         {t('map.stale.message')}
       </span>
       <Button size="sm" variant="outline" onClick={onRefresh} disabled={generating}>

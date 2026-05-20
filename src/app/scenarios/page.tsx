@@ -116,7 +116,7 @@ export default function ScenariosPage() {
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </Link>
-          <div className="flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold">
+          <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase leading-none tracking-[var(--widest)] font-semibold">
             <span className="text-red-brand">MYSKILLS</span>
             <span className="text-mute">·</span>
             <span className="text-ink">{t('scenarios.title')}</span>
@@ -193,9 +193,9 @@ export default function ScenariosPage() {
                       className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
                       style={{ backgroundColor: sc.color ?? '#888' }}
                     />
-                    <h2 className="t-cn text-[20px] truncate" title={sc.name}>{sc.name}</h2>
+                    <h2 className="t-cn text-[20px] truncate leading-tight" title={sc.name}>{sc.name}</h2>
                     {sc.isBuiltin && (
-                      <span className="border border-rule px-1.5 py-px font-mono text-[9.5px] uppercase tracking-[0.06em] text-mute shrink-0">
+                      <span className="border border-rule px-1.5 py-0.5 font-mono text-[9.5px] uppercase leading-none tracking-[0.06em] text-mute shrink-0">
                         {t('scenarios.builtin')}
                       </span>
                     )}
@@ -226,7 +226,7 @@ export default function ScenariosPage() {
                     )}
                   </div>
                 </div>
-                <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute">{sc.key}</p>
+                <p className="mt-1.5 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] text-mute">{sc.key}</p>
                 {sc.description && <p className="mt-3 text-[12.5px] leading-[1.55] text-soft">{sc.description}</p>}
                 <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.06em] text-red-brand tabular-nums">
                   {sc.skillCount ?? 0}

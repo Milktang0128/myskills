@@ -134,16 +134,16 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
       }}
     >
       <div className="titlebar-drag flex h-11 shrink-0 items-center justify-between border-b border-rule px-4">
-        <span className="font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold text-red-brand">
+        <span className="font-mono text-[10px] uppercase leading-none tracking-[var(--widest)] font-semibold text-red-brand">
           SKILL · {t('detail.region.aria')}
         </span>
         <button
           onClick={onClose}
           aria-label={t('common.close')}
           title={t('detail.close.title')}
-          className="titlebar-no-drag inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink"
+          className="titlebar-no-drag inline-flex items-center gap-1 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] text-mute hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink"
         >
-          <X className="h-2.5 w-2.5" aria-hidden="true" />
+          <X className="h-2.5 w-2.5 -translate-y-px" aria-hidden="true" />
           <span>{t('common.close')}</span>
         </button>
       </div>
@@ -159,7 +159,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
             {skill.description && (
               <p className="text-[13px] leading-relaxed text-soft">{skill.description}</p>
             )}
-            <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute pt-2">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] tabular-nums text-mute pt-2">
               {skill.version && <span>V{skill.version}</span>}
               {skill.author && <span>{skill.author}</span>}
               {skill.license && <span>{skill.license}</span>}
@@ -179,8 +179,8 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
           <DrawerSection title={t('detail.section.scenarios')}>
             {aiSuggestions.length > 0 && (
               <div className="mb-3 border border-dashed border-red-brand/40 bg-[rgba(225,70,43,0.05)] p-2">
-                <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-[var(--wide)] text-red-brand">
-                  <Sparkles className="h-3 w-3" />
+                <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] font-semibold uppercase leading-none tracking-[var(--wide)] text-red-brand">
+                  <Sparkles className="h-3 w-3 -translate-y-px" />
                   {t('detail.aiSuggestions.heading')}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -253,7 +253,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                         setSkill(refreshed);
                       }}
                       className={cn(
-                        'inline-flex items-center gap-1.5 border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.06em] transition-colors',
+                        'inline-flex items-center gap-1.5 border px-2 py-1.5 font-mono text-[10px] uppercase leading-none tracking-[0.06em] transition-colors',
                         active
                           ? 'border-ink bg-ink text-[#f2eee2]'
                           : 'border-rule text-soft hover:border-ink hover:text-ink',
@@ -419,13 +419,13 @@ function LocationRow({
     <div className="border border-rule bg-paper-white p-3 text-[12px]">
       <div className="flex items-center gap-2">
         <PlatformBadge platformId={loc.platformId} canonical={isCanonical} />
-        <span className={cn('inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[var(--wide)]', statusTone)}>
-          {statusIcon}
+        <span className={cn('inline-flex items-center gap-1 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)]', statusTone)}>
+          <span className="-translate-y-px">{statusIcon}</span>
           {statusLabel}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           {loc.mtime && (
-            <span className="font-mono text-[9.5px] uppercase tracking-[0.04em] text-mute" title={new Date(loc.mtime).toLocaleString()}>
+            <span className="font-mono text-[9.5px] uppercase leading-none tracking-[0.04em] tabular-nums text-mute" title={new Date(loc.mtime).toLocaleString()}>
               {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
             </span>
           )}
@@ -443,7 +443,7 @@ function LocationRow({
           )}
         </div>
       </div>
-      <div className="mt-2.5 space-y-0.5 font-mono text-[10px] leading-[1.6] text-mute">
+      <div className="mt-2.5 space-y-0.5 font-mono text-[10px] leading-[1.6] tabular-nums text-mute">
         <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
         {loc.isSymlink && (
           <div className="break-all">

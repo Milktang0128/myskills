@@ -87,11 +87,11 @@ export default function HistoryPage() {
           >
             <ArrowLeft className="h-3.5 w-3.5" />
           </Link>
-          <div className="flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold">
+          <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase leading-none tracking-[var(--widest)] font-semibold">
             <span className="text-red-brand">MYSKILLS</span>
             <span className="text-mute">·</span>
             <span className="text-ink">{t('history.title')}</span>
-            <span className="ml-2 text-mute normal-case tracking-[var(--wide)]">
+            <span className="ml-2 text-mute normal-case tracking-[var(--wide)] tabular-nums">
               {t('history.entries', { count: rows.length })}
             </span>
           </div>
@@ -106,12 +106,12 @@ export default function HistoryPage() {
             <table className="w-full">
               <thead className="sticky top-0 z-10 bg-paper">
                 <tr className="border-b-2 border-ink">
-                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft">{t('history.col.when')}</th>
-                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft">{t('history.col.action')}</th>
-                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft">{t('history.col.platform')}</th>
-                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft">{t('history.col.paths')}</th>
-                  <th className="px-3 py-2.5 text-center font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft">{t('history.col.result')}</th>
-                  <th className="px-3 py-2.5 text-right font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft">{t('history.col.rollback')}</th>
+                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] font-semibold text-soft">{t('history.col.when')}</th>
+                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] font-semibold text-soft">{t('history.col.action')}</th>
+                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] font-semibold text-soft">{t('history.col.platform')}</th>
+                  <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] font-semibold text-soft">{t('history.col.paths')}</th>
+                  <th className="px-3 py-2.5 text-center font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] font-semibold text-soft">{t('history.col.result')}</th>
+                  <th className="px-3 py-2.5 text-right font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] font-semibold text-soft">{t('history.col.rollback')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -152,19 +152,19 @@ function HistoryRow({
       : 'text-soft';
   return (
     <tr className={cn('border-b border-rule align-top', row.rolled_back_at && 'opacity-60')}>
-      <td className="whitespace-nowrap px-3 py-3 font-mono text-[10.5px] uppercase tracking-[0.04em] text-mute">
+      <td className="whitespace-nowrap px-3 py-3 font-mono text-[10.5px] uppercase leading-none tracking-[0.04em] tabular-nums text-mute">
         {formatRelative(row.created_at)}
       </td>
       <td className="px-3 py-3">
-        <span className={cn('inline-flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[var(--wide)]', actionTone)}>
-          <Icon className="h-3 w-3" />
+        <span className={cn('inline-flex items-center gap-1 font-mono text-[10.5px] uppercase leading-none tracking-[var(--wide)]', actionTone)}>
+          <Icon className="h-3 w-3 -translate-y-px" />
           {row.action}
         </span>
       </td>
       <td className="px-3 py-3">
         {row.platform_id ? <PlatformBadge platformId={row.platform_id as PlatformId} /> : null}
       </td>
-      <td className="px-3 py-3 font-mono text-[10.5px] leading-[1.6] text-mute">
+      <td className="px-3 py-3 font-mono text-[10.5px] leading-[1.6] tabular-nums text-mute">
         <div className="break-all">↳ {row.to_path}</div>
         {row.from_path && <div className="break-all">← {row.from_path}</div>}
         {row.backup_path && (
@@ -175,16 +175,16 @@ function HistoryRow({
       </td>
       <td className="px-3 py-3 text-center">
         {row.success === 1 ? (
-          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.08em] text-soft">
-            <CheckCircle2 className="h-3 w-3" /> {t('history.result.ok')}
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase leading-none tracking-[0.08em] text-soft">
+            <CheckCircle2 className="h-3 w-3 -translate-y-px" /> {t('history.result.ok')}
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.08em] text-red-brand" title={row.message ?? ''}>
-            <XCircle className="h-3 w-3" /> {t('history.result.fail')}
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase leading-none tracking-[0.08em] text-red-brand" title={row.message ?? ''}>
+            <XCircle className="h-3 w-3 -translate-y-px" /> {t('history.result.fail')}
           </span>
         )}
         {row.rolled_back_at && (
-          <div className="font-mono text-[10px] uppercase tracking-[0.06em] text-mute">{t('history.rolledBack')}</div>
+          <div className="mt-1 font-mono text-[10px] uppercase leading-none tracking-[0.06em] text-mute">{t('history.rolledBack')}</div>
         )}
       </td>
       <td className="px-3 py-3 text-right">

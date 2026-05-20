@@ -59,7 +59,7 @@ export function SkillCard({ skill, selected, onSelect }: Props) {
           {skill.scenarios.map((sc) => (
             <span
               key={sc.id}
-              className="inline-flex items-center border border-rule px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em] text-soft"
+              className="inline-flex items-center border border-rule px-1.5 py-0.5 font-mono text-[10px] uppercase leading-none tracking-[0.06em] text-soft"
             >
               {sc.name}
             </span>
