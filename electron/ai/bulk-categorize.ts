@@ -325,36 +325,44 @@ function buildPrompt(
   batch: SkillRow[],
 ): { system: string; user: string } {
   const system =
-    'You categorize a user\'s AI agent skills into "scenarios" (topical buckets).\n' +
+    'You are an active librarian categorizing a user\'s AI agent skills into "scenarios" (topical buckets).\n' +
+    'Your job is to CONFIDENTLY assign as many skills as possible to good scenarios — the user can override individual rows in a preview UI. Being too cautious hurts the user more than a slightly imperfect assignment.\n' +
     '\n' +
     'You are given:\n' +
-    '  - existingScenarios: scenarios the user has already defined. Reuse these whenever a skill fits.\n' +
-    '  - proposedScenarios: scenarios already proposed in earlier batches of this same session. Reuse keys exactly.\n' +
+    '  - existingScenarios: scenarios the user has already defined. Reuse these when a skill plausibly fits.\n' +
+    '  - proposedScenarios: scenarios already proposed in earlier batches of this same session. Reuse keys exactly when applicable.\n' +
     '  - skills: skills to categorize this batch.\n' +
     '\n' +
     'Output JSON of this exact shape:\n' +
     '{\n' +
     '  "intent": string,         // one-sentence summary IN THE USER\'S LANGUAGE describing the overall skill mix\n' +
-    '  "proposedScenarios": [    // ONLY include scenarios you propose as NEW; do NOT repeat existing or already-proposed\n' +
+    '  "proposedScenarios": [    // NEW scenarios you propose. Be GENEROUS — propose any bucket that captures a real theme.\n' +
     '    { "key": string,        // lower-kebab-case slug, English, 1-3 words (e.g. "version-control")\n' +
     '      "name": string,       // display name IN THE USER\'S LANGUAGE (e.g. "版本管理" or "Version Control")\n' +
-    '      "reason": string,     // one sentence why this bucket is useful\n' +
+    '      "reason": string,     // one sentence in the user\'s language explaining what this bucket holds\n' +
     '      "color": string }     // optional hex (e.g. "#10B981")\n' +
     '  ],\n' +
-    '  "assignments": [          // EXACTLY one entry per skill in the input batch\n' +
+    '  "assignments": [          // EXACTLY one entry per input skill\n' +
     '    { "skillId": string,    // echo the input id verbatim\n' +
-    '      "scenarioKey": string,// existing key, or proposed-new key, or empty string ("") to skip\n' +
-    '      "isNew": boolean,     // true if scenarioKey refers to a scenario in your proposedScenarios\n' +
-    '      "why": string }       // one sentence in the user\'s language; OK to omit if obvious\n' +
+    '      "scenarioKey": string,// existing key, or proposed-new key, or empty string ("") only as last resort\n' +
+    '      "isNew": boolean,     // true if scenarioKey refers to one you just added to proposedScenarios\n' +
+    '      "why": string }       // one sentence in the user\'s language; brief\n' +
     '  ]\n' +
     '}\n' +
     '\n' +
-    'Rules:\n' +
-    '  1. Prefer existing scenarios when a skill plausibly fits — do not propose a near-duplicate.\n' +
-    '  2. Propose a new scenario only when ≥2 skills in this batch would use it AND it does not duplicate an existing one.\n' +
-    '  3. When unsure, set "scenarioKey": "" — the user will decide. Do not invent.\n' +
-    '  4. Never reuse a "proposedScenarios" entry that the user has not asked you to propose — those are read-only context.\n' +
-    '  5. Output nothing outside the JSON.\n';
+    'Rules (in priority order):\n' +
+    '  1. ASSIGN, do not skip. Every skill has a theme — find the best fit and commit. Skip ("") only when the skill name + description are too ambiguous to read at all (rare).\n' +
+    '  2. Reuse an existing scenario when the skill plausibly fits. Imperfect-but-related > skip.\n' +
+    '  3. If 1-2 existing scenarios fit poorly and the skill (or a small cluster of skills) represents a real theme, PROPOSE A NEW SCENARIO. Even one skill is enough to justify a new bucket if it\'s a distinct theme (e.g. "version control", "deployment", "knowledge management").\n' +
+    '  4. Propose distinctive scenario names in the user\'s language. Don\'t duplicate existing scenarios by another name.\n' +
+    '  5. Never reuse a "proposedScenarios" entry that the user has not asked you to propose — those are read-only context.\n' +
+    '  6. Output nothing outside the JSON.\n' +
+    '\n' +
+    'Examples of good behavior:\n' +
+    '  - 5 skills about Git/Github → propose "version-control" / "版本管理" if no existing scenario fits.\n' +
+    '  - 3 skills about Vercel/Cloudflare/deploy → propose "deployment" / "部署".\n' +
+    '  - A single skill about RAG search → either fit into existing "知识" or propose "rag" / "检索增强".\n' +
+    '  - A skill that\'s clearly about UI design when "创意" exists → use existing "创意".\n';
 
   const existingBlock = existing
     .map((s) => `- key=${s.key} name=${s.name} description=${(s.description ?? '').slice(0, 100)}`)

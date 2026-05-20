@@ -242,7 +242,11 @@ export function BulkCategorizeDialog({
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {t('bulkCat.assignments', { count: plan.assignments.length })}
               </h3>
-              <ScrollArea className="max-h-[300px] rounded-md border">
+              {/* h-[300px] (not max-h) so the Radix ScrollArea Viewport
+                  resolves to a definite height and actually scrolls when
+                  there are >7-8 rows. max-h inside a nested flex column
+                  leaves Viewport at auto → no overflow → no scroll. */}
+              <ScrollArea className="h-[300px] rounded-md border">
                 <ul className="divide-y">
                   {plan.assignments.map((a) => (
                     <li key={a.skillId}>
