@@ -72,6 +72,10 @@ export const IPC = {
     acceptSuggestion: 'ai:acceptSuggestion',
     dismissSuggestion: 'ai:dismissSuggestion',
     queueStatus: 'ai:queueStatus',
+    /** Build a bulk-categorization plan for the given skills. One LLM call. */
+    bulkCategorize: 'ai:bulkCategorize',
+    /** Apply a (possibly user-edited) bulk plan in a single DB transaction. */
+    applyBulkCategorization: 'ai:applyBulkCategorization',
   },
   events: {
     scanStarted: 'event:scanStarted',

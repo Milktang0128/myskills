@@ -433,3 +433,78 @@ export interface AiScenarioSuggestion {
   reason: string | null;
   suggestedAt: number;
 }
+
+/* ---------------------------------------------------------------------------
+ * Bulk AI categorization
+ *
+ * Triggered from the 未分类 (unscenarized) view. The user clicks one button,
+ * the main process sends every unscenarized skill to the LLM in one batch,
+ * and gets back a *plan*: a proposed set of new scenarios + one assignment
+ * per skill. The user previews the plan in a dialog, can edit any row's
+ * target (existing scenario / proposed-new / skip), can opt out of any
+ * proposed-new scenario, and clicks Apply.
+ *
+ * The plan shape is the contract between renderer and main; it's also what
+ * the UI mutates as the user edits, so it carries everything the apply step
+ * needs (no second IPC roundtrip to re-fetch state).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * A scenario the LLM thinks the user should create — they have several
+ * skills that don't fit existing buckets and would cluster cleanly into
+ * a new one. Has `usedByCount` so the UI can show "version-control —
+ * suggested for 7 skills".
+ */
+export interface BulkCategorizeProposedScenario {
+  /** Lower-snake-case identifier suitable for the scenarios.key column. */
+  key: string;
+  /** Display name in the user's language (intent → label). */
+  name: string;
+  /** Short 1-sentence rationale shown in the preview UI. */
+  reason: string;
+  /** Hex color suggested by the LLM (optional — UI assigns a default if missing). */
+  color?: string;
+  /** Count of assignments in the same plan that point at this scenario. */
+  usedByCount: number;
+}
+
+/** One row in the proposed plan. */
+export interface BulkCategorizeAssignment {
+  skillId: string;
+  /** Skill name, denormalized so the UI can render without a JOIN. */
+  skillName: string;
+  /**
+   * Target scenario. Three resolution forms:
+   *   { existingScenarioId: number } — link to a scenario already in the DB.
+   *   { newScenarioKey: string }     — link to a scenario in `proposedScenarios`.
+   *   { skip: true }                 — leave skill unscenarized (LLM unsure).
+   */
+  target:
+    | { kind: 'existing'; scenarioId: number }
+    | { kind: 'new'; scenarioKey: string }
+    | { kind: 'skip'; reason?: string };
+  /** Optional 1-sentence justification for the assignment. */
+  why?: string;
+}
+
+export interface BulkCategorizePlan {
+  /** Optional intent summary from Phase 1 of the LLM call, for context. */
+  intent?: string;
+  /** New scenarios the LLM thinks should be created. */
+  proposedScenarios: BulkCategorizeProposedScenario[];
+  /** One row per input skill — every skill the user sent gets a row,
+   *  even if its target is `skip`. */
+  assignments: BulkCategorizeAssignment[];
+  /** How many skills were actually classified (assignments.length minus skips). */
+  classifiedCount: number;
+  /** How many were left unscenarized by the LLM. */
+  skippedCount: number;
+}
+
+/** Result of applying a (possibly user-edited) plan. */
+export interface BulkCategorizeApplyResult {
+  newScenariosCreated: number;
+  assignmentsApplied: number;
+  /** Rows we couldn't apply (skill deleted, scenario name conflict, etc.). */
+  errors: Array<{ skillId: string; message: string }>;
+}

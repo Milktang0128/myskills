@@ -644,4 +644,39 @@ export const en = {
   'common.copy': 'Copy',
   'common.copied': 'Copied',
   'common.openInFinder': 'Reveal in Finder',
+
+  // ── Bulk AI categorize ──────────────────────────────────────────────────
+  'bulkCat.cta': 'Let AI categorize all {{count}}',
+  'bulkCat.ctaShort': 'AI categorize',
+  'bulkCat.helper':
+    'AI reads each skill and proposes a scenario for it. You preview and edit before anything is applied.',
+  'bulkCat.disabled.noAi':
+    'Configure an LLM in Settings → AI to enable AI categorization.',
+  'bulkCat.disabled.empty': 'Nothing to categorize.',
+  'bulkCat.preparing': 'AI is analyzing {{count}} skills…',
+  'bulkCat.error': 'AI categorization failed: {{message}}',
+
+  // Dialog
+  'bulkCat.dialog.title': 'AI categorization preview',
+  'bulkCat.dialog.subtitle':
+    'Review and edit. Nothing is applied until you click "Apply".',
+  'bulkCat.intentLabel': 'Understood as:',
+  'bulkCat.newScenarios': 'Suggested new scenarios',
+  'bulkCat.newScenarios.help':
+    'These will be created if at least one skill points at them. Uncheck to drop a proposal.',
+  'bulkCat.newBadge': 'NEW',
+  'bulkCat.usedByCount': 'used by {{count}} skill',
+  'bulkCat.usedByCountMany': 'used by {{count}} skills',
+  'bulkCat.assignments': 'Assignments ({{count}})',
+  'bulkCat.row.skip': 'Leave unscenarized',
+  'bulkCat.summary.willCreate': '{{count}} new scenario',
+  'bulkCat.summary.willCreateMany': '{{count}} new scenarios',
+  'bulkCat.summary.willAssign': '{{count}} assignment',
+  'bulkCat.summary.willAssignMany': '{{count}} assignments',
+  'bulkCat.summary.willSkip': '{{count}} skipped',
+  'bulkCat.cancel': 'Cancel',
+  'bulkCat.apply': 'Apply',
+  'bulkCat.applying': 'Applying…',
+  'bulkCat.applied':
+    'Applied — {{created}} new scenarios, {{linked}} skills categorized.',
 } as const;

@@ -11,6 +11,7 @@ import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView } from '@/components/discover-view';
 import { OnboardingWizard } from '@/components/onboarding';
+import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { useT } from '@/lib/i18n';
 
 export default function Workspace() {
@@ -33,6 +34,11 @@ export default function Workspace() {
   //   true  → completed previously, hide wizard
   //   false → first launch, show wizard
   const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
+  // Bulk-categorize is only enabled when an LLM key is present. Read at
+  // bridge-ready time and refreshed after the dialog applies (in case user
+  // changes settings or the apply flow created scenarios).
+  const [llmConfigured, setLlmConfigured] = useState(false);
+  const [bulkCatOpen, setBulkCatOpen] = useState(false);
 
   const reqIdRef = useRef(0);
 
@@ -92,6 +98,23 @@ export default function Workspace() {
     if (!bridgeReady) return;
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
+
+  // Check whether an LLM key is configured (drives bulk-categorize CTA state).
+  useEffect(() => {
+    if (!bridgeReady) return;
+    let cancelled = false;
+    api.llm
+      .getConfig()
+      .then((cfg) => {
+        if (!cancelled) setLlmConfigured(Boolean(cfg.hasApiKey && cfg.model));
+      })
+      .catch(() => {
+        if (!cancelled) setLlmConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady]);
 
   // Resolve onboarding completion on first render. Re-resolves whenever the
   // bridge becomes ready (e.g. window restart after a settings reset).
@@ -215,17 +238,31 @@ export default function Workspace() {
         ) : view === 'discover' ? (
           <DiscoverView query={search} onToast={showToast} />
         ) : (
-          <SkillList
-            skills={skills}
-            loading={skillsLoading}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            search={search}
-            onSearchChange={setSearch}
-            title={titleForListFilter(filter, platforms, scenarios, t)}
-            subtitle={t('list.subtitle.count', { count: skills.length })}
-            hideOwnHeader
-          />
+          <>
+            {/* Bulk-categorize CTA — only shows on the 未分类 view, when
+                LLM is configured, and when there's at least one skill to
+                categorize. Disabled states use a muted bar with a hint
+                instead of a button to keep the affordance discoverable. */}
+            {filter.scope === 'unscenarized' && (
+              <BulkCatBanner
+                count={skills.length}
+                llmConfigured={llmConfigured}
+                onClick={() => setBulkCatOpen(true)}
+                t={t}
+              />
+            )}
+            <SkillList
+              skills={skills}
+              loading={skillsLoading}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              search={search}
+              onSearchChange={setSearch}
+              title={titleForListFilter(filter, platforms, scenarios, t)}
+              subtitle={t('list.subtitle.count', { count: skills.length })}
+              hideOwnHeader
+            />
+          </>
         )}
       </div>
 
@@ -266,7 +303,74 @@ export default function Workspace() {
           }}
         />
       )}
+
+      <BulkCategorizeDialog
+        open={bulkCatOpen}
+        skillIds={bulkCatOpen ? skills.map((s) => s.id) : []}
+        scenarios={scenarios}
+        onOpenChange={setBulkCatOpen}
+        onApplied={(r) => {
+          showToast(
+            t('bulkCat.applied', {
+              created: r.newScenariosCreated,
+              linked: r.assignmentsApplied,
+            }),
+          );
+          refreshSkills();
+          refreshMeta();
+        }}
+      />
     </main>
+  );
+}
+
+/**
+ * CTA bar shown above the SkillList in the 未分类 view. Three states:
+ *   - LLM configured + skills present → primary button
+ *   - LLM configured + no skills      → muted "nothing to categorize"
+ *   - LLM unconfigured                → muted hint pointing to Settings
+ */
+function BulkCatBanner({
+  count,
+  llmConfigured,
+  onClick,
+  t,
+}: {
+  count: number;
+  llmConfigured: boolean;
+  onClick: () => void;
+  t: ReturnType<typeof useT>;
+}) {
+  if (count === 0) {
+    return (
+      <div className="border-b bg-secondary/30 px-4 py-2 text-xs text-muted-foreground">
+        ⊘ {t('bulkCat.disabled.empty')}
+      </div>
+    );
+  }
+  if (!llmConfigured) {
+    return (
+      <div className="border-b bg-secondary/30 px-4 py-2 text-xs text-muted-foreground">
+        ⚙︎ {t('bulkCat.disabled.noAi')}
+      </div>
+    );
+  }
+  return (
+    <div className="border-b bg-violet-50/50 px-4 py-2 dark:bg-violet-950/20">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <button
+            onClick={onClick}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-violet-700 hover:text-violet-900 dark:text-violet-300 dark:hover:text-violet-100"
+          >
+            ✨ {t('bulkCat.cta', { count })}
+          </button>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            {t('bulkCat.helper')}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

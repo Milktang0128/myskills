@@ -6,8 +6,9 @@
 import { getDb } from '../db';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
-import type { AiScenarioSuggestion } from '../../shared/types';
+import type { AiScenarioSuggestion, BulkCategorizePlan } from '../../shared/types';
 import { getQueueLength, isSchedulerRunning } from '../ai/categorize';
+import { applyBulkPlan, buildBulkPlan } from '../ai/bulk-categorize';
 
 interface SuggestionRow {
   id: number;
@@ -108,6 +109,40 @@ export function registerAiHandlers(): void {
     pending: getQueueLength(),
     schedulerRunning: isSchedulerRunning(),
   }));
+
+  registerHandler(IPC.ai.bulkCategorize, async (_e, payload) => {
+    const p = (payload ?? {}) as { skillIds?: unknown };
+    if (!Array.isArray(p.skillIds)) {
+      throw makeError('INVALID_INPUT', 'skillIds (string[]) required');
+    }
+    const ids: string[] = [];
+    for (const id of p.skillIds) {
+      if (typeof id !== 'string') continue;
+      ids.push(id);
+    }
+    try {
+      return await buildBulkPlan(ids);
+    } catch (err) {
+      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+        throw err;
+      }
+      throw makeError('AI_ERROR', err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  registerHandler(IPC.ai.applyBulkCategorization, (_e, payload) => {
+    const p = (payload ?? {}) as { plan?: unknown };
+    if (!p.plan || typeof p.plan !== 'object') {
+      throw makeError('INVALID_INPUT', 'plan required');
+    }
+    // The renderer is trusted to ship a valid plan back (we built it for
+    // them). Light validation just to catch totally-malformed payloads.
+    const plan = p.plan as BulkCategorizePlan;
+    if (!Array.isArray(plan.assignments) || !Array.isArray(plan.proposedScenarios)) {
+      throw makeError('INVALID_INPUT', 'plan must have assignments + proposedScenarios arrays');
+    }
+    return applyBulkPlan(plan);
+  });
 }
 
 function rowToSuggestion(r: SuggestionRow): AiScenarioSuggestion {

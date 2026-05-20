@@ -643,4 +643,35 @@ export const zh: Dict = {
   'common.copy': '复制',
   'common.copied': '已复制',
   'common.openInFinder': '在 Finder 中显示',
+
+  // ── 批量 AI 分类 ───────────────────────────────────────────────────────
+  'bulkCat.cta': '让 AI 帮我归类这 {{count}} 项',
+  'bulkCat.ctaShort': 'AI 一键归类',
+  'bulkCat.helper': 'AI 会读取每个技能并推荐场景，你可以预览/修改后再应用。',
+  'bulkCat.disabled.noAi': '在「设置 → AI」中配置 LLM 后启用 AI 分类。',
+  'bulkCat.disabled.empty': '没有待分类的技能。',
+  'bulkCat.preparing': 'AI 正在分析 {{count}} 个技能…',
+  'bulkCat.error': 'AI 分类失败：{{message}}',
+
+  // 弹窗
+  'bulkCat.dialog.title': 'AI 分类预览',
+  'bulkCat.dialog.subtitle': '可逐条修改。点击「应用」之前不会改动任何数据。',
+  'bulkCat.intentLabel': '理解为：',
+  'bulkCat.newScenarios': '建议新增的场景',
+  'bulkCat.newScenarios.help':
+    '至少有一个技能指向时才会创建。取消勾选可放弃这个建议。',
+  'bulkCat.newBadge': '新',
+  'bulkCat.usedByCount': '会用于 {{count}} 项技能',
+  'bulkCat.usedByCountMany': '会用于 {{count}} 项技能',
+  'bulkCat.assignments': '分配预览（{{count}}）',
+  'bulkCat.row.skip': '保持未分类',
+  'bulkCat.summary.willCreate': '新建 {{count}} 个场景',
+  'bulkCat.summary.willCreateMany': '新建 {{count}} 个场景',
+  'bulkCat.summary.willAssign': '应用 {{count}} 项分类',
+  'bulkCat.summary.willAssignMany': '应用 {{count}} 项分类',
+  'bulkCat.summary.willSkip': '跳过 {{count}} 项',
+  'bulkCat.cancel': '取消',
+  'bulkCat.apply': '应用',
+  'bulkCat.applying': '应用中…',
+  'bulkCat.applied': '已应用 —— 新建 {{created}} 个场景，归类 {{linked}} 个技能。',
 };

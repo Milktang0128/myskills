@@ -6,6 +6,8 @@ import { IPC } from '@shared/ipc-channels';
 import type {
   AiScenarioSuggestion,
   AppStats,
+  BulkCategorizeApplyResult,
+  BulkCategorizePlan,
   CatalogPreview,
   CatalogSearchResponse,
   CoverageMatrix,
@@ -182,6 +184,16 @@ export const api = {
       bridge().invoke(IPC.ai.dismissSuggestion, { suggestionId }) as Promise<{ ok: true }>,
     queueStatus: () =>
       bridge().invoke(IPC.ai.queueStatus) as Promise<{ pending: number; schedulerRunning: boolean }>,
+    /**
+     * Build a categorization plan for a set of skills. ONE LLM call (or a
+     * few batches for large sets). Returns a plan the user previews + edits
+     * in the bulk-categorize dialog before applying.
+     */
+    bulkCategorize: (skillIds: string[]) =>
+      bridge().invoke(IPC.ai.bulkCategorize, { skillIds }) as Promise<BulkCategorizePlan>,
+    /** Apply a (possibly user-edited) bulk plan in a DB transaction. */
+    applyBulkCategorization: (plan: BulkCategorizePlan) =>
+      bridge().invoke(IPC.ai.applyBulkCategorization, { plan }) as Promise<BulkCategorizeApplyResult>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>
