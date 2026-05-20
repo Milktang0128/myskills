@@ -666,7 +666,10 @@ export default function SettingsPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium">{cand.label}</div>
-                      <div className="font-mono text-[10px] text-muted-foreground truncate">
+                      <div
+                        className="font-mono text-[10px] text-muted-foreground truncate"
+                        title={probe?.resolvedPath ?? cand.defaultDir}
+                      >
                         {probe?.resolvedPath ?? cand.defaultDir}
                       </div>
                       <div className="text-[11px] text-muted-foreground">

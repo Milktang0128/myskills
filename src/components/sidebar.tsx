@@ -259,6 +259,7 @@ function SidebarRow({
     <button
       onClick={onClick}
       aria-pressed={active}
+      title={typeof children === 'string' ? children : undefined}
       className={cn(
         'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',

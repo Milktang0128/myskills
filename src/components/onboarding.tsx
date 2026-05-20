@@ -324,7 +324,10 @@ function PlatformsStep() {
                       <Check className="h-3.5 w-3.5 text-emerald-600" aria-label={t('onboarding.platforms.enabled')} />
                     )}
                   </div>
-                  <div className="mt-0.5 font-mono text-[10px] text-muted-foreground truncate">
+                  <div
+                    className="mt-0.5 font-mono text-[10px] text-muted-foreground truncate"
+                    title={cand.defaultDir}
+                  >
                     {cand.defaultDir}
                   </div>
                   <div className="text-[11px] text-muted-foreground">
@@ -514,7 +517,12 @@ function CanonicalStep() {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">{displayLabel}</div>
-                <div className="font-mono text-[10px] text-muted-foreground truncate">{p.skillsDir}</div>
+                <div
+                  className="font-mono text-[10px] text-muted-foreground truncate"
+                  title={p.skillsDir}
+                >
+                  {p.skillsDir}
+                </div>
               </div>
               <span className="shrink-0 text-[11px] text-muted-foreground">
                 {t('onboarding.canonical.skillsLabel', { count: skillCounts[p.id] ?? 0 })}

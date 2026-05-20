@@ -753,13 +753,18 @@ function ResultRow({
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="truncate font-medium text-sm">{result.name}</span>
+        <span className="truncate font-medium text-sm" title={result.name}>
+          {result.name}
+        </span>
         <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
           {formatInstalls(result.installs)} {t('discover.installs.label')}
         </span>
       </div>
       <div className="mt-0.5 flex items-center gap-2">
-        <span className="truncate rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">
+        <span
+          className="truncate rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground"
+          title={result.source}
+        >
           {result.source}
         </span>
       </div>
@@ -770,7 +775,10 @@ function ResultRow({
           Rows that genuinely have no description in frontmatter remain
           empty — better than a sea of "(no description)" placeholders. */}
       {result.description?.trim() ? (
-        <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+        <div
+          className="mt-1 line-clamp-2 text-xs text-muted-foreground"
+          title={result.description.trim()}
+        >
           {result.description.trim()}
         </div>
       ) : (
@@ -780,7 +788,10 @@ function ResultRow({
         />
       )}
       {why && (
-        <div className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80">
+        <div
+          className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80"
+          title={why}
+        >
           {why}
         </div>
       )}
