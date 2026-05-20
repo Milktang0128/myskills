@@ -110,7 +110,7 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
 
   if (!bridgeReady || loading) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         {t('map.loading')}
       </div>
@@ -135,7 +135,10 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    // flex-1 + min-h-0 instead of h-full: inside the workspace's flex-col
+    // shell, h-full would resolve to 100vh and overflow past the 48px header
+    // by exactly that amount, clipping the bottom of the scroll region.
+    <div className="flex min-h-0 flex-1 flex-col">
       {stale && (
         <StaleBanner generating={generating} onRefresh={generate} />
       )}
@@ -314,7 +317,7 @@ function EmptyState({
 }) {
   const t = useT();
   return (
-    <div className="flex h-full items-center justify-center px-6">
+    <div className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="max-w-md text-center">
         <MapIcon className="mx-auto h-10 w-10 text-violet-500" aria-hidden="true" />
         <h2 className="mt-3 text-base font-semibold">{t('map.empty.title')}</h2>
@@ -350,7 +353,7 @@ function EmptyState({
 function LlmGate() {
   const t = useT();
   return (
-    <div className="flex h-full items-center justify-center px-6">
+    <div className="flex min-h-0 flex-1 items-center justify-center px-6">
       <div className="max-w-md text-center">
         <Sparkles className="mx-auto h-10 w-10 text-muted-foreground" aria-hidden="true" />
         <h2 className="mt-3 text-base font-semibold">{t('map.llmRequired.title')}</h2>
