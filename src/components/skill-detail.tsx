@@ -12,7 +12,6 @@ import type {
 } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
 import { PlatformBadge } from './platform-badge';
 import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
@@ -119,8 +118,11 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
   }
 
   return (
+    // Third band of the layout: paper-panel (slightly lighter cream than
+    // main). Left rule, kicker-labeled top strip — same editorial vocab
+    // as the workspace topbar.
     <aside
-      className="flex h-full w-[460px] flex-col border-l bg-card/40"
+      className="flex h-full w-[460px] flex-col border-l border-rule bg-paper-panel"
       role="complementary"
       aria-label={t('detail.region.aria')}
       tabIndex={-1}
@@ -131,53 +133,53 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
         }
       }}
     >
-      <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
+      <div className="titlebar-drag flex h-11 shrink-0 items-center justify-between border-b border-rule px-4">
+        <span className="font-mono text-[10px] uppercase tracking-[var(--widest)] font-semibold text-red-brand">
+          SKILL · {t('detail.region.aria')}
+        </span>
         <button
           onClick={onClose}
           aria-label={t('common.close')}
           title={t('detail.close.title')}
-          className="titlebar-no-drag inline-flex h-6 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="titlebar-no-drag inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink"
         >
-          <X className="h-3.5 w-3.5" aria-hidden="true" />
+          <X className="h-2.5 w-2.5" aria-hidden="true" />
           <span>{t('common.close')}</span>
         </button>
       </div>
 
       <ScrollArea className="flex-1 scrollbar-thin">
-        <div className="space-y-5 p-5">
-          <header className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-semibold tracking-tight">{skill.name}</h2>
-              {Array.from(new Set(skill.locations.map((l) => l.platformId))).map((p) => (
-                <PlatformBadge key={p} platformId={p} />
-              ))}
+        <div className="space-y-0 px-5 py-6">
+          <header className="space-y-2.5">
+            {/* Kicker: author · version */}
+            <div className="tk">
+              {[skill.author?.toUpperCase(), skill.version && `V${skill.version}`].filter(Boolean).join(' · ') || 'SKILL'}
             </div>
-            {skill.description && <p className="text-sm text-muted-foreground">{skill.description}</p>}
-            <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-              {skill.version && <span>v{skill.version}</span>}
-              {skill.author && <span>{t('detail.subtitle.by', { author: skill.author })}</span>}
+            <h2 className="t-cn-h2">{skill.name}</h2>
+            {skill.description && (
+              <p className="text-[13px] leading-relaxed text-soft">{skill.description}</p>
+            )}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute pt-2">
+              {skill.version && <span>V{skill.version}</span>}
+              {skill.author && <span>{skill.author}</span>}
+              {skill.license && <span>{skill.license}</span>}
               <span>{formatBytes(skill.sizeBytes)}</span>
               <span>{t('detail.subtitle.files', { count: skill.fileCount })}</span>
               <span>{t('detail.subtitle.scanned', { when: formatRelative(skill.lastScannedAt) })}</span>
+              <span className="break-all">HASH {skill.contentHash.slice(0, 8)}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 pt-2">
+              {Array.from(new Set(skill.locations.map((l) => l.platformId))).map((p) => (
+                <PlatformBadge key={p} platformId={p} canonical={p === canonicalPlatform} />
+              ))}
             </div>
           </header>
 
-          <Separator />
 
-          <section>
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {t('detail.section.scenarios')}
-              </h3>
-            </div>
-
-            {/* AI suggestions — visually distinct (dashed border, sparkle icon).
-                A click accepts the suggestion (creates the scenario link); the
-                × dismisses it. Both refresh the underlying skill so the chip
-                migrates to the regular list below. */}
+          <DrawerSection title={t('detail.section.scenarios')}>
             {aiSuggestions.length > 0 && (
-              <div className="mb-3 rounded-md border border-dashed border-primary/40 bg-primary/5 p-2">
-                <div className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-primary/80">
+              <div className="mb-3 border border-dashed border-red-brand/40 bg-[rgba(225,70,43,0.05)] p-2">
+                <div className="mb-1.5 flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-[var(--wide)] text-red-brand">
                   <Sparkles className="h-3 w-3" />
                   {t('detail.aiSuggestions.heading')}
                 </div>
@@ -187,7 +189,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                     return (
                       <div
                         key={sg.id}
-                        className="group inline-flex items-center overflow-hidden rounded-md border border-dashed border-primary/50 bg-background text-xs"
+                        className="group inline-flex items-center overflow-hidden border border-dashed border-red-brand/50 bg-paper-white text-xs"
                         title={sg.reason ?? undefined}
                       >
                         <button
@@ -195,29 +197,28 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                             try {
                               await api.ai.acceptSuggestion(sg.id);
                             } catch {
-                              // If accept failed (e.g. scenario deleted), just
-                              // refresh and let the suggestion list reconcile.
+                              /* refresh resolves the list */
                             }
                             await refreshSuggestions();
                             const refreshed = await api.skills.get(skill.id);
                             setSkill(refreshed);
                             onMutated();
                           }}
-                          className="inline-flex items-center gap-1 px-2 py-1 hover:bg-primary/10"
+                          className="inline-flex items-center gap-1.5 px-2 py-1 hover:bg-[rgba(225,70,43,0.08)]"
                         >
                           <span
-                            className="inline-block h-2 w-2 rounded-full"
+                            className="inline-block h-1.5 w-1.5 rounded-full"
                             style={{ backgroundColor: sg.scenarioColor ?? '#888' }}
                           />
                           <span>{label}</span>
-                          <span className="text-primary/70">+</span>
+                          <span className="text-red-brand">+</span>
                         </button>
                         <button
                           onClick={async () => {
                             await api.ai.dismissSuggestion(sg.id);
                             await refreshSuggestions();
                           }}
-                          className="border-l border-dashed border-primary/30 px-1.5 py-1 text-muted-foreground opacity-60 transition-opacity hover:bg-destructive/10 hover:text-destructive hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+                          className="border-l border-dashed border-red-brand/30 px-1.5 py-1 text-mute opacity-60 transition-opacity hover:bg-[rgba(225,70,43,0.1)] hover:text-red-brand hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-brand group-hover:opacity-100"
                           title={t('detail.aiSuggestions.dismissAria')}
                           aria-label={t('detail.aiSuggestions.dismissAria')}
                         >
@@ -232,7 +233,9 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
             <div className="flex flex-wrap gap-1.5">
               {scenarios.length === 0 ? (
-                <span className="text-xs text-muted-foreground">{t('detail.scenarios.noneDefined')}</span>
+                <span className="font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute">
+                  {t('detail.scenarios.noneDefined')}
+                </span>
               ) : (
                 scenarios.map((sc) => {
                   const active = inScenarioIds.has(sc.id);
@@ -250,14 +253,14 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                         setSkill(refreshed);
                       }}
                       className={cn(
-                        'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
+                        'inline-flex items-center gap-1.5 border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.06em] transition-colors',
                         active
-                          ? 'border-transparent bg-primary text-primary-foreground'
-                          : 'hover:bg-accent',
+                          ? 'border-ink bg-ink text-[#f2eee2]'
+                          : 'border-rule text-soft hover:border-ink hover:text-ink',
                       )}
                     >
                       <span
-                        className="inline-block h-2 w-2 rounded-full"
+                        className="inline-block h-1.5 w-1.5 rounded-full"
                         style={{ backgroundColor: sc.color ?? '#888' }}
                       />
                       {sc.name}
@@ -266,19 +269,17 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                 })
               )}
             </div>
-          </section>
+          </DrawerSection>
 
-          <Separator />
-
-          <section>
-            <div className="mb-2 flex items-center justify-between">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {t('detail.section.locations', { count: skill.locations.length })}
-              </h3>
-              <span className="text-[10px] text-muted-foreground">
-                {t('detail.section.locations.canonicalLabel')} <span className="font-medium">{canonicalPlatform}</span>
-              </span>
-            </div>
+          <DrawerSection
+            title={t('detail.section.locations', { count: skill.locations.length })}
+            aux={
+              <>
+                {t('detail.section.locations.canonicalLabel')}{' '}
+                <span className="text-red-brand uppercase">{canonicalPlatform}</span>
+              </>
+            }
+          >
             <div className="space-y-2">
               {skill.locations.map((loc) => (
                 <LocationRow
@@ -291,15 +292,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                 />
               ))}
             </div>
-          </section>
+          </DrawerSection>
 
-          <Separator />
-
-          <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {t('detail.section.frontmatter')}
-            </h3>
-            <dl className="grid grid-cols-[80px_1fr] gap-y-1 text-xs">
+          <DrawerSection title={t('detail.section.frontmatter')}>
+            <dl className="grid grid-cols-[80px_1fr] gap-x-3 gap-y-1 font-mono text-[12px]">
               <Meta label="name" value={skill.name} />
               <Meta label="source" value={skill.sourceKey} />
               <Meta label="version" value={skill.version} />
@@ -307,20 +303,14 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               <Meta label="license" value={skill.license} />
               <Meta label="hash" value={skill.contentHash.slice(0, 12) + '…'} mono />
             </dl>
-          </section>
+          </DrawerSection>
 
           {skill.bodyExcerpt && (
-            <>
-              <Separator />
-              <section>
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {t('detail.section.skillmd')}
-                </h3>
-                <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
-                  {skill.bodyExcerpt}
-                </pre>
-              </section>
-            </>
+            <DrawerSection title={t('detail.section.skillmd')}>
+              <pre className="overflow-x-auto border border-rule bg-paper-white p-3.5 font-mono text-[11.5px] leading-[1.7] whitespace-pre-wrap text-soft">
+                {skill.bodyExcerpt}
+              </pre>
+            </DrawerSection>
           )}
         </div>
       </ScrollArea>
@@ -333,6 +323,37 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
         onApplied={onApplied}
       />
     </aside>
+  );
+}
+
+/**
+ * Editorial section block: mono kicker title on the left, optional muted
+ * aux line on the right, hairline rule on top. Replaces the previous
+ * <Separator /> + h3 pattern with the world-of-windows section rhythm.
+ */
+function DrawerSection({
+  title,
+  aux,
+  children,
+}: {
+  title: string;
+  aux?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mt-6 border-t border-rule pt-4">
+      <div className="mb-2.5 flex items-baseline justify-between gap-3">
+        <h3 className="font-mono text-[10px] font-semibold uppercase tracking-[var(--widest)] text-ink">
+          {title}
+        </h3>
+        {aux && (
+          <span className="font-mono text-[9.5px] uppercase tracking-[var(--wide)] text-mute">
+            {aux}
+          </span>
+        )}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -353,63 +374,65 @@ function LocationRow({
   // Decide what status to show + whether Adopt makes sense.
   let statusIcon: React.ReactNode = null;
   let statusLabel = '';
-  let statusTone = 'text-muted-foreground';
+  let statusTone = 'text-soft';
   let canAdopt = false;
 
   if (loc.isBrokenSymlink) {
-    statusIcon = <AlertTriangle className="h-3 w-3" />;
+    statusIcon = <AlertTriangle className="h-2.5 w-2.5" />;
     statusLabel = t('detail.loc.broken');
-    statusTone = 'text-destructive';
-    canAdopt = false; // can't adopt content we can't read
+    statusTone = 'text-red-brand';
+    canAdopt = false;
   } else if (loc.isDisabled) {
-    statusIcon = <EyeOff className="h-3 w-3" />;
+    statusIcon = <EyeOff className="h-2.5 w-2.5" />;
     statusLabel = t('detail.loc.disabled');
+    statusTone = 'text-mute';
   } else if (isCanonical) {
-    statusIcon = <Crown className="h-3 w-3" />;
+    statusIcon = <Crown className="h-2.5 w-2.5" />;
     statusLabel = t('detail.loc.canonical');
-    statusTone = 'text-amber-600';
+    statusTone = 'text-red-brand';
   } else if (loc.isSymlink) {
-    statusIcon = <Link2 className="h-3 w-3" />;
+    statusIcon = <Link2 className="h-2.5 w-2.5" />;
     statusLabel = t('detail.loc.symlink');
+    statusTone = 'text-soft';
   } else {
-    // Real dir, non-canonical → compare to canonical
     if (canonicalHash && loc.contentHash && loc.contentHash === canonicalHash) {
-      statusIcon = <Check className="h-3 w-3" />;
+      statusIcon = <Check className="h-2.5 w-2.5" />;
       statusLabel = t('detail.loc.inSync');
-      statusTone = 'text-emerald-600';
+      statusTone = 'text-soft';
     } else if (canonicalHash && loc.contentHash) {
-      statusIcon = <AlertTriangle className="h-3 w-3" />;
+      statusIcon = <AlertTriangle className="h-2.5 w-2.5" />;
       statusLabel = t('detail.loc.stale');
-      statusTone = 'text-amber-600';
+      statusTone = 'text-amber-warn';
       canAdopt = true;
     } else {
-      // No canonical to compare against → this IS the only version
-      statusIcon = <Check className="h-3 w-3" />;
+      statusIcon = <Check className="h-2.5 w-2.5" />;
       statusLabel = t('detail.loc.onlyVersion');
-      statusTone = 'text-blue-600';
+      statusTone = 'text-soft';
       canAdopt = true;
     }
   }
 
   return (
-    <div className="rounded-md border bg-background p-3 text-xs">
+    // White paper card (the "near-white" --paper-white token), hairline
+    // ink-rule border, mono status caps. Modified date on the right is
+    // a meta cap — same vocab as the matrix legend.
+    <div className="border border-rule bg-paper-white p-3 text-[12px]">
       <div className="flex items-center gap-2">
-        <PlatformBadge platformId={loc.platformId} />
-        <span className={cn('inline-flex items-center gap-1', statusTone)}>
+        <PlatformBadge platformId={loc.platformId} canonical={isCanonical} />
+        <span className={cn('inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[var(--wide)]', statusTone)}>
           {statusIcon}
           {statusLabel}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
           {loc.mtime && (
-            <span className="text-[10px] text-muted-foreground" title={new Date(loc.mtime).toLocaleString()}>
+            <span className="font-mono text-[9.5px] uppercase tracking-[0.04em] text-mute" title={new Date(loc.mtime).toLocaleString()}>
               {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
             </span>
           )}
           {canAdopt && (
             <Button
               size="sm"
-              variant="outline"
-              className="h-6 px-2 text-[11px]"
+              variant="ghost"
               onClick={onAdopt}
               disabled={busy}
               title={t('detail.loc.adoptTitle')}
@@ -420,9 +443,13 @@ function LocationRow({
           )}
         </div>
       </div>
-      <div className="mt-2 space-y-0.5 font-mono text-[10px] text-muted-foreground">
+      <div className="mt-2.5 space-y-0.5 font-mono text-[10px] leading-[1.6] text-mute">
         <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
-        {loc.isSymlink && <div className="break-all">→ {loc.realPath}</div>}
+        {loc.isSymlink && (
+          <div className="break-all">
+            <span className="text-red-brand">→</span> {loc.realPath}
+          </div>
+        )}
         {loc.contentHash && <div>{t('detail.loc.hashPrefix')} {loc.contentHash.slice(0, 12)}…</div>}
       </div>
     </div>
@@ -432,8 +459,10 @@ function LocationRow({
 function Meta({ label, value, mono }: { label: string; value: string | null | undefined; mono?: boolean }) {
   return (
     <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className={cn(mono && 'font-mono')}>{value ?? <span className="text-muted-foreground">—</span>}</dd>
+      <dt className="font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute self-center">{label}</dt>
+      <dd className={cn('m-0 text-ink', mono && 'font-mono')}>
+        {value ?? <span className="text-mute">—</span>}
+      </dd>
     </>
   );
 }

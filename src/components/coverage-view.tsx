@@ -266,19 +266,22 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
-        <div className="flex flex-wrap items-center gap-1.5">
+      {/* Filter bar: chips form a connected segmented strip (margin-right
+          negative so borders overlap into hairlines). Active chip flips to
+          ink-on-paper. Canonical tag sits inline as a mono caption. */}
+      <div className="flex items-center justify-between gap-3 border-b border-rule px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-0">
           {MATRIX_FILTERS.map((f) => (
             <button
               key={f.value}
               onClick={() => setFilter(f.value)}
               aria-pressed={filter === f.value}
               className={cn(
-                'rounded-md border px-2.5 py-1 text-xs',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                '-mr-px inline-flex items-center gap-1.5 border border-rule px-2.5 py-1 font-mono text-[10.5px] uppercase tracking-[0.06em] transition-colors',
+                'focus-visible:outline-none focus-visible:relative focus-visible:z-10 focus-visible:ring-1 focus-visible:ring-ink',
                 filter === f.value
-                  ? 'border-transparent bg-primary text-primary-foreground'
-                  : 'hover:bg-accent',
+                  ? 'relative z-[1] border-ink bg-ink text-[#f2eee2]'
+                  : 'text-soft hover:bg-paper-alt hover:text-ink',
               )}
               title={f.hint}
             >
@@ -286,10 +289,10 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             </button>
           ))}
           {matrix && (
-            <span className="ml-2 inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <span className="ml-3 inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[var(--wide)] text-mute">
               {t('matrix.canonicalLabel')}
-              <PlatformBadge platformId={matrix.canonicalPlatform} />
-              <Crown className="h-3 w-3 text-amber-500" />
+              <PlatformBadge platformId={matrix.canonicalPlatform} canonical />
+              <Crown className="h-2.5 w-2.5 text-red-brand" />
             </span>
           )}
         </div>
@@ -385,31 +388,38 @@ function Table({
     );
   }
   return (
-    <table className="w-full text-sm">
-      <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
-        <tr className="border-b">
-          <th className="px-3 py-2 text-left font-medium">{t('matrix.col.skill')}</th>
-          {matrix.platforms.map((p) => (
-            <th
-              key={p}
-              className={cn(
-                'px-3 py-2 text-center font-medium',
-                // Canonical column gets a subtle left/right border instead of
-                // a saturated amber tint — Crown icon already says "canonical"
-                // and the row-level amber competed with warn states (broken,
-                // drift) for the user's attention.
-                p === matrix.canonicalPlatform && 'border-x border-amber-200/60 dark:border-amber-900/40',
-              )}
-            >
-              <div className="inline-flex items-center gap-1">
-                {p === matrix.canonicalPlatform && (
-                  <Crown className="h-3 w-3 text-amber-500" aria-label="canonical platform" />
+    // Editorial-table look: mono uppercase column headers in muted color,
+    // header bottom border is INK (not the lighter rule used between rows)
+    // so the head/body separation is the dominant rule. Canonical column
+    // header (and cells) wear the brand red — the matrix's only red.
+    <table className="w-full">
+      <thead className="sticky top-0 z-10 bg-paper">
+        <tr className="border-b-2 border-ink">
+          <th className="px-3 py-2.5 text-left font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft align-bottom">
+            {t('matrix.col.skill')}
+          </th>
+          {matrix.platforms.map((p) => {
+            const isCanon = p === matrix.canonicalPlatform;
+            return (
+              <th
+                key={p}
+                className={cn(
+                  'px-3 py-2.5 text-center font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold align-bottom',
+                  isCanon ? 'text-red-brand' : 'text-soft',
                 )}
-                <PlatformBadge platformId={p} />
-              </div>
-            </th>
-          ))}
-          <th className="px-3 py-2 text-right font-medium w-44">{t('matrix.col.action')}</th>
+              >
+                <div className="inline-flex items-center gap-1">
+                  {isCanon && (
+                    <Crown className="h-2.5 w-2.5 text-red-brand" aria-label="canonical platform" />
+                  )}
+                  <PlatformBadge platformId={p} canonical={isCanon} />
+                </div>
+              </th>
+            );
+          })}
+          <th className="w-44 px-3 py-2.5 text-right font-mono text-[10px] uppercase tracking-[var(--wide)] font-semibold text-soft align-bottom">
+            {t('matrix.col.action')}
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -455,7 +465,11 @@ function Table({
               </Button>
             );
           } else {
-            actionNode = <span className="text-[11px] text-emerald-600">{t('matrix.action.inSync')}</span>;
+            actionNode = (
+              <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-soft">
+                {t('matrix.action.inSync')}
+              </span>
+            );
           }
 
           return (
@@ -463,17 +477,19 @@ function Table({
               key={row.skillId}
               onClick={() => onSelectRow(row.skillId)}
               className={cn(
-                'cursor-pointer border-b hover:bg-accent/30',
-                isSelected && 'bg-accent/50',
+                'cursor-pointer border-b border-rule transition-colors',
+                'hover:bg-[rgba(20,18,13,0.025)]',
+                isSelected && 'bg-[rgba(225,70,43,0.06)]',
+                isOrphan && 'bg-[rgba(20,18,13,0.02)]',
               )}
             >
-              <td className="px-3 py-2">
-                <div className="font-medium truncate max-w-[280px]" title={row.skillName}>
+              <td className="px-3 py-3 align-middle">
+                <div className="truncate max-w-[280px] text-[13px] font-medium text-ink" title={row.skillName}>
                   {row.skillName}
                 </div>
                 {row.description && (
                   <div
-                    className="truncate text-[11px] text-muted-foreground max-w-[280px]"
+                    className="truncate text-[11.5px] text-mute max-w-[280px] mt-0.5"
                     title={row.description}
                   >
                     {row.description}
@@ -482,25 +498,27 @@ function Table({
               </td>
               {matrix.platforms.map((p) => {
                 const cell = row.cells[p];
+                const isCanon = p === matrix.canonicalPlatform;
                 return (
                   <td
                     key={p}
                     className={cn(
-                      'px-3 py-2 text-center',
-                      // Match the header: subtle vertical rule instead of
-                      // a row-wide amber tint.
-                      p === matrix.canonicalPlatform && 'border-x border-amber-200/40 dark:border-amber-900/30',
+                      'px-3 py-3 text-center align-middle',
+                      // Canonical column gets a soft vermillion wash —
+                      // subtle enough not to compete with broken/stale,
+                      // but enough to read "this column is special".
+                      isCanon && 'bg-[rgba(225,70,43,0.04)]',
                     )}
                   >
                     <CellGlyph
                       state={cell?.state ?? 'missing'}
                       drift={cell?.drift}
-                      isCanonical={p === matrix.canonicalPlatform}
+                      isCanonical={isCanon}
                     />
                   </td>
                 );
               })}
-              <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+              <td className="px-3 py-3 text-right align-middle" onClick={(e) => e.stopPropagation()}>
                 {actionNode}
               </td>
             </tr>
@@ -578,34 +596,37 @@ function describeCell(
 function Legend() {
   const t = useT();
   return (
-    <div className="mt-4 rounded-md border bg-card/40 px-3 py-2 text-[11px] text-muted-foreground">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
-        <span className="inline-flex items-center gap-1">
-          <Crown className="h-3 w-3 text-amber-500" /> {t('matrix.legend.canonical')}
+    // Mono-uppercase legend on a hairline top rule — same editorial
+    // language as the prototype's footer compliance row. No card; the
+    // rule does the separation work.
+    <div className="mt-6 border-t border-rule pt-3 font-mono text-[10px] uppercase tracking-[0.06em] text-mute">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+        <span className="inline-flex items-center gap-1.5">
+          <Crown className="h-2.5 w-2.5 text-red-brand" /> {t('matrix.legend.canonical')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <Check className="h-3 w-3 text-emerald-600" /> {t('matrix.legend.inSync')}
+        <span className="inline-flex items-center gap-1.5 text-soft">
+          <Check className="h-2.5 w-2.5" /> {t('matrix.legend.inSync')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <Check className="h-3 w-3 text-amber-600" /> {t('matrix.legend.stale')}
+        <span className="inline-flex items-center gap-1.5 text-amber-warn">
+          <Check className="h-2.5 w-2.5" /> {t('matrix.legend.stale')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <Link2 className="h-3 w-3 text-blue-600" /> {t('matrix.legend.symlinkCanonical')}
+        <span className="inline-flex items-center gap-1.5 text-soft">
+          <Link2 className="h-2.5 w-2.5" /> {t('matrix.legend.symlinkCanonical')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <Link2 className="h-3 w-3 -rotate-45 text-amber-700" /> {t('matrix.legend.symlinkOther')}
+        <span className="inline-flex items-center gap-1.5 text-amber-warn">
+          <Link2 className="h-2.5 w-2.5 -rotate-45" /> {t('matrix.legend.symlinkOther')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <AlertTriangle className="h-3 w-3 text-destructive" /> {t('matrix.legend.broken')}
+        <span className="inline-flex items-center gap-1.5 text-red-brand">
+          <AlertTriangle className="h-2.5 w-2.5" /> {t('matrix.legend.broken')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <EyeOff className="h-3 w-3 text-muted-foreground" /> {t('matrix.legend.disabled')}
+        <span className="inline-flex items-center gap-1.5">
+          <EyeOff className="h-2.5 w-2.5" /> {t('matrix.legend.disabled')}
         </span>
-        <span className="inline-flex items-center gap-1">
-          <Minus className="h-3 w-3 text-muted-foreground/40" /> {t('matrix.legend.missing')}
+        <span className="inline-flex items-center gap-1.5 opacity-50">
+          <Minus className="h-2.5 w-2.5" /> {t('matrix.legend.missing')}
         </span>
       </div>
-      <div className="mt-1 flex items-center gap-2">
+      <div className="mt-2 flex items-center gap-2 normal-case tracking-normal">
         <HelpCircle className="h-3 w-3" />
         {t('matrix.legend.help')}
       </div>

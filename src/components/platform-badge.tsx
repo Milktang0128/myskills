@@ -3,32 +3,31 @@ import { cn } from '@/lib/utils';
 interface Props {
   platformId: string;
   className?: string;
+  /** True if this is the canonical platform — wears the brand red instead. */
+  canonical?: boolean;
 }
 
-const STYLE: Record<string, string> = {
-  claude: 'bg-orange-100 text-orange-900 dark:bg-orange-950 dark:text-orange-300',
-  codex:  'bg-purple-100 text-purple-900 dark:bg-purple-950 dark:text-purple-300',
-  shared: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
-};
-
-// Short badge labels — rendered uppercase by the CSS `uppercase` utility.
-// The `shared` platform's id stays `shared` for DB compatibility, but the
+// Mono uppercase pill with a hairline border — the editorial replacement
+// for shadcn's filled pill. All non-canonical platforms use a neutral
+// ink-on-paper treatment; canonical wears the vermillion border + text so
+// it reads as "this is the source of truth" without needing an icon.
+//
+// The `shared` platform id stays `shared` for DB compatibility, but the
 // visible chip reads "USER" to align with the renamed "User Agents Folder"
-// concept used everywhere else in the UI (sidebar, onboarding, settings).
+// concept used everywhere else in the UI.
 const LABEL: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
   shared: 'User',
 };
 
-export function PlatformBadge({ platformId, className }: Props) {
-  const style = STYLE[platformId] ?? 'bg-secondary text-secondary-foreground';
+export function PlatformBadge({ platformId, className, canonical }: Props) {
   const label = LABEL[platformId] ?? platformId;
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-        style,
+        'inline-flex items-center border px-1.5 py-px font-mono text-[10px] font-semibold uppercase tracking-[0.08em]',
+        canonical ? 'border-red-brand text-red-brand' : 'border-rule text-soft',
         className,
       )}
     >
