@@ -61,7 +61,7 @@ export function Toast({ message, durationMs = 4000, onDismiss }: Props) {
     >
       <div
         className={cn(
-          'pointer-events-auto flex items-center gap-3 rounded-md border bg-card px-4 py-2 text-sm shadow-lg',
+          'pointer-events-auto flex items-center gap-3 border border-ink bg-paper-white px-4 py-2.5 text-[13px] text-ink',
         )}
         onMouseEnter={() => setPaused(true)}
         onMouseLeave={() => setPaused(false)}
@@ -71,9 +71,9 @@ export function Toast({ message, durationMs = 4000, onDismiss }: Props) {
           type="button"
           onClick={onDismiss}
           aria-label={t('common.close')}
-          className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-5 w-5 items-center justify-center text-mute hover:bg-paper-alt hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ink"
         >
-          <X className="h-3.5 w-3.5" aria-hidden="true" />
+          <X className="h-3 w-3" aria-hidden="true" />
         </button>
       </div>
     </div>
