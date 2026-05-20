@@ -171,7 +171,7 @@ export const en = {
   'detail.loc.adoptBtn': 'Adopt as canonical',
   'detail.loc.broken': 'Broken',
   'detail.loc.disabled': 'Disabled',
-  'detail.loc.canonical': 'Canonical — source of truth',
+  'detail.loc.canonical': 'Canonical',
   'detail.loc.symlink': 'Symlink',
   'detail.loc.inSync': 'In sync',
   'detail.loc.stale': 'Stale — content differs from canonical',

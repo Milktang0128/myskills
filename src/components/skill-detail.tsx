@@ -150,16 +150,15 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="space-y-0 px-5 py-6">
-          <header className="space-y-2.5">
-            {/* Kicker: author · version */}
-            <div className="tk">
+          <header>
+            <div className="tk leading-none">
               {[skill.author?.toUpperCase(), skill.version && `V${skill.version}`].filter(Boolean).join(' · ') || 'SKILL'}
             </div>
-            <h2 className="t-cn-h2">{skill.name}</h2>
+            <h2 className="t-cn-h2 mt-1.5">{skill.name}</h2>
             {skill.description && (
-              <p className="text-[13px] leading-relaxed text-soft">{skill.description}</p>
+              <p className="mt-2 text-[13px] leading-relaxed text-soft">{skill.description}</p>
             )}
-            <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] tabular-nums text-mute pt-2">
+            <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)] tabular-nums text-mute">
               {skill.version && <span>V{skill.version}</span>}
               {skill.author && <span>{skill.author}</span>}
               {skill.license && <span>{skill.license}</span>}
@@ -168,7 +167,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               <span>{t('detail.subtitle.scanned', { when: formatRelative(skill.lastScannedAt) })}</span>
               <span className="break-all">HASH {skill.contentHash.slice(0, 8)}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 pt-2">
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               {Array.from(new Set(skill.locations.map((l) => l.platformId))).map((p) => (
                 <PlatformBadge key={p} platformId={p} canonical={p === canonicalPlatform} />
               ))}
@@ -240,6 +239,11 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                 scenarios.map((sc) => {
                   const active = inScenarioIds.has(sc.id);
                   return (
+                    // Tight pill matching prototype's .scn-chip scale.
+                    // No uppercase: scenario names are USER content
+                    // (e.g. "写作", "research") — forcing case turns
+                    // Latin names into shouty UPPERCASE that visually
+                    // misaligns with the CJK names next to them.
                     <button
                       key={sc.id}
                       onClick={async () => {
@@ -253,7 +257,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                         setSkill(refreshed);
                       }}
                       className={cn(
-                        'inline-flex items-center gap-1.5 border px-2 py-1.5 font-mono text-[10px] uppercase leading-none tracking-[0.06em] transition-colors',
+                        'inline-flex items-center gap-1.5 border px-2 py-1 font-mono text-[11px] leading-none tracking-[0.02em] transition-colors',
                         active
                           ? 'border-ink bg-ink text-[#f2eee2]'
                           : 'border-rule text-soft hover:border-ink hover:text-ink',
@@ -280,7 +284,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               </>
             }
           >
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {skill.locations.map((loc) => (
                 <LocationRow
                   key={loc.id}
@@ -328,8 +332,9 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
 /**
  * Editorial section block: mono kicker title on the left, optional muted
- * aux line on the right, hairline rule on top. Replaces the previous
- * <Separator /> + h3 pattern with the world-of-windows section rhythm.
+ * aux line on the right, hairline rule on top. Tighter rhythm than before
+ * (mt-5/pt-3.5 vs mt-6/pt-4) so the drawer doesn't feel like a stack of
+ * disconnected panels.
  */
 function DrawerSection({
   title,
@@ -341,13 +346,13 @@ function DrawerSection({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mt-6 border-t border-rule pt-4">
-      <div className="mb-2.5 flex items-baseline justify-between gap-3">
-        <h3 className="font-mono text-[10px] font-semibold uppercase tracking-[var(--widest)] text-ink">
+    <section className="mt-5 border-t border-rule pt-3.5">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="font-mono text-[10px] font-semibold uppercase leading-none tracking-[var(--widest)] text-ink">
           {title}
         </h3>
         {aux && (
-          <span className="font-mono text-[9.5px] uppercase tracking-[var(--wide)] text-mute">
+          <span className="font-mono text-[9.5px] uppercase leading-none tracking-[var(--wide)] text-mute">
             {aux}
           </span>
         )}
@@ -413,10 +418,11 @@ function LocationRow({
   }
 
   return (
-    // White paper card (the "near-white" --paper-white token), hairline
-    // ink-rule border, mono status caps. Modified date on the right is
-    // a meta cap — same vocab as the matrix legend.
-    <div className="border border-rule bg-paper-white p-3 text-[12px]">
+    // White paper card with hairline border. Compact (px-2.5 py-2) so
+    // three locations don't feel like three disconnected panels. Paths
+    // block uses leading-[1.5] — close enough for skimming, loose enough
+    // that hashes don't merge.
+    <div className="border border-rule bg-paper-white px-2.5 py-2 text-[12px]">
       <div className="flex items-center gap-2">
         <PlatformBadge platformId={loc.platformId} canonical={isCanonical} />
         <span className={cn('inline-flex items-center gap-1 font-mono text-[10px] uppercase leading-none tracking-[var(--wide)]', statusTone)}>
@@ -443,7 +449,7 @@ function LocationRow({
           )}
         </div>
       </div>
-      <div className="mt-2.5 space-y-0.5 font-mono text-[10px] leading-[1.6] tabular-nums text-mute">
+      <div className="mt-1.5 space-y-px font-mono text-[10px] leading-[1.5] tabular-nums text-mute">
         <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
         {loc.isSymlink && (
           <div className="break-all">

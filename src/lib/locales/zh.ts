@@ -173,7 +173,7 @@ export const zh: Dict = {
   'detail.loc.adoptBtn': '设为核心版本',
   'detail.loc.broken': '失效',
   'detail.loc.disabled': '已禁用',
-  'detail.loc.canonical': '核心库 — 唯一来源',
+  'detail.loc.canonical': '核心库',
   'detail.loc.symlink': '软链接',
   'detail.loc.inSync': '已同步',
   'detail.loc.stale': '过期 — 内容与核心库不一致',
