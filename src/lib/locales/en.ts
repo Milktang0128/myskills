@@ -613,6 +613,7 @@ export const en = {
   'onboarding.llm.skipBtn': 'Skip — set up later',
   'onboarding.llm.save': 'Save and continue',
   'onboarding.llm.saving': 'Saving…',
+  'onboarding.llm.testBtn': 'Test connection',
   'onboarding.llm.testing': 'Testing connection…',
   'onboarding.llm.testOk': 'Connection OK — {{message}}',
   'onboarding.llm.testFail': 'Connection failed: {{message}}',

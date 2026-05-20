@@ -551,16 +551,47 @@ function LlmStep() {
 
   const placeholderModel = useMemo(() => modelPlaceholder(provider), [provider]);
 
+  /**
+   * Persist whatever the user has typed (config + optional API key) so a
+   * subsequent test or save reads the right values. Called by both runTest
+   * and save; centralised here so the two stay in lockstep.
+   *
+   * IMPORTANT: this writes to the macOS Keychain when an apiKey is present.
+   * That's intentional — testConnection IPC reads from Keychain, so there's
+   * no way to "preview" a key without committing it. The user typed it
+   * deliberately; they can clear it from Settings later if they change
+   * their mind.
+   */
+  async function persistDraft() {
+    await api.llm.setConfig({ provider, model: model.trim() });
+    if (apiKey.trim()) {
+      await api.llm.setApiKey({ key: apiKey.trim() });
+      setApiKey('');
+      setAlreadyConfigured(true);
+    }
+  }
+
+  /** Test the current draft without enabling features or advancing. */
+  async function runTest() {
+    setTesting(true);
+    setResult(null);
+    try {
+      await persistDraft();
+      const r = await api.llm.testConnection();
+      setResult(r);
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  /** Persist + enable AI feature toggles + run final verification test. */
   async function save() {
     setSaving(true);
     setResult(null);
     try {
-      await api.llm.setConfig({ provider, model: model.trim() });
-      if (apiKey.trim()) {
-        await api.llm.setApiKey({ key: apiKey.trim() });
-        setApiKey('');
-        setAlreadyConfigured(true);
-      }
+      await persistDraft();
       // Enable a sensible default feature set.
       await api.llm.setFeatures({ search: true, autoCategorize: true, recommend: true });
       setTesting(true);
@@ -625,13 +656,25 @@ function LlmStep() {
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Independent Test button — lets users verify the provider/key
+              before committing to enable AI features. testConnection still
+              writes the config + key to disk first (it has to, since the IPC
+              reads from there), but feature toggles are deferred to Save. */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={runTest}
+            disabled={testing || saving || !model.trim() || (!apiKey.trim() && !alreadyConfigured && provider !== 'ollama')}
+          >
+            {testing && !saving ? t('onboarding.llm.testing') : t('onboarding.llm.testBtn')}
+          </Button>
           <Button
             size="sm"
             onClick={save}
-            disabled={saving || !model.trim() || (!apiKey.trim() && !alreadyConfigured && provider !== 'ollama')}
+            disabled={saving || testing || !model.trim() || (!apiKey.trim() && !alreadyConfigured && provider !== 'ollama')}
           >
-            {saving ? t('onboarding.llm.saving') : testing ? t('onboarding.llm.testing') : t('onboarding.llm.save')}
+            {saving ? t('onboarding.llm.saving') : t('onboarding.llm.save')}
           </Button>
           {result && (
             <span className={cn('text-xs', result.ok ? 'text-emerald-600' : 'text-destructive')}>

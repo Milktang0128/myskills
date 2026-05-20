@@ -612,6 +612,7 @@ export const zh: Dict = {
   'onboarding.llm.skipBtn': '跳过 —— 以后再配置',
   'onboarding.llm.save': '保存并继续',
   'onboarding.llm.saving': '保存中…',
+  'onboarding.llm.testBtn': '测试连接',
   'onboarding.llm.testing': '正在测试连接…',
   'onboarding.llm.testOk': '连接正常 —— {{message}}',
   'onboarding.llm.testFail': '连接失败：{{message}}',
