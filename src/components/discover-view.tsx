@@ -683,7 +683,12 @@ async function aiRerank(
     ],
     jsonMode: true,
     temperature: 0.2,
-    maxTokens: 1024,
+    // 4096 (not 1024) because reasoning models like deepseek-v4-pro burn
+    // most of the budget on hidden reasoning_content before emitting the
+    // visible JSON. 1024 caused LLM_BUDGET_EXHAUSTED → AI rerank failed →
+    // user got the "AI rerank failed, showing keyword results" toast on
+    // every search. Mirrors the same fix in electron/ai/categorize.ts.
+    maxTokens: 4096,
   });
 
   const parsed = parseRerankJson(resp.text);

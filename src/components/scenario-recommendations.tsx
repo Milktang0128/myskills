@@ -128,7 +128,11 @@ export function ScenarioRecommendations({ scenario, installedSkills, onInstalled
           { role: 'user', content: userMessage },
         ],
         temperature: 0.3,
-        maxTokens: 1024,
+        // 4096 to leave room for reasoning models — deepseek-v4-pro's
+        // hidden reasoning_content alone can exceed 1024 on this prompt
+        // size, returning LLM_BUDGET_EXHAUSTED. Same fix as discover-view
+        // and electron/ai/categorize.
+        maxTokens: 4096,
         jsonMode: true,
       });
       if (fetchSeqRef.current !== mySeq) return;
