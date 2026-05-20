@@ -360,6 +360,25 @@ export interface CatalogPreview {
 
 export type LlmProvider = 'openai' | 'anthropic' | 'deepseek' | 'openrouter' | 'ollama' | 'custom';
 
+/**
+ * Single source of truth for "what providers does MySkills accept".
+ *
+ * Two main-process files validate provider strings before using them: the IPC
+ * handler in `electron/ipc/llm.ts` and the auto-categorize service in
+ * `electron/ai/categorize.ts`. Previously each kept its own private Set, and
+ * a copy fell out of sync when DeepSeek was added — auto-categorize silently
+ * downgraded the user's DeepSeek selection to OpenAI. Centralizing here means
+ * any drift becomes a TypeScript error instead of a silent wrong-provider call.
+ */
+export const VALID_LLM_PROVIDERS: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
+  'openai',
+  'anthropic',
+  'deepseek',
+  'openrouter',
+  'ollama',
+  'custom',
+]);
+
 export interface LlmConfig {
   provider: LlmProvider;
   model: string;

@@ -29,6 +29,7 @@ import type {
   LlmConfig,
   LlmProvider,
 } from '../../shared/types';
+import { VALID_LLM_PROVIDERS } from '../../shared/types';
 
 const API_KEY_NAME = 'llm.apiKey';
 const DEFAULT_BATCH_SIZE = 5;
@@ -111,6 +112,8 @@ export async function processQueue(opts?: { batchSize?: number }): Promise<numbe
   const validKeys = new Set(scenarios.map((s) => s.key));
 
   let suggestionRows = 0;
+  let skillIdMisses = 0;
+  let scenarioKeyMisses = 0;
   const db = getDb();
   const insert = db.prepare(
     `INSERT OR IGNORE INTO ai_scenario_suggestions
@@ -121,15 +124,36 @@ export async function processQueue(opts?: { batchSize?: number }): Promise<numbe
   const now = Date.now();
   const tx = db.transaction(() => {
     for (const result of parsed.results) {
-      if (!knownSkillIds.has(result.skillId)) continue;
+      if (!knownSkillIds.has(result.skillId)) {
+        skillIdMisses += 1;
+        continue;
+      }
       for (const key of result.scenarios) {
-        if (!validKeys.has(key)) continue;
+        if (!validKeys.has(key)) {
+          scenarioKeyMisses += 1;
+          continue;
+        }
         const r = insert.run(result.skillId, key, result.reason ?? null, now);
         if (r.changes > 0) suggestionRows += 1;
       }
     }
   });
   tx();
+
+  // Diagnostic: when the model gives us nothing usable, log enough to debug —
+  // typical failure modes are hallucinated skill IDs (model echoes the name
+  // instead of the UUID) or made-up scenario keys.
+  if (suggestionRows === 0) {
+    const usagePart = res.usage
+      ? ` usage=${res.usage.completionTokens}/${res.usage.totalTokens}`
+      : '';
+    console.log(
+      `[ai] categorize empty: parsed=${parsed.results.length} idMisses=${skillIdMisses} keyMisses=${scenarioKeyMisses}${usagePart} responseLen=${res.text.length}`,
+    );
+    if (res.text.length > 0) {
+      console.log(`[ai] sample response: ${res.text.slice(0, 400)}`);
+    }
+  }
 
   console.log(
     `[ai] categorized ${skills.length} skills, ${suggestionRows} suggestions`,
@@ -215,15 +239,22 @@ function buildChatRequest(
       {
         role: 'system',
         content:
-          'You are a skill classifier. For each skill, suggest 0-3 scenarios from the provided list that best match. Return strict JSON: { results: [{skillId, scenarios: [scenarioKey, ...], reason}] }',
+          'You are a skill classifier. For each skill, suggest 0-3 scenarios from the provided list that best match. ' +
+          'Echo each skill\'s `skillId` EXACTLY as given — they are opaque UUIDs, not the skill name. ' +
+          'Use scenario keys (the part before the colon) from the provided list verbatim. ' +
+          'Return strict JSON: { results: [{ skillId: string, scenarios: [scenarioKey, ...], reason: string }] }',
       },
       {
         role: 'user',
-        content: `Scenarios:\n${scenarioBlock}\n\nSkills:\n${skillBlock}`,
+        content: `Scenarios (use the key, before the colon):\n${scenarioBlock}\n\nSkills:\n${skillBlock}`,
       },
     ],
     temperature: 0.2,
-    maxTokens: 1024,
+    // Reasoning models (DeepSeek v4, OpenAI o*) burn a large slice of the
+    // budget on hidden reasoning before emitting visible content. 1024 was
+    // empirically too small with deepseek-v4-pro for a 5-skill batch — the
+    // model returned an empty completion. 4096 leaves room.
+    maxTokens: 4096,
     jsonMode: true,
   };
 }
@@ -294,20 +325,15 @@ function loadSkillsForPrompt(ids: string[]): SkillForPrompt[] {
     .all(...ids) as SkillForPrompt[];
 }
 
-const VALID_PROVIDERS = new Set<LlmProvider>([
-  'openai',
-  'anthropic',
-  'openrouter',
-  'ollama',
-  'custom',
-]);
-
 function readLlmConfig(): LlmConfig {
   const provider = (readSetting('llm.provider') ?? 'openai') as LlmProvider;
   const model = readSetting('llm.model') ?? '';
   const baseUrl = readSetting('llm.baseUrl') ?? '';
   return {
-    provider: VALID_PROVIDERS.has(provider) ? provider : 'openai',
+    // VALID_LLM_PROVIDERS is the canonical list (shared/types.ts). Before
+    // centralizing this it was a private Set here that omitted 'deepseek',
+    // silently downgrading user selections to OpenAI.
+    provider: VALID_LLM_PROVIDERS.has(provider) ? provider : 'openai',
     model,
     baseUrl: baseUrl || undefined,
     hasApiKey: hasSecret(API_KEY_NAME),

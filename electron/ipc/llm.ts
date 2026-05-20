@@ -15,6 +15,7 @@ import type {
   LlmFeatureToggles,
   LlmProvider,
 } from '../../shared/types';
+import { VALID_LLM_PROVIDERS } from '../../shared/types';
 import { createProvider } from '../llm/provider';
 import {
   deleteSecret,
@@ -26,14 +27,9 @@ import {
 
 const API_KEY_NAME = 'llm.apiKey';
 
-const VALID_PROVIDERS: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
-  'openai',
-  'anthropic',
-  'deepseek',
-  'openrouter',
-  'ollama',
-  'custom',
-]);
+// Local alias so the rest of this file reads unchanged. The canonical list
+// lives in shared/types.ts — see the comment there for why it's centralized.
+const VALID_PROVIDERS = VALID_LLM_PROVIDERS;
 
 const FEATURE_KEYS = {
   search: 'llm.feature.search',
