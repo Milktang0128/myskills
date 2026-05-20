@@ -1,8 +1,12 @@
 import { app, BrowserWindow, session, shell } from 'electron';
 import * as path from 'node:path';
+import { initPaths } from './paths';
 import { initDb } from './db';
+import { setSecretStore } from './secrets/safe-storage';
+import { electronSafeStorage } from './secrets/electron-safe-storage';
 import { setAllowedSender } from './ipc/dispatcher';
 import { registerAllHandlers } from './ipc';
+import { makeScanProgressForwarder } from './ipc/scan';
 import { maybeAutoScan } from './scanner';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -89,10 +93,18 @@ function installCsp(): void {
 
 app.whenReady().then(async () => {
   installCsp();
+  // Single point where the Electron-owned userData path enters the system.
+  // Everything else (db, backups, staging) goes through electron/paths.ts.
+  initPaths({ userDataDir: app.getPath('userData') });
   initDb();
+  // Same DI pattern as paths: install the platform-specific SecretStore here,
+  // and the rest of the codebase talks to the interface in safe-storage.ts.
+  setSecretStore(electronSafeStorage);
   registerAllHandlers();
   await createWindow();
-  if (mainWindow) await maybeAutoScan(mainWindow.webContents);
+  if (mainWindow) {
+    await maybeAutoScan(makeScanProgressForwarder(mainWindow.webContents));
+  }
 });
 
 app.on('window-all-closed', () => {

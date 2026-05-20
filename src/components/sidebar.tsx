@@ -154,7 +154,7 @@ export function Sidebar({
           action={
             <button
               onClick={onCreateScenario}
-              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               aria-label={t('sidebar.newScenario')}
             >
               <Plus className="h-3.5 w-3.5" />
@@ -164,7 +164,7 @@ export function Sidebar({
           {scenarios.length === 0 ? (
             <button
               onClick={onCreateScenario}
-              className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
             >
               {t('sidebar.scenarios.empty')}
             </button>
@@ -187,21 +187,21 @@ export function Sidebar({
       <div className="space-y-px border-t p-2">
         <Link
           href="/scenarios"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         >
           <Layers className="h-4 w-4" />
           {t('sidebar.manageScenarios')}
         </Link>
         <Link
           href="/history"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         >
           <HistoryIcon className="h-4 w-4" />
           {t('sidebar.syncHistory')}
         </Link>
         <Link
           href="/settings"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         >
           <SettingsIcon className="h-4 w-4" />
           {t('sidebar.settings')}
@@ -258,8 +258,11 @@ function SidebarRow({
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
+      title={typeof children === 'string' ? children : undefined}
       className={cn(
         'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
         active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60',
       )}
     >

@@ -1,19 +1,15 @@
 import Database from 'better-sqlite3';
-import { app } from 'electron';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+import { getDbPath as resolveDbPath } from '../paths';
 import { runMigrations } from './migrations';
 import { seedDefaults } from './seed';
 
 let _db: Database.Database | null = null;
 let _dbPath: string | null = null;
 
-/** Initialize SQLite at userData/myskills.db. Idempotent. */
+/** Initialize SQLite at the path resolved by paths.ts. Idempotent. */
 export function initDb(): Database.Database {
   if (_db) return _db;
-  const userData = app.getPath('userData');
-  fs.mkdirSync(userData, { recursive: true });
-  _dbPath = path.join(userData, 'myskills.db');
+  _dbPath = resolveDbPath();
   _db = new Database(_dbPath);
   _db.pragma('journal_mode = WAL');
   _db.pragma('foreign_keys = ON');

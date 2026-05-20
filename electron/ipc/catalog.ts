@@ -2,6 +2,7 @@ import matter from 'gray-matter';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
 import { searchCatalog, fetchSkillContent } from '../catalog/skillssh';
+import { enrichDescriptions, type EnrichInput } from '../catalog/enrich';
 import { planInstall } from '../catalog/install';
 import type { CatalogPreview, PlatformId } from '../../shared/types';
 
@@ -50,6 +51,22 @@ export function registerCatalogHandlers(): void {
       bodyExcerpt: excerpt,
     };
     return result;
+  });
+
+  registerHandler(IPC.catalog.enrichDescriptions, async (_e, payload) => {
+    const p = (payload ?? {}) as { items?: unknown };
+    if (!Array.isArray(p.items)) {
+      throw makeError('INVALID_INPUT', 'items (array of {source, skillId}) required');
+    }
+    const clean: EnrichInput[] = [];
+    for (const raw of p.items) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = raw as { source?: unknown; skillId?: unknown };
+      if (typeof item.source !== 'string' || typeof item.skillId !== 'string') continue;
+      clean.push({ source: item.source, skillId: item.skillId });
+    }
+    // Pure best-effort: enrich never throws.
+    return enrichDescriptions(clean);
   });
 
   registerHandler(IPC.catalog.planInstall, async (_e, payload) => {

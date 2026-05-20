@@ -21,7 +21,9 @@ interface SeedScenario {
 const DEFAULT_PLATFORMS: SeedPlatform[] = [
   { id: 'claude', label: 'Claude Code', skillsDir: path.join(os.homedir(), '.claude', 'skills'), sortOrder: 0 },
   { id: 'codex',  label: 'Codex',       skillsDir: path.join(os.homedir(), '.codex', 'skills'),  sortOrder: 1 },
-  { id: 'shared', label: 'Shared Pool', skillsDir: path.join(os.homedir(), '.agents', 'skills'), sortOrder: 2 },
+  // Label rebranded from "Shared Pool" in v0.3 — see migration v7 for legacy DBs.
+  // Concept unchanged: the cross-tool ~/.agents/skills convention.
+  { id: 'shared', label: 'User Agents Folder', skillsDir: path.join(os.homedir(), '.agents', 'skills'), sortOrder: 2 },
 ];
 
 const DEFAULT_SCENARIOS: SeedScenario[] = [

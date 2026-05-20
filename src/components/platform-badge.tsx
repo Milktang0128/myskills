@@ -11,10 +11,14 @@ const STYLE: Record<string, string> = {
   shared: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-300',
 };
 
+// Short badge labels — rendered uppercase by the CSS `uppercase` utility.
+// The `shared` platform's id stays `shared` for DB compatibility, but the
+// visible chip reads "USER" to align with the renamed "User Agents Folder"
+// concept used everywhere else in the UI (sidebar, onboarding, settings).
 const LABEL: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
-  shared: 'Shared',
+  shared: 'User',
 };
 
 export function PlatformBadge({ platformId, className }: Props) {

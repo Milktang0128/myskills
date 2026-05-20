@@ -94,6 +94,43 @@ const MIGRATIONS: Migration[] = [
       db.prepare("DELETE FROM settings WHERE key = 'schema_version'").run();
     },
   },
+  {
+    version: 7,
+    name: 'rename_shared_pool_label',
+    up: (db) => {
+      // Rebrand the built-in `shared` platform's label from "Shared Pool" to
+      // "User Agents Folder" — the old name was MySkills-internal jargon,
+      // the new one matches the cross-tool convention (OpenClaw etc. call it
+      // "Personal/User agent skills"). Only update DBs that still hold the
+      // original label; any user customization (e.g. "我的共享池") is preserved.
+      // The DB `id` stays 'shared' so saved data isn't touched.
+      db.prepare(
+        "UPDATE platforms SET label = 'User Agents Folder' WHERE id = 'shared' AND label = 'Shared Pool'",
+      ).run();
+    },
+  },
+  {
+    version: 8,
+    name: 'catalog_descriptions_cache',
+    up: (db) => {
+      // Persistent cache for skills.sh search-result descriptions. The search
+      // API doesn't include description, so we fetch each skill's SKILL.md
+      // frontmatter from GitHub raw and cache it. Persisting across launches
+      // means second-time-opening Discover is instant instead of refetching
+      // 10+ rows from GitHub. SkillsGate uses the same "sync once, store,
+      // browse locally" pattern.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS catalog_descriptions (
+          source       TEXT NOT NULL,
+          skill_id     TEXT NOT NULL,
+          description  TEXT,
+          fetched_at   INTEGER NOT NULL,
+          PRIMARY KEY (source, skill_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_catalog_descriptions_fetched ON catalog_descriptions(fetched_at);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

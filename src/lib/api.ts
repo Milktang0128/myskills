@@ -6,6 +6,8 @@ import { IPC } from '@shared/ipc-channels';
 import type {
   AiScenarioSuggestion,
   AppStats,
+  BulkCategorizeApplyResult,
+  BulkCategorizePlan,
   CatalogPreview,
   CatalogSearchResponse,
   CoverageMatrix,
@@ -145,6 +147,16 @@ export const api = {
         skillName,
         targetPlatformIds,
       }) as Promise<SyncPlan>,
+    /**
+     * Batch-enrich descriptions for catalog search rows. skills.sh search
+     * doesn't include description; the main process fetches each SKILL.md
+     * from GitHub raw, parses frontmatter, and returns `description` per
+     * (source, skillId). Soft-fails to null per row.
+     */
+    enrichDescriptions: (items: Array<{ source: string; skillId: string }>) =>
+      bridge().invoke(IPC.catalog.enrichDescriptions, { items }) as Promise<
+        Array<{ source: string; skillId: string; description: string | null }>
+      >,
   },
   llm: {
     getConfig: () => bridge().invoke(IPC.llm.getConfig) as Promise<LlmConfig>,
@@ -172,6 +184,16 @@ export const api = {
       bridge().invoke(IPC.ai.dismissSuggestion, { suggestionId }) as Promise<{ ok: true }>,
     queueStatus: () =>
       bridge().invoke(IPC.ai.queueStatus) as Promise<{ pending: number; schedulerRunning: boolean }>,
+    /**
+     * Build a categorization plan for a set of skills. ONE LLM call (or a
+     * few batches for large sets). Returns a plan the user previews + edits
+     * in the bulk-categorize dialog before applying.
+     */
+    bulkCategorize: (skillIds: string[]) =>
+      bridge().invoke(IPC.ai.bulkCategorize, { skillIds }) as Promise<BulkCategorizePlan>,
+    /** Apply a (possibly user-edited) bulk plan in a DB transaction. */
+    applyBulkCategorization: (plan: BulkCategorizePlan) =>
+      bridge().invoke(IPC.ai.applyBulkCategorization, { plan }) as Promise<BulkCategorizeApplyResult>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

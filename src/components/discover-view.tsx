@@ -21,6 +21,14 @@ import { cn } from '@/lib/utils';
 interface Props {
   /** Live query from the workspace top-bar search input. */
   query: string;
+  /** Mode is owned by the workspace so the toggle can live next to the
+   *  search input in the page header. DiscoverView consumes + reports
+   *  changes via onModeChange. */
+  mode: SearchMode;
+  onModeChange: (mode: SearchMode) => void;
+  /** Whether AI mode is enabled (LLM key + feature toggle). Owned by the
+   *  workspace so the header toggle can render correctly too. */
+  aiAvailable: boolean;
   onToast: (msg: string) => void;
 }
 
@@ -28,25 +36,145 @@ const DEBOUNCE_MS = 300;
 const MIN_QUERY_LEN = 2;
 
 /** Search mode the user has picked in the top-bar segmented control. */
-type SearchMode = 'keyword' | 'ai';
+export type SearchMode = 'keyword' | 'ai';
 
 /** AI rerank candidate pool — broader than the default keyword view (30). */
 const AI_CANDIDATE_LIMIT = 50;
 /** Max items we ask the LLM to return. The prompt mirrors this. */
 const AI_RESULT_LIMIT = 10;
+/**
+ * Seed query used when the user opens Discover with no input yet. skills.sh
+ * doesn't expose a "popular" or "browse all" endpoint without an API key,
+ * but their fuzzy search for "skill" happens to return the most-installed
+ * skills first (find-skills 1.6M, vercel-react-best-practices 411k, …) —
+ * close enough to a popular landing for v0.3.
+ */
+const POPULAR_SEED_QUERY = 'skill';
+/** Cap on how many rows we eagerly enrich with descriptions per response. */
+const ENRICH_LIMIT = 10;
+/**
+ * Cap for the pre-rerank description enrichment in AI mode. Bigger than
+ * ENRICH_LIMIT because rerank reads more rows than the user displays — we
+ * want the LLM to have descriptions on ~3x the eventual visible rows so it
+ * can compare and pick best, not just shuffle the visible 10.
+ */
+const AI_RERANK_ENRICH_LIMIT = 30;
+/** Cap on rows sent to Phase 3 rerank. Keeps the prompt size predictable. */
+const AI_RERANK_CANDIDATE_LIMIT = 100;
+/** Pipeline result cache TTL (ms). Same query in this window skips all LLM calls. */
+const PIPELINE_CACHE_TTL_MS = 30 * 60 * 1000;
 
-export function DiscoverView({ query, onToast }: Props) {
+/**
+ * Cached AI pipeline output, keyed by normalized query. Module-level so it
+ * survives DiscoverView unmount/remount (user clicking between Coverage and
+ * Discover). Tab-scoped — the cache resets on page reload, which is fine
+ * for an internal acceleration; description data already lives in the DB.
+ */
+interface CachedPipeline {
+  skills: CatalogSearchResult[];
+  why: Record<string, string>;
+  ranked: boolean;
+  intent: string | null;
+  expiresAt: number;
+}
+const pipelineCache = new Map<string, CachedPipeline>();
+
+function normalizeQuery(q: string): string {
+  return q.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function readPipelineCache(q: string): CachedPipeline | null {
+  const key = normalizeQuery(q);
+  const entry = pipelineCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt < Date.now()) {
+    pipelineCache.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function writePipelineCache(q: string, value: Omit<CachedPipeline, 'expiresAt'>): void {
+  const key = normalizeQuery(q);
+  pipelineCache.set(key, { ...value, expiresAt: Date.now() + PIPELINE_CACHE_TTL_MS });
+}
+
+/**
+ * Heuristic: skip Phase 1 (intent decompose) when the user's query is
+ * already a short English term. Three tests must all pass to skip:
+ *   - no CJK / Korean characters present (those need translation)
+ *   - ≤3 whitespace-separated tokens (long sentences benefit from
+ *     keyword extraction)
+ *   - each token is plain ASCII letters/digits/hyphens
+ *
+ * When true, the pipeline uses the raw query as a single keyword and
+ * jumps straight to Phase 2, saving one LLM round-trip (~3-5s with
+ * reasoning models) for the very common "git commit" / "vercel deploy"
+ * style query.
+ */
+function shouldSkipDecompose(query: string): boolean {
+  if (/[一-鿿㐀-䶿぀-ゟ゠-ヿ가-힯]/.test(query)) {
+    return false;
+  }
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || tokens.length > 3) return false;
+  return tokens.every((t) => /^[A-Za-z0-9._-]+$/.test(t));
+}
+
+/**
+ * Lowercase + strip non-alphanumerics so we can match catalog skillIds
+ * against locally-installed skill names that may differ in case or
+ * separators (e.g. "PDF-Form" vs "pdf_form"). Mirrors the same
+ * normalization used by the bulk-categorize matcher.
+ */
+function normalizeSkillKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }: Props) {
   const t = useT();
   const [bridgeReady, setBridgeReady] = useState(false);
   const [results, setResults] = useState<CatalogSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
-  /** Which phase of an in-flight search is currently running (drives the spinner copy). */
-  const [loadingPhase, setLoadingPhase] = useState<'keyword' | 'ai-ranking' | null>(null);
+  /**
+   * Which phase of an in-flight search is currently running. Drives the
+   * status-line copy so users can tell whether the LLM is still thinking
+   * vs the keyword catalog is still responding. AI mode advances through:
+   *   keyword           (initial direct catalog hit, if any)
+   *   ai-understanding  (Phase 1: decompose user intent into keywords)
+   *   ai-multisearch    (Phase 2: parallel skills.sh fetches per keyword)
+   *   ai-enriching      (Phase 2.5: fetch descriptions so Phase 3 has context)
+   *   ai-sorting        (Phase 3 in progress, union already on screen — used
+   *                      when `results` is non-empty during ai-ranking)
+   *   ai-ranking        (Phase 3 starting before any results visible)
+   */
+  type LoadingPhase =
+    | 'keyword'
+    | 'ai-understanding'
+    | 'ai-multisearch'
+    | 'ai-enriching'
+    | 'ai-sorting'
+    | 'ai-ranking';
+  const [loadingPhase, setLoadingPhase] = useState<LoadingPhase | null>(null);
+  /**
+   * Counters for the multi-search phase, so the status line can read
+   * "Searching {{count}} angles…" instead of a generic spinner.
+   */
+  const [aiKeywordCount, setAiKeywordCount] = useState(0);
+  const [aiCandidateCount, setAiCandidateCount] = useState(0);
+  /** One-sentence LLM summary of how the user's query was understood. */
+  const [aiIntent, setAiIntent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Map of skillId → one-sentence LLM rationale. Populated only in AI mode. */
   const [aiWhy, setAiWhy] = useState<Record<string, string>>({});
   /** True when the currently-rendered results were produced by an AI rerank. */
   const [aiRanked, setAiRanked] = useState(false);
+  /**
+   * True when the currently-rendered results are the "popular" seed (the
+   * empty-query default), not a user search. Drives the status-line copy
+   * and lets us suppress the "no matches" empty state.
+   */
+  const [isPopular, setIsPopular] = useState(false);
 
   const [selectedResult, setSelectedResult] = useState<CatalogSearchResult | null>(null);
   const [preview, setPreview] = useState<CatalogPreview | null>(null);
@@ -63,13 +191,16 @@ export function DiscoverView({ query, onToast }: Props) {
   // Master kill-switch from settings — when off, skip every network call.
   const [networkAllowed, setNetworkAllowed] = useState<boolean | null>(null);
 
-  // AI search gating. `null` while loading so we don't flicker the segmented
-  // control's disabled state on first render.
-  const [aiAvailable, setAiAvailable] = useState<boolean | null>(null);
-  const [mode, setMode] = useState<SearchMode>('keyword');
+  // Set of normalized skill names installed locally — used to flag
+  // already-installed catalog results so users don't accidentally
+  // re-install the same skill.
+  const [installedNames, setInstalledNames] = useState<Set<string>>(new Set());
 
   // Used to ignore stale search responses (the user typed faster than the API).
   const searchSeqRef = useRef(0);
+  // Separate sequence for enrichment so a slow GitHub batch from a previous
+  // query doesn't overwrite descriptions on a newer result set.
+  const enrichSeqRef = useRef(0);
 
   // Bridge readiness — same pattern as coverage-view.
   useEffect(() => {
@@ -87,19 +218,19 @@ export function DiscoverView({ query, onToast }: Props) {
     return () => clearInterval(iv);
   }, []);
 
-  // Load one-shot meta on mount: platforms, canonical, network gate, LLM availability.
+  // Load one-shot meta on mount: platforms, canonical, network gate.
+  // (LLM availability is owned by the workspace — it drives the header
+  // toggle too — and arrives via the `aiAvailable` prop.)
   useEffect(() => {
     if (!bridgeReady) return;
     let cancelled = false;
     (async () => {
       try {
-        const [pls, canon, gate, llmCfg, llmFeatures] = await Promise.all([
+        const [pls, canon, gate, installed] = await Promise.all([
           api.platforms.list(),
           api.settings.get('canonical_platform'),
           api.settings.get('allow_external_network'),
-          // Tolerate LLM IPC failure — AI search simply stays disabled.
-          api.llm.getConfig().catch(() => null),
-          api.llm.getFeatures().catch(() => null),
+          api.skills.list({ scope: 'all' }),
         ]);
         if (cancelled) return;
         setPlatforms(pls);
@@ -110,8 +241,7 @@ export function DiscoverView({ query, onToast }: Props) {
         setSelectedPlatforms(new Set([canonId]));
         // '0' means explicitly disabled; missing key / '1' means allowed.
         setNetworkAllowed(gate !== '0');
-        // AI search needs BOTH the feature toggle on AND a stored API key.
-        setAiAvailable(Boolean(llmFeatures?.search && llmCfg?.hasApiKey));
+        setInstalledNames(new Set(installed.map((s) => normalizeSkillKey(s.name))));
       } catch (e) {
         if (!cancelled) console.error('discover meta load failed', e);
       }
@@ -121,79 +251,218 @@ export function DiscoverView({ query, onToast }: Props) {
     };
   }, [bridgeReady]);
 
-  // If AI becomes unavailable after the user has already picked it (e.g. settings
-  // change in another window), force the mode back to Keyword so we don't sit in
-  // a broken state.
+  // If AI becomes unavailable after the user picked it (settings changed
+  // in another window), force back to keyword. The parent owns `mode`
+  // but we know first when network/results bail.
   useEffect(() => {
-    if (aiAvailable === false && mode === 'ai') setMode('keyword');
-  }, [aiAvailable, mode]);
+    if (!aiAvailable && mode === 'ai') onModeChange('keyword');
+  }, [aiAvailable, mode, onModeChange]);
 
   const trimmedQuery = query.trim();
   const queryReady = trimmedQuery.length >= MIN_QUERY_LEN;
 
-  // Debounced search. Both Keyword and AI modes share the same 300ms debounce —
-  // the LLM call is the same kind of cost as a network hop, so we should never
-  // fire it on each keystroke.
+  // Debounced search. Three modes share this effect:
+  //   - User typed ≥2 chars → run their query in Keyword or AI mode.
+  //   - User typed nothing  → run POPULAR_SEED_QUERY ("skill"), label the
+  //     result as "popular" so the status line tells the user this isn't a
+  //     match for their text. Always Keyword mode for popular — running AI
+  //     rerank on the default landing is wasteful.
+  //   - Network off          → bail (the no-network banner takes over).
+  // Both real searches and popular share the same 300ms debounce, so a user
+  // who opens Discover then immediately starts typing only hits skills.sh
+  // once (the debounce coalesces).
   useEffect(() => {
     if (!bridgeReady) return;
     if (networkAllowed === false) return;
-    if (!queryReady) {
-      setResults([]);
-      setLoading(false);
-      setLoadingPhase(null);
-      setError(null);
-      setAiWhy({});
-      setAiRanked(false);
-      return;
-    }
+
+    const isPopularRun = !queryReady;
+    const effectiveQuery = isPopularRun ? POPULAR_SEED_QUERY : trimmedQuery;
+    const effectiveMode: SearchMode = isPopularRun ? 'keyword' : mode;
+
     const mySeq = ++searchSeqRef.current;
     setLoading(true);
     setLoadingPhase('keyword');
     setError(null);
+    setAiIntent(null);
+    setAiKeywordCount(0);
+    setAiCandidateCount(0);
     const timer = setTimeout(async () => {
       try {
-        // Phase 1: keyword. In AI mode we widen the pool so the reranker has
-        // more candidates to choose from.
-        const limit = mode === 'ai' ? AI_CANDIDATE_LIMIT : undefined;
-        const resp = await api.catalog.search(trimmedQuery, limit);
-        if (searchSeqRef.current !== mySeq) return;
+        let finalResults: CatalogSearchResult[] = [];
 
-        if (mode !== 'ai' || resp.skills.length === 0) {
-          setResults(resp.skills);
-          setAiWhy({});
-          setAiRanked(false);
-          return;
-        }
+        if (effectiveMode === 'ai') {
+          // ── AI pipeline ──────────────────────────────────────────────
+          // Optimization stack:
+          //   0. Cache: same query in last 30min → instant.
+          //   1. Decompose (skipped for short English queries — heuristic).
+          //   2. Parallel multi-search over keywords.
+          //   3. Progressive: union shown immediately by installs while
+          //      Phase 4/5 run, so user sees something at ~1s.
+          //   4. Enrich top-30 descriptions BEFORE rerank (so the LLM has
+          //      real context, not just names).
+          //   5. Rerank top-100 against original intent → final order + why.
 
-        // Phase 2: AI rerank. The LLM returns the top-N ids + a "why" each.
-        setLoadingPhase('ai-ranking');
-        try {
-          const ranked = await aiRerank(trimmedQuery, resp.skills);
-          if (searchSeqRef.current !== mySeq) return;
-          if (ranked.length === 0) {
-            // Model returned nothing — fall back to the keyword pool rather
-            // than show an empty list. This isn't an error; the query may
-            // simply not match anything well.
-            setResults(resp.skills);
-            setAiWhy({});
-            setAiRanked(false);
+          // Step 0 — cache check
+          const cached = readPipelineCache(effectiveQuery);
+          if (cached) {
+            finalResults = cached.skills;
+            setResults(cached.skills);
+            setAiWhy(cached.why);
+            setAiRanked(cached.ranked);
+            setAiIntent(cached.intent);
+            setIsPopular(false);
+            // Descriptions are already on cached.skills, no extra enrich needed.
           } else {
-            setResults(ranked.map((r) => r.skill));
-            setAiWhy(
-              Object.fromEntries(
-                ranked.map((r) => [r.skill.skillId, r.why]),
+            // Step 1 — decompose (or skip)
+            let intent = '';
+            let keywords: string[];
+            if (shouldSkipDecompose(effectiveQuery)) {
+              keywords = [effectiveQuery];
+            } else {
+              setLoadingPhase('ai-understanding');
+              try {
+                const decomposed = await aiDecomposeIntent(effectiveQuery);
+                if (searchSeqRef.current !== mySeq) return;
+                intent = decomposed.intent;
+                keywords =
+                  decomposed.keywords.length > 0 ? decomposed.keywords : [effectiveQuery];
+                setAiIntent(intent || null);
+                setAiKeywordCount(keywords.length);
+              } catch {
+                keywords = [effectiveQuery];
+              }
+            }
+
+            // Step 2 — multi-search
+            setLoadingPhase('ai-multisearch');
+            setAiKeywordCount(keywords.length);
+            const perSearch = await Promise.all(
+              keywords.map((kw) =>
+                api.catalog.search(kw, AI_PER_KEYWORD_LIMIT).catch(() => null),
               ),
             );
-            setAiRanked(true);
+            if (searchSeqRef.current !== mySeq) return;
+            const seenCands = new Set<string>();
+            const union: CatalogSearchResult[] = [];
+            for (const resp of perSearch) {
+              if (!resp) continue;
+              for (const s of resp.skills) {
+                const key = `${s.source}\x00${s.skillId}`;
+                if (seenCands.has(key)) continue;
+                seenCands.add(key);
+                union.push(s);
+              }
+            }
+            setAiCandidateCount(union.length);
+
+            if (union.length === 0) {
+              finalResults = [];
+              setResults([]);
+              setAiWhy({});
+              setAiRanked(false);
+              setIsPopular(false);
+            } else {
+              // Step 3 — progressive: show union sorted by installs
+              // immediately so the user has something to look at while
+              // Phase 4 + 5 run. The list will reorder when rerank lands.
+              const provisional = [...union]
+                .sort((a, b) => b.installs - a.installs)
+                .slice(0, AI_RESULT_LIMIT);
+              setResults(provisional);
+              setAiWhy({});
+              setAiRanked(false);
+              setIsPopular(false);
+
+              // Step 4 — enrich descriptions for the top N candidates
+              // BEFORE rerank, so the LLM sees real text and not just
+              // names. Updates the displayed provisional list in-place
+              // so descriptions appear while waiting on rerank.
+              setLoadingPhase('ai-enriching');
+              const toEnrich = union.slice(0, AI_RERANK_ENRICH_LIMIT);
+              try {
+                const enriched = await api.catalog.enrichDescriptions(
+                  toEnrich.map((s) => ({ source: s.source, skillId: s.skillId })),
+                );
+                if (searchSeqRef.current !== mySeq) return;
+                const descMap = new Map<string, string | null>();
+                for (const e of enriched) {
+                  descMap.set(`${e.source}\x00${e.skillId}`, e.description);
+                }
+                // Mutate union descriptions for rerank input.
+                for (const c of union) {
+                  const d = descMap.get(`${c.source}\x00${c.skillId}`);
+                  if (typeof d === 'string' && d.length > 0 && !c.description) {
+                    c.description = d;
+                  }
+                }
+                // Reflect into the visible list too.
+                setResults((prev) =>
+                  prev.map((r) => {
+                    const d = descMap.get(`${r.source}\x00${r.skillId}`);
+                    if (typeof d === 'string' && d.length > 0 && !r.description) {
+                      return { ...r, description: d };
+                    }
+                    return r;
+                  }),
+                );
+              } catch {
+                // Enrich is best-effort; continue with names alone.
+              }
+
+              // Step 5 — rerank with the richer candidate descriptions
+              setLoadingPhase('ai-sorting');
+              try {
+                const ranked = await aiRerank(
+                  effectiveQuery,
+                  union.slice(0, AI_RERANK_CANDIDATE_LIMIT),
+                );
+                if (searchSeqRef.current !== mySeq) return;
+                if (ranked.length === 0) {
+                  finalResults = provisional;
+                  setResults(finalResults);
+                  setAiWhy({});
+                  setAiRanked(false);
+                } else {
+                  finalResults = ranked.map((r) => r.skill);
+                  const whyMap = Object.fromEntries(
+                    ranked.map((r) => [r.skill.skillId, r.why]),
+                  );
+                  setResults(finalResults);
+                  setAiWhy(whyMap);
+                  setAiRanked(true);
+                  writePipelineCache(effectiveQuery, {
+                    skills: finalResults,
+                    why: whyMap,
+                    ranked: true,
+                    intent: intent || null,
+                  });
+                }
+              } catch (err) {
+                console.error('AI rerank failed', err);
+                finalResults = provisional;
+                setResults(finalResults);
+                setAiWhy({});
+                setAiRanked(false);
+                onToast(t('discover.ai.fallback'));
+              }
+            }
           }
-        } catch (llmErr) {
+        } else {
+          // ── Keyword mode: direct search, no LLM ──────────────────────
+          const resp = await api.catalog.search(effectiveQuery, undefined);
           if (searchSeqRef.current !== mySeq) return;
-          console.error('AI rerank failed', llmErr);
-          setResults(resp.skills);
+          finalResults = resp.skills;
+          setResults(finalResults);
           setAiWhy({});
           setAiRanked(false);
-          onToast(t('discover.ai.fallback'));
+          setIsPopular(isPopularRun);
         }
+
+        // Kick off background enrichment for the first N rows. We don't
+        // await: the list renders immediately; descriptions stream in.
+        // The seq guard lets a fast follow-up query supersede a slow
+        // enrich batch from a previous query.
+        void enrichResultDescriptions(finalResults.slice(0, ENRICH_LIMIT));
       } catch (err) {
         if (searchSeqRef.current !== mySeq) return;
         const friendly = friendlyCatalogError(err, 'search', t);
@@ -201,7 +470,8 @@ export function DiscoverView({ query, onToast }: Props) {
         setResults([]);
         setAiWhy({});
         setAiRanked(false);
-        onToast(friendly);
+        setIsPopular(false);
+        if (!isPopularRun) onToast(friendly);
       } finally {
         if (searchSeqRef.current === mySeq) {
           setLoading(false);
@@ -211,6 +481,39 @@ export function DiscoverView({ query, onToast }: Props) {
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [bridgeReady, networkAllowed, queryReady, trimmedQuery, mode, onToast, t]);
+
+  /**
+   * Merge enriched descriptions into result rows by matching (source, skillId).
+   * Idempotent — late-arriving enrichments for a stale result set are guarded
+   * by enrichSeqRef. Uses the renderer-level results state setter so React
+   * re-renders just the rows that changed.
+   */
+  async function enrichResultDescriptions(rows: CatalogSearchResult[]): Promise<void> {
+    if (rows.length === 0) return;
+    const mySeq = ++enrichSeqRef.current;
+    try {
+      const enriched = await api.catalog.enrichDescriptions(
+        rows.map((r) => ({ source: r.source, skillId: r.skillId })),
+      );
+      if (enrichSeqRef.current !== mySeq) return;
+      // Build a lookup so the merge is O(N).
+      const lookup = new Map<string, string | null>();
+      for (const e of enriched) lookup.set(`${e.source}\x00${e.skillId}`, e.description);
+      setResults((prev) =>
+        prev.map((r) => {
+          const desc = lookup.get(`${r.source}\x00${r.skillId}`);
+          // Only replace if we got an actual description back; leave
+          // existing description in place if enrich found nothing.
+          if (typeof desc === 'string' && desc.length > 0 && !r.description) {
+            return { ...r, description: desc };
+          }
+          return r;
+        }),
+      );
+    } catch {
+      // Enrichment is best-effort — failures don't degrade the visible list.
+    }
+  }
 
   const openPreview = useCallback(
     async (result: CatalogSearchResult) => {
@@ -300,14 +603,42 @@ export function DiscoverView({ query, onToast }: Props) {
     );
   }
 
-  const statusLine = !queryReady
-    ? t('discover.status.typePrompt')
-    : loading
-    ? loadingPhase === 'ai-ranking'
-      ? t('discover.status.aiRanking')
+  // Status-line copy. Five cases, in priority order:
+  // Status-line copy. AI mode goes through 5 progressive phases; each one
+  // has its own copy so the user knows what's happening and when.
+  // Priority order:
+  //   loading + popular           → "Loading popular skills…"
+  //   loading + ai-understanding  → "AI is reading your intent…"
+  //   loading + ai-multisearch    → "Searching N angles…"
+  //   loading + ai-enriching      → "Loading descriptions for AI to read…"
+  //   loading + ai-sorting        → "Showing N candidates — AI is reordering…"
+  //                                 (provisional results already on screen)
+  //   loading + ai-ranking        → "AI is picking the best of N matches…"
+  //                                 (no provisional results yet)
+  //   loading + keyword           → "Searching catalog…"
+  //   error                       → friendly error
+  //   isPopular + done            → "Popular on skills.sh"
+  //   search + done               → "{n} result(s)"
+  const statusLine = loading
+    ? isPopular
+      ? t('discover.status.popularLoading')
+      : loadingPhase === 'ai-understanding'
+      ? t('discover.status.aiUnderstanding')
+      : loadingPhase === 'ai-multisearch'
+      ? t('discover.status.aiMultiSearch', { count: aiKeywordCount })
+      : loadingPhase === 'ai-enriching'
+      ? t('discover.status.aiEnriching')
+      : loadingPhase === 'ai-sorting'
+      ? t('discover.status.aiSorting', { count: aiCandidateCount })
+      : loadingPhase === 'ai-ranking'
+      ? aiCandidateCount > 0
+        ? t('discover.status.aiFiltering', { count: aiCandidateCount })
+        : t('discover.status.aiRanking')
       : t('discover.status.searching')
     : error
     ? error
+    : isPopular
+    ? t('discover.status.popular')
     : results.length === 1
     ? t('discover.status.result', { count: results.length })
     : t('discover.status.results', { count: results.length });
@@ -315,37 +646,69 @@ export function DiscoverView({ query, onToast }: Props) {
   return (
     <div className="flex h-full min-w-0 flex-1">
       <div className="flex h-full flex-1 flex-col">
+        {/* Status row — the Keyword/AI toggle used to live here but moved
+            to the workspace header so it groups with the search input. */}
         <div className="flex items-center justify-between gap-3 border-b px-4 py-2 text-xs text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="truncate">{statusLine}</span>
-            <ModeSegmented
-              mode={mode}
-              aiAvailable={aiAvailable ?? false}
-              onChange={setMode}
-            />
-          </div>
+          <span className="truncate">{statusLine}</span>
           <span className="shrink-0">{t('discover.via')}</span>
         </div>
 
         <ScrollArea className="flex-1 scrollbar-thin">
           <div className="px-3 py-3">
-            {!queryReady ? (
-              <EmptyHint />
-            ) : loading && results.length === 0 ? (
-              <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {loadingPhase === 'ai-ranking' ? t('discover.status.aiRanking') : t('discover.status.searching')}
-              </div>
+            {/* Loading-only states first. We never show the "type to search"
+                empty hint anymore — opening Discover always fires the popular
+                seed, so the user either sees rows or sees a loading spinner. */}
+            {loading && results.length === 0 ? (
+              <>
+                <div className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  <span>{statusLine}</span>
+                </div>
+                {/* Skeleton rows give the layout a stable shape while the
+                    request is in flight — better than a single spinner in
+                    an otherwise blank pane. */}
+                <ul className="space-y-2 px-1 pt-2" aria-hidden="true">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <li
+                      key={i}
+                      className="rounded-md border bg-background px-3 py-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className="h-3.5 w-40 animate-pulse rounded bg-muted/60" />
+                        <div className="ml-auto h-3 w-14 animate-pulse rounded bg-muted/40" />
+                      </div>
+                      <div className="mt-2 h-3 w-24 animate-pulse rounded bg-muted/40" />
+                      <div className="mt-2 h-3 w-2/3 animate-pulse rounded bg-muted/40" />
+                    </li>
+                  ))}
+                </ul>
+              </>
             ) : results.length === 0 && !error ? (
-              <div className="px-3 py-6 text-sm text-muted-foreground">
-                {t('discover.empty.noMatch', { query: trimmedQuery })}
-              </div>
+              // Empty after a real search — distinguish from popular failure
+              // (which is rare; if popular returns 0, status line says so).
+              queryReady ? (
+                <div className="px-3 py-6 text-sm text-muted-foreground">
+                  {t('discover.empty.noMatch', { query: trimmedQuery })}
+                </div>
+              ) : (
+                <EmptyHint />
+              )
             ) : (
               <>
                 {aiRanked && (
-                  <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-medium text-violet-600 dark:text-violet-300">
-                    <Sparkles className="h-3 w-3" />
-                    {t('discover.aiRanked.label')}
+                  <div className="mb-2 space-y-0.5 px-1">
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-violet-600 dark:text-violet-300">
+                      <Sparkles className="h-3 w-3" />
+                      {t('discover.aiRanked.label')}
+                    </div>
+                    {/* Intent echo lets the user see how the LLM read their
+                        query — important for non-English queries where the
+                        keyword decomposition would otherwise be invisible. */}
+                    {aiIntent && (
+                      <div className="text-[11px] italic text-muted-foreground/80">
+                        {t('discover.ai.intentHint', { intent: aiIntent })}
+                      </div>
+                    )}
                   </div>
                 )}
                 <ul className="space-y-1.5">
@@ -354,6 +717,10 @@ export function DiscoverView({ query, onToast }: Props) {
                       <ResultRow
                         result={r}
                         why={aiWhy[r.skillId]}
+                        installed={
+                          installedNames.has(normalizeSkillKey(r.skillId)) ||
+                          installedNames.has(normalizeSkillKey(r.name))
+                        }
                         selected={
                           selectedResult?.source === r.source &&
                           selectedResult?.skillId === r.skillId
@@ -408,12 +775,15 @@ function EmptyHint() {
 function ResultRow({
   result,
   why,
+  installed,
   selected,
   onClick,
 }: {
   result: CatalogSearchResult;
   /** LLM-generated rationale, only present in AI mode. */
   why?: string;
+  /** True when a local skill with a matching name already exists. */
+  installed?: boolean;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -427,21 +797,53 @@ function ResultRow({
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="truncate font-medium text-sm">{result.name}</span>
+        <span className="truncate font-medium text-sm" title={result.name}>
+          {result.name}
+        </span>
+        {installed && (
+          <span
+            className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+            title={t('discover.installedBadge.title')}
+          >
+            {t('discover.installedBadge')}
+          </span>
+        )}
         <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
           {formatInstalls(result.installs)} {t('discover.installs.label')}
         </span>
       </div>
       <div className="mt-0.5 flex items-center gap-2">
-        <span className="truncate rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">
+        <span
+          className="truncate rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground"
+          title={result.source}
+        >
           {result.source}
         </span>
       </div>
-      <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-        {result.description?.trim() || t('discover.preview.noDescription')}
-      </div>
+      {/* Description: shown when present, hidden (or shown as a thin
+          shimmer) when not. The enrichment IPC populates this in the
+          background after the initial render, so initially-empty rows
+          fill in within ~1 second on the first visit, instantly after.
+          Rows that genuinely have no description in frontmatter remain
+          empty — better than a sea of "(no description)" placeholders. */}
+      {result.description?.trim() ? (
+        <div
+          className="mt-1 line-clamp-2 text-xs text-muted-foreground"
+          title={result.description.trim()}
+        >
+          {result.description.trim()}
+        </div>
+      ) : (
+        <div
+          aria-hidden="true"
+          className="mt-1 h-3 w-2/3 rounded bg-muted/40"
+        />
+      )}
       {why && (
-        <div className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80">
+        <div
+          className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80"
+          title={why}
+        >
           {why}
         </div>
       )}
@@ -450,20 +852,34 @@ function ResultRow({
 }
 
 /**
- * Segmented "Keyword" | "AI" toggle. The AI half is disabled (with a tooltip)
- * when the LLM feature toggle is off or no API key is stored.
+ * Segmented "Keyword" | "AI" toggle. The AI half is disabled in three
+ * cases (most-specific first wins the tooltip):
+ *   1. `aiAvailable` = false → no LLM configured or feature toggle off.
+ *      Tooltip points to Settings.
+ *   2. `queryReady` = false → AI mode reranks search results, so without
+ *      a query there's nothing to rank. (Popular landing always shows in
+ *      keyword mode regardless.) Tooltip explains.
+ *   3. Otherwise → enabled, switching triggers an AI rerank on the next
+ *      search response.
  */
-function ModeSegmented({
+export function ModeSegmented({
   mode,
   aiAvailable,
+  queryReady,
   onChange,
 }: {
   mode: SearchMode;
   aiAvailable: boolean;
+  queryReady: boolean;
   onChange: (m: SearchMode) => void;
 }) {
   const t = useT();
-  const aiTitle = aiAvailable ? t('discover.mode.ai.title.enabled') : t('discover.mode.ai.title.disabled');
+  const aiClickable = aiAvailable && queryReady;
+  const aiTitle = !aiAvailable
+    ? t('discover.mode.ai.title.disabled')
+    : !queryReady
+    ? t('discover.mode.ai.title.needQuery')
+    : t('discover.mode.ai.title.enabled');
   return (
     <div
       role="tablist"
@@ -486,15 +902,15 @@ function ModeSegmented({
       <button
         role="tab"
         aria-selected={mode === 'ai'}
-        disabled={!aiAvailable}
+        disabled={!aiClickable}
         title={aiTitle}
-        onClick={() => aiAvailable && onChange('ai')}
+        onClick={() => aiClickable && onChange('ai')}
         className={cn(
           'flex items-center gap-1 rounded px-2 py-0.5 transition-colors',
-          mode === 'ai' && aiAvailable
+          mode === 'ai' && aiClickable
             ? 'bg-accent text-foreground'
             : 'text-muted-foreground hover:text-foreground',
-          !aiAvailable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
+          !aiClickable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
         )}
       >
         <Sparkles className="h-3 w-3" />
@@ -528,6 +944,8 @@ function PreviewDrawer({
   onInstall: () => void;
 }) {
   const t = useT();
+  const installDisabled =
+    busy || selectedPlatforms.size === 0 || enabledPlatforms.length === 0;
   return (
     <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
       <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
@@ -541,16 +959,36 @@ function PreviewDrawer({
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="space-y-5 p-5">
-          <header className="space-y-2">
-            <h2 className="text-base font-semibold tracking-tight">{result.name}</h2>
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">
-                {result.source}
-              </span>
-              <span>·</span>
-              <span>{t('discover.preview.installsCount', { n: formatInstalls(result.installs) })}</span>
-              <span>·</span>
-              <span>{t('discover.preview.viaSkills')}</span>
+          <header className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1 space-y-2">
+                <h2 className="text-base font-semibold tracking-tight">{result.name}</h2>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                  <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">
+                    {result.source}
+                  </span>
+                  <span>·</span>
+                  <span>{t('discover.preview.installsCount', { n: formatInstalls(result.installs) })}</span>
+                  <span>·</span>
+                  <span>{t('discover.preview.viaSkills')}</span>
+                </div>
+              </div>
+              {/* Header-level install CTA. Mirrors the footer button so users
+                  reading SKILL.md don't have to scroll back down to act.
+                  Disabled state matches the footer; both wire to the same
+                  handler. */}
+              <Button
+                size="sm"
+                onClick={onInstall}
+                disabled={installDisabled}
+                className="shrink-0"
+              >
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {selectedPlatforms.size === 0
+                  ? t('discover.preview.installButton')
+                  : t('discover.preview.installButton') +
+                    ` · ${selectedPlatforms.size}`}
+              </Button>
             </div>
           </header>
 
@@ -649,6 +1087,86 @@ function PreviewDrawer({
 // helpers
 // ---------------------------------------------------------------------------
 
+/** Per-keyword search cap. Smaller than AI_CANDIDATE_LIMIT because we run
+ *  several in parallel — total pool size is `keywords.length * this`. */
+const AI_PER_KEYWORD_LIMIT = 30;
+
+/**
+ * Phase 1 of the AI search pipeline: decompose the user's natural-language
+ * query into an English-keyword search plan for the (English-only)
+ * skills.sh catalog. The model also returns a one-sentence intent summary
+ * so the UI can echo back "Understood as: …".
+ *
+ * Examples (illustrative — actual output depends on the model):
+ *   "PPT制作"          → { intent: "create slide decks",
+ *                          keywords: ["slides", "presentation", "deck", "ppt"] }
+ *   "make websites"   → { intent: "build a website",
+ *                          keywords: ["website", "html", "deploy"] }
+ *   "git workflow"    → { intent: "git development workflow",
+ *                          keywords: ["git"] }
+ *
+ * Throws on transport failure or unparseable JSON — caller catches and
+ * falls back to direct keyword search.
+ */
+async function aiDecomposeIntent(
+  query: string,
+): Promise<{ intent: string; keywords: string[] }> {
+  const systemPrompt =
+    'You translate a user\'s natural-language need (any language) into a ' +
+    'search plan for an English-only developer "skill" catalog (think: ' +
+    'standalone capabilities like "slide-builder" or "git-helper"). ' +
+    'Return strict JSON: ' +
+    '{ "intent": string, "keywords": string[] }. ' +
+    '"intent" is a short one-sentence summary IN THE SAME LANGUAGE AS THE ' +
+    'USER\'S QUERY of what they want. ' +
+    '"keywords" is 1-5 short English search terms (1-3 words each, ' +
+    'lowercase, no punctuation, no commas) likely to match catalog entries. ' +
+    'Cover the user\'s intent from multiple angles when natural. ' +
+    'Do not output anything outside the JSON.';
+  const resp = await api.llm.chat({
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: query },
+    ],
+    jsonMode: true,
+    temperature: 0.2,
+    // 4096 to stay safe with reasoning models — same rationale as the
+    // other LLM calls in this file.
+    maxTokens: 4096,
+  });
+  const parsed = parseDecomposeJson(resp.text);
+  if (!parsed) throw new Error('Decompose: LLM returned malformed JSON');
+  return parsed;
+}
+
+interface DecomposePayload {
+  intent: string;
+  keywords: string[];
+}
+
+function parseDecomposeJson(text: string): DecomposePayload | null {
+  try {
+    const obj = JSON.parse(text) as unknown;
+    if (!obj || typeof obj !== 'object') return null;
+    const o = obj as { intent?: unknown; keywords?: unknown };
+    const intent = typeof o.intent === 'string' ? o.intent.trim() : '';
+    if (!Array.isArray(o.keywords)) return null;
+    const keywords: string[] = [];
+    for (const k of o.keywords) {
+      if (typeof k !== 'string') continue;
+      const t = k.trim();
+      if (!t) continue;
+      // Defensive: dedupe + cap to 5.
+      if (keywords.some((existing) => existing.toLowerCase() === t.toLowerCase())) continue;
+      keywords.push(t);
+      if (keywords.length >= 5) break;
+    }
+    return { intent, keywords };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ask the configured LLM to rerank a keyword-derived candidate pool by how
  * well each candidate matches the user's natural-language query, returning up
@@ -661,20 +1179,42 @@ async function aiRerank(
   query: string,
   candidates: CatalogSearchResult[],
 ): Promise<Array<{ skill: CatalogSearchResult; why: string }>> {
-  // Truncate descriptions so the prompt stays bounded regardless of catalog payloads.
+  // Candidate lines deliberately *omit* installs. The UI shows install
+  // counts in its own column; passing them in the prompt led the model
+  // to (a) repeat numbers redundantly in "why", and (b) hallucinate a
+  // number when it didn't have the exact value cached. Without installs
+  // in the prompt the model focuses on actual semantic relevance.
+  // Descriptions are truncated to keep the prompt bounded.
   const candidateLines = candidates
     .map((c) => {
       const desc = (c.description ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
-      return `- id=${c.skillId} name=${c.name} installs=${c.installs} description=${desc}`;
+      return `- id=${c.skillId} name=${c.name} description=${desc}`;
     })
     .join('\n');
 
   const systemPrompt =
-    "You are a skill catalog ranker. Given a user's natural-language need and a list of candidate skills (each with id, name, description, installs), return the top 10 most relevant in JSON. For each, include a one-sentence \"why\" explaining the match. Return ONLY valid JSON with this shape:\n" +
+    "You are a skill catalog ranker. Given a user's natural-language need and a list of candidate skills " +
+    "(each with id, name, description), return the top 10 MOST RELEVANT in JSON.\n" +
+    "\n" +
+    "Ranking criteria, in order of importance:\n" +
+    "  1. Direct match on the user's intent (does this skill actually solve their problem?)\n" +
+    "  2. Specificity (a skill that does exactly the thing > a generic skill that might).\n" +
+    "  3. Quality signals in the description (clear purpose, well-scoped, documented).\n" +
+    "Do NOT consider installs — the UI shows install counts separately; they are not passed to you.\n" +
+    "Do NOT invent numbers or facts not present in the candidate's name/description.\n" +
+    "\n" +
+    "For each result include a one-sentence \"why\" that:\n" +
+    "  - Explains HOW this skill matches the user's intent (not its features in general).\n" +
+    "  - Is written IN THE SAME LANGUAGE AS THE USER'S QUERY (Chinese query → Chinese why,\n" +
+    "    English query → English why, etc.).\n" +
+    "  - Is concise (one sentence, no preamble like \"This skill ...\").\n" +
+    "\n" +
+    "Return ONLY valid JSON with this shape:\n" +
     '{ "results": [ { "id": string, "why": string } ] }\n' +
-    "Do not include skills that don't match the user's intent. If fewer than 10 are clearly relevant, return fewer. If none match, return an empty results array.";
+    "Skills that don't actually match the user's intent must be excluded. " +
+    "If fewer than 10 are clearly relevant, return fewer. If none match, return an empty results array.";
 
-  const userPrompt = `${query}\nCandidates:\n${candidateLines}`;
+  const userPrompt = `User query: ${query}\n\nCandidates:\n${candidateLines}`;
 
   const resp = await api.llm.chat({
     messages: [
@@ -683,7 +1223,12 @@ async function aiRerank(
     ],
     jsonMode: true,
     temperature: 0.2,
-    maxTokens: 1024,
+    // 4096 (not 1024) because reasoning models like deepseek-v4-pro burn
+    // most of the budget on hidden reasoning_content before emitting the
+    // visible JSON. 1024 caused LLM_BUDGET_EXHAUSTED → AI rerank failed →
+    // user got the "AI rerank failed, showing keyword results" toast on
+    // every search. Mirrors the same fix in electron/ai/categorize.ts.
+    maxTokens: 4096,
   });
 
   const parsed = parseRerankJson(resp.text);

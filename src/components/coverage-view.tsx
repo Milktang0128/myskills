@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import {
   Check,
   Link2,
@@ -11,6 +12,9 @@ import {
   Crown,
   Upload,
   HelpCircle,
+  Globe,
+  Settings as SettingsIcon,
+  RefreshCw,
 } from 'lucide-react';
 import type {
   CoverageDrift,
@@ -268,8 +272,10 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             <button
               key={f.value}
               onClick={() => setFilter(f.value)}
+              aria-pressed={filter === f.value}
               className={cn(
                 'rounded-md border px-2.5 py-1 text-xs',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
                 filter === f.value
                   ? 'border-transparent bg-primary text-primary-foreground'
                   : 'hover:bg-accent',
@@ -368,7 +374,15 @@ function Table({
     return <div className="p-6 text-sm text-muted-foreground">{t('matrix.loading')}</div>;
   }
   if (rows.length === 0) {
-    return <div className="p-6 text-sm text-muted-foreground">{t('matrix.empty')}</div>;
+    // Two distinct empty states: nothing in the workspace at all (offer
+    // next steps), vs the active filter has no matches (just a hint).
+    const noSkillsAnywhere = matrix.rows.length === 0;
+    if (noSkillsAnywhere) {
+      return <EmptyCoverageGuidance />;
+    }
+    return (
+      <div className="p-6 text-sm text-muted-foreground">{t('matrix.empty')}</div>
+    );
   }
   return (
     <table className="w-full text-sm">
@@ -380,7 +394,11 @@ function Table({
               key={p}
               className={cn(
                 'px-3 py-2 text-center font-medium',
-                p === matrix.canonicalPlatform && 'bg-amber-50/60 dark:bg-amber-950/20',
+                // Canonical column gets a subtle left/right border instead of
+                // a saturated amber tint — Crown icon already says "canonical"
+                // and the row-level amber competed with warn states (broken,
+                // drift) for the user's attention.
+                p === matrix.canonicalPlatform && 'border-x border-amber-200/60 dark:border-amber-900/40',
               )}
             >
               <div className="inline-flex items-center gap-1">
@@ -469,7 +487,9 @@ function Table({
                     key={p}
                     className={cn(
                       'px-3 py-2 text-center',
-                      p === matrix.canonicalPlatform && 'bg-amber-50/40 dark:bg-amber-950/10',
+                      // Match the header: subtle vertical rule instead of
+                      // a row-wide amber tint.
+                      p === matrix.canonicalPlatform && 'border-x border-amber-200/40 dark:border-amber-900/30',
                     )}
                   >
                     <CellGlyph
@@ -588,6 +608,65 @@ function Legend() {
       <div className="mt-1 flex items-center gap-2">
         <HelpCircle className="h-3 w-3" />
         {t('matrix.legend.help')}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Shown when the matrix has zero rows total (no skills anywhere on disk),
+ * not when the active filter happens to be empty. Gives the user three
+ * concrete next steps instead of a flat "No skills" line.
+ */
+function EmptyCoverageGuidance() {
+  const t = useT();
+  return (
+    <div className="mx-auto mt-8 max-w-md px-6">
+      <div className="rounded-lg border bg-card p-5">
+        <h2 className="text-base font-semibold">{t('matrix.empty.guidance.title')}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t('matrix.empty.guidance.body')}
+        </p>
+        <ul className="mt-4 space-y-2">
+          <li className="flex items-start gap-3 rounded-md border bg-background p-3">
+            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">
+                {t('matrix.empty.guidance.discover.title')}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {t('matrix.empty.guidance.discover.body')}
+              </div>
+            </div>
+          </li>
+          <li className="flex items-start gap-3 rounded-md border bg-background p-3">
+            <SettingsIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">
+                <Link
+                  href="/settings"
+                  className="hover:underline focus-visible:outline-none focus-visible:underline"
+                >
+                  {t('matrix.empty.guidance.settings.title')}
+                </Link>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {t('matrix.empty.guidance.settings.body')}
+              </div>
+            </div>
+          </li>
+          <li className="flex items-start gap-3 rounded-md border bg-background p-3">
+            <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">
+                {t('matrix.empty.guidance.rescan.title')}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {t('matrix.empty.guidance.rescan.body')}
+              </div>
+            </div>
+          </li>
+        </ul>
       </div>
     </div>
   );

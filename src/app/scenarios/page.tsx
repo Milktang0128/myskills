@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ScenarioForm } from '@/components/scenario-form';
 import { ScenarioRecommendations } from '@/components/scenario-recommendations';
+import { alertAction, confirmAction } from '@/components/ui/confirm-dialog';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -58,7 +59,13 @@ export default function ScenariosPage() {
 
   const handleDelete = async (sc: Scenario) => {
     if (sc.isBuiltin) return;
-    if (!confirm(t('scenarios.delete.confirmShort', { name: sc.name }))) return;
+    const ok = await confirmAction({
+      title: t('scenarios.delete.confirmShort', { name: sc.name }),
+      tone: 'destructive',
+      confirmLabel: t('common.delete'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
     await api.scenarios.remove(sc.id);
     await refresh();
   };
@@ -76,7 +83,11 @@ export default function ScenariosPage() {
     try {
       parsed = JSON.parse(text) as ScenarioExport;
     } catch {
-      alert(t('scenarios.import.invalidJson'));
+      await alertAction({
+        title: t('scenarios.import.invalidJson'),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
       return;
     }
     try {
@@ -84,7 +95,13 @@ export default function ScenariosPage() {
       setImportResult(result);
       await refresh();
     } catch (e) {
-      alert(t('scenarios.import.failed', { message: e instanceof Error ? e.message : String(e) }));
+      await alertAction({
+        title: t('scenarios.import.failed', {
+          message: e instanceof Error ? e.message : String(e),
+        }),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
     }
   };
 

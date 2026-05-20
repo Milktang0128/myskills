@@ -36,6 +36,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { alertAction, confirmAction } from '@/components/ui/confirm-dialog';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { formatRelative } from '@/lib/utils';
@@ -186,13 +187,24 @@ export default function SettingsPage() {
 
   async function deletePlatform(p: Platform) {
     if (p.isBuiltin) return;
-    if (!confirm(t('settings.platforms.removeConfirm', { label: p.label }))) return;
+    const ok = await confirmAction({
+      title: t('settings.platforms.removeConfirm', { label: p.label }),
+      tone: 'destructive',
+      confirmLabel: t('common.remove'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
     setDeletingId(p.id);
     try {
       await api.platforms.delete(p.id);
       await refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
     } finally {
       setDeletingId(null);
     }
@@ -204,7 +216,12 @@ export default function SettingsPage() {
       await api.platforms.create({ id: cand.id, label: cand.label, skillsDir: cand.defaultDir });
       await refresh();
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
     } finally {
       setAddingCandidate(null);
     }
@@ -274,14 +291,25 @@ export default function SettingsPage() {
       const cfg = await api.llm.getConfig();
       setLlmConfig(cfg);
     } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
     } finally {
       setSavingLlmKey(false);
     }
   }
 
   async function clearLlmKey() {
-    if (!confirm(t('settings.ai.removeKeyConfirm'))) return;
+    const ok = await confirmAction({
+      title: t('settings.ai.removeKeyConfirm'),
+      tone: 'destructive',
+      confirmLabel: t('common.remove'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
     await api.llm.deleteApiKey();
     const cfg = await api.llm.getConfig();
     setLlmConfig(cfg);
@@ -638,7 +666,10 @@ export default function SettingsPage() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium">{cand.label}</div>
-                      <div className="font-mono text-[10px] text-muted-foreground truncate">
+                      <div
+                        className="font-mono text-[10px] text-muted-foreground truncate"
+                        title={probe?.resolvedPath ?? cand.defaultDir}
+                      >
                         {probe?.resolvedPath ?? cand.defaultDir}
                       </div>
                       <div className="text-[11px] text-muted-foreground">
@@ -760,6 +791,29 @@ export default function SettingsPage() {
                 }
               >
                 {savingCustom ? t('settings.custom.adding') : t('settings.custom.addBtn')}
+              </Button>
+            </div>
+          </section>
+
+          <Separator />
+
+          <section className="space-y-3">
+            <h2 className="text-base font-semibold">{t('settings.onboarding.rerun')}</h2>
+            <p className="text-xs text-muted-foreground">{t('settings.onboarding.rerun.help')}</p>
+            <div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  // Re-running = clear the completion timestamp + send the user
+                  // back to the workspace, where the wizard will re-mount.
+                  await api.settings.set('onboarding_completed_at', '');
+                  // Use replace so the back button doesn't return to settings.
+                  window.location.assign('/');
+                }}
+              >
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                {t('settings.onboarding.rerun')}
               </Button>
             </div>
           </section>
