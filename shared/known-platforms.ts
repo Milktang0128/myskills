@@ -5,11 +5,29 @@
  * the user a one-click "Enable" for any that exist. Users can also add
  * fully custom platforms via the Settings UI.
  *
- * The SKILL.md format (YAML frontmatter with at least a `name` field +
- * Markdown body) has become the de-facto standard among agent tools that
- * support pluggable skills. Tools that use a different format (Cursor
- * `.cursorrules`, Cline `.clinerules`, Continue `config.json` etc.) are
- * intentionally NOT listed here — they would need separate adapters.
+ * # What's in this list (and what isn't)
+ *
+ * Only platforms whose canonical skill format is **SKILL.md** (YAML
+ * frontmatter + Markdown body, one skill per directory) are auto-detected
+ * here. This is a curated set, not a discovery layer — we'd rather miss a
+ * platform than wrongly suggest one. The five officially-supported entries:
+ *
+ *   - claude     — Anthropic Claude Code
+ *   - codex      — OpenAI Codex CLI
+ *   - opencode   — sst/opencode
+ *   - openclaw   — OpenClaw
+ *   - shared     — the cross-tool pool convention (`~/.agents/skills`)
+ *
+ * # What's intentionally NOT here
+ *
+ * Tools that use a different on-disk format are out of scope for
+ * auto-detection because MySkills cannot read or write their files without
+ * a separate adapter. Notable examples: Cursor (`.cursorrules` /
+ * `.cursor/rules/`), Windsurf (`.windsurfrules`), Cline (`.clinerules`),
+ * Continue (`config.json`), GitHub Copilot (repo-level instructions),
+ * VS Code Cursor-forks (Junie / Kilo / Roo / Pear AI). Users who keep
+ * SKILL.md folders for these tools manually can still register the path
+ * via "Add custom platform" in Settings.
  *
  * To add a new known platform: append a row below with its default skills
  * directory (use `~` for home, it will be expanded at scan time).
@@ -37,15 +55,21 @@ export const KNOWN_PLATFORMS: KnownPlatformCandidate[] = [
     description: 'Codex CLI',
   },
   {
-    id: 'shared',
-    label: 'Shared Pool',
-    defaultDir: '~/.agents/skills',
-    description: 'User-maintained pool that other platforms symlink to',
-  },
-  {
     id: 'opencode',
     label: 'OpenCode',
     defaultDir: '~/.opencode/skills',
     description: 'OpenCode CLI (sst/opencode)',
+  },
+  {
+    id: 'openclaw',
+    label: 'OpenClaw',
+    defaultDir: '~/.openclaw/skills',
+    description: 'OpenClaw — open-source Claude-Code-compatible agent',
+  },
+  {
+    id: 'shared',
+    label: 'Shared Pool',
+    defaultDir: '~/.agents/skills',
+    description: 'Cross-tool pool that other platforms symlink to',
   },
 ];
