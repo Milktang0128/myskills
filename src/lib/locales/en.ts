@@ -635,6 +635,8 @@ export const en = {
   'common.save': 'Save',
   'common.delete': 'Delete',
   'common.confirm': 'Confirm',
+  'common.ok': 'OK',
+  'common.remove': 'Remove',
   'common.close': 'Close',
   'common.loading': 'Loading…',
   'common.error': 'Error',

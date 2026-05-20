@@ -15,6 +15,7 @@ import type { PlatformId } from '@shared/types';
 import { api, type SyncHistoryRow } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { confirmAction } from '@/components/ui/confirm-dialog';
 import { PlatformBadge } from '@/components/platform-badge';
 import { useT } from '@/lib/i18n';
 import { formatRelative } from '@/lib/utils';
@@ -52,7 +53,16 @@ export default function HistoryPage() {
   }, [refresh]);
 
   async function rollback(row: SyncHistoryRow) {
-    if (!confirm(t('history.rollback.confirmAction', { action: row.action, path: row.to_path ?? '' }))) return;
+    const ok = await confirmAction({
+      title: t('history.rollback.confirmAction', {
+        action: row.action,
+        path: row.to_path ?? '',
+      }),
+      tone: 'destructive',
+      confirmLabel: t('history.rollback'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
     setBusyId(row.id);
     try {
       await api.sync.rollback(row.id);
