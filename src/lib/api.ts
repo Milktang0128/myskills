@@ -145,6 +145,16 @@ export const api = {
         skillName,
         targetPlatformIds,
       }) as Promise<SyncPlan>,
+    /**
+     * Batch-enrich descriptions for catalog search rows. skills.sh search
+     * doesn't include description; the main process fetches each SKILL.md
+     * from GitHub raw, parses frontmatter, and returns `description` per
+     * (source, skillId). Soft-fails to null per row.
+     */
+    enrichDescriptions: (items: Array<{ source: string; skillId: string }>) =>
+      bridge().invoke(IPC.catalog.enrichDescriptions, { items }) as Promise<
+        Array<{ source: string; skillId: string; description: string | null }>
+      >,
   },
   llm: {
     getConfig: () => bridge().invoke(IPC.llm.getConfig) as Promise<LlmConfig>,

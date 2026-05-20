@@ -44,6 +44,13 @@ export const IPC = {
     search: 'catalog:search',
     preview: 'catalog:preview',
     planInstall: 'catalog:planInstall',
+    /**
+     * Batch-fetch SKILL.md descriptions for search results. Search returns
+     * lightweight rows (no description); this enriches them via GitHub raw
+     * with concurrency + in-memory cache, so the Discover list isn't a
+     * bunch of names without context.
+     */
+    enrichDescriptions: 'catalog:enrichDescriptions',
   },
   settings: {
     get: 'settings:get',

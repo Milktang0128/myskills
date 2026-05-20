@@ -132,4 +132,18 @@ CREATE TABLE IF NOT EXISTS ai_scenario_suggestions (
   UNIQUE(skill_id, scenario_key)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_suggestions_skill ON ai_scenario_suggestions(skill_id);
+
+-- Catalog description cache. The skills.sh /api/search endpoint doesn't
+-- include descriptions, so we fetch each skill's SKILL.md frontmatter from
+-- GitHub raw and cache the description here. A NULL description is a valid
+-- cached value meaning "fetched, but no description field in frontmatter".
+-- TTL is checked in the application layer (currently 7 days).
+CREATE TABLE IF NOT EXISTS catalog_descriptions (
+  source       TEXT NOT NULL,
+  skill_id     TEXT NOT NULL,
+  description  TEXT,
+  fetched_at   INTEGER NOT NULL,
+  PRIMARY KEY (source, skill_id)
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_descriptions_fetched ON catalog_descriptions(fetched_at);
 `;

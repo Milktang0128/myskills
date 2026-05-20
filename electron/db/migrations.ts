@@ -109,6 +109,28 @@ const MIGRATIONS: Migration[] = [
       ).run();
     },
   },
+  {
+    version: 8,
+    name: 'catalog_descriptions_cache',
+    up: (db) => {
+      // Persistent cache for skills.sh search-result descriptions. The search
+      // API doesn't include description, so we fetch each skill's SKILL.md
+      // frontmatter from GitHub raw and cache it. Persisting across launches
+      // means second-time-opening Discover is instant instead of refetching
+      // 10+ rows from GitHub. SkillsGate uses the same "sync once, store,
+      // browse locally" pattern.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS catalog_descriptions (
+          source       TEXT NOT NULL,
+          skill_id     TEXT NOT NULL,
+          description  TEXT,
+          fetched_at   INTEGER NOT NULL,
+          PRIMARY KEY (source, skill_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_catalog_descriptions_fetched ON catalog_descriptions(fetched_at);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

@@ -34,6 +34,16 @@ type SearchMode = 'keyword' | 'ai';
 const AI_CANDIDATE_LIMIT = 50;
 /** Max items we ask the LLM to return. The prompt mirrors this. */
 const AI_RESULT_LIMIT = 10;
+/**
+ * Seed query used when the user opens Discover with no input yet. skills.sh
+ * doesn't expose a "popular" or "browse all" endpoint without an API key,
+ * but their fuzzy search for "skill" happens to return the most-installed
+ * skills first (find-skills 1.6M, vercel-react-best-practices 411k, …) —
+ * close enough to a popular landing for v0.3.
+ */
+const POPULAR_SEED_QUERY = 'skill';
+/** Cap on how many rows we eagerly enrich with descriptions per response. */
+const ENRICH_LIMIT = 10;
 
 export function DiscoverView({ query, onToast }: Props) {
   const t = useT();
@@ -47,6 +57,12 @@ export function DiscoverView({ query, onToast }: Props) {
   const [aiWhy, setAiWhy] = useState<Record<string, string>>({});
   /** True when the currently-rendered results were produced by an AI rerank. */
   const [aiRanked, setAiRanked] = useState(false);
+  /**
+   * True when the currently-rendered results are the "popular" seed (the
+   * empty-query default), not a user search. Drives the status-line copy
+   * and lets us suppress the "no matches" empty state.
+   */
+  const [isPopular, setIsPopular] = useState(false);
 
   const [selectedResult, setSelectedResult] = useState<CatalogSearchResult | null>(null);
   const [preview, setPreview] = useState<CatalogPreview | null>(null);
@@ -70,6 +86,9 @@ export function DiscoverView({ query, onToast }: Props) {
 
   // Used to ignore stale search responses (the user typed faster than the API).
   const searchSeqRef = useRef(0);
+  // Separate sequence for enrichment so a slow GitHub batch from a previous
+  // query doesn't overwrite descriptions on a newer result set.
+  const enrichSeqRef = useRef(0);
 
   // Bridge readiness — same pattern as coverage-view.
   useEffect(() => {
@@ -131,21 +150,24 @@ export function DiscoverView({ query, onToast }: Props) {
   const trimmedQuery = query.trim();
   const queryReady = trimmedQuery.length >= MIN_QUERY_LEN;
 
-  // Debounced search. Both Keyword and AI modes share the same 300ms debounce —
-  // the LLM call is the same kind of cost as a network hop, so we should never
-  // fire it on each keystroke.
+  // Debounced search. Three modes share this effect:
+  //   - User typed ≥2 chars → run their query in Keyword or AI mode.
+  //   - User typed nothing  → run POPULAR_SEED_QUERY ("skill"), label the
+  //     result as "popular" so the status line tells the user this isn't a
+  //     match for their text. Always Keyword mode for popular — running AI
+  //     rerank on the default landing is wasteful.
+  //   - Network off          → bail (the no-network banner takes over).
+  // Both real searches and popular share the same 300ms debounce, so a user
+  // who opens Discover then immediately starts typing only hits skills.sh
+  // once (the debounce coalesces).
   useEffect(() => {
     if (!bridgeReady) return;
     if (networkAllowed === false) return;
-    if (!queryReady) {
-      setResults([]);
-      setLoading(false);
-      setLoadingPhase(null);
-      setError(null);
-      setAiWhy({});
-      setAiRanked(false);
-      return;
-    }
+
+    const isPopularRun = !queryReady;
+    const effectiveQuery = isPopularRun ? POPULAR_SEED_QUERY : trimmedQuery;
+    const effectiveMode: SearchMode = isPopularRun ? 'keyword' : mode;
+
     const mySeq = ++searchSeqRef.current;
     setLoading(true);
     setLoadingPhase('keyword');
@@ -154,46 +176,55 @@ export function DiscoverView({ query, onToast }: Props) {
       try {
         // Phase 1: keyword. In AI mode we widen the pool so the reranker has
         // more candidates to choose from.
-        const limit = mode === 'ai' ? AI_CANDIDATE_LIMIT : undefined;
-        const resp = await api.catalog.search(trimmedQuery, limit);
+        const limit = effectiveMode === 'ai' ? AI_CANDIDATE_LIMIT : undefined;
+        const resp = await api.catalog.search(effectiveQuery, limit);
         if (searchSeqRef.current !== mySeq) return;
 
-        if (mode !== 'ai' || resp.skills.length === 0) {
-          setResults(resp.skills);
+        let finalResults: CatalogSearchResult[];
+        if (effectiveMode !== 'ai' || resp.skills.length === 0) {
+          finalResults = resp.skills;
+          setResults(finalResults);
           setAiWhy({});
           setAiRanked(false);
-          return;
-        }
-
-        // Phase 2: AI rerank. The LLM returns the top-N ids + a "why" each.
-        setLoadingPhase('ai-ranking');
-        try {
-          const ranked = await aiRerank(trimmedQuery, resp.skills);
-          if (searchSeqRef.current !== mySeq) return;
-          if (ranked.length === 0) {
-            // Model returned nothing — fall back to the keyword pool rather
-            // than show an empty list. This isn't an error; the query may
-            // simply not match anything well.
-            setResults(resp.skills);
+          setIsPopular(isPopularRun);
+        } else {
+          // Phase 2: AI rerank. The LLM returns the top-N ids + a "why" each.
+          setLoadingPhase('ai-ranking');
+          try {
+            const ranked = await aiRerank(effectiveQuery, resp.skills);
+            if (searchSeqRef.current !== mySeq) return;
+            if (ranked.length === 0) {
+              // Model returned nothing — fall back to the keyword pool rather
+              // than show an empty list. This isn't an error; the query may
+              // simply not match anything well.
+              finalResults = resp.skills;
+              setResults(finalResults);
+              setAiWhy({});
+              setAiRanked(false);
+            } else {
+              finalResults = ranked.map((r) => r.skill);
+              setResults(finalResults);
+              setAiWhy(Object.fromEntries(ranked.map((r) => [r.skill.skillId, r.why])));
+              setAiRanked(true);
+            }
+            setIsPopular(false);
+          } catch (llmErr) {
+            if (searchSeqRef.current !== mySeq) return;
+            console.error('AI rerank failed', llmErr);
+            finalResults = resp.skills;
+            setResults(finalResults);
             setAiWhy({});
             setAiRanked(false);
-          } else {
-            setResults(ranked.map((r) => r.skill));
-            setAiWhy(
-              Object.fromEntries(
-                ranked.map((r) => [r.skill.skillId, r.why]),
-              ),
-            );
-            setAiRanked(true);
+            setIsPopular(false);
+            onToast(t('discover.ai.fallback'));
           }
-        } catch (llmErr) {
-          if (searchSeqRef.current !== mySeq) return;
-          console.error('AI rerank failed', llmErr);
-          setResults(resp.skills);
-          setAiWhy({});
-          setAiRanked(false);
-          onToast(t('discover.ai.fallback'));
         }
+
+        // Kick off background enrichment for the first N rows. We don't
+        // await: the list renders immediately; descriptions stream in.
+        // The seq guard lets a fast follow-up query supersede a slow
+        // enrich batch from a previous query.
+        void enrichResultDescriptions(finalResults.slice(0, ENRICH_LIMIT));
       } catch (err) {
         if (searchSeqRef.current !== mySeq) return;
         const friendly = friendlyCatalogError(err, 'search', t);
@@ -201,7 +232,8 @@ export function DiscoverView({ query, onToast }: Props) {
         setResults([]);
         setAiWhy({});
         setAiRanked(false);
-        onToast(friendly);
+        setIsPopular(false);
+        if (!isPopularRun) onToast(friendly);
       } finally {
         if (searchSeqRef.current === mySeq) {
           setLoading(false);
@@ -211,6 +243,39 @@ export function DiscoverView({ query, onToast }: Props) {
     }, DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [bridgeReady, networkAllowed, queryReady, trimmedQuery, mode, onToast, t]);
+
+  /**
+   * Merge enriched descriptions into result rows by matching (source, skillId).
+   * Idempotent — late-arriving enrichments for a stale result set are guarded
+   * by enrichSeqRef. Uses the renderer-level results state setter so React
+   * re-renders just the rows that changed.
+   */
+  async function enrichResultDescriptions(rows: CatalogSearchResult[]): Promise<void> {
+    if (rows.length === 0) return;
+    const mySeq = ++enrichSeqRef.current;
+    try {
+      const enriched = await api.catalog.enrichDescriptions(
+        rows.map((r) => ({ source: r.source, skillId: r.skillId })),
+      );
+      if (enrichSeqRef.current !== mySeq) return;
+      // Build a lookup so the merge is O(N).
+      const lookup = new Map<string, string | null>();
+      for (const e of enriched) lookup.set(`${e.source}\x00${e.skillId}`, e.description);
+      setResults((prev) =>
+        prev.map((r) => {
+          const desc = lookup.get(`${r.source}\x00${r.skillId}`);
+          // Only replace if we got an actual description back; leave
+          // existing description in place if enrich found nothing.
+          if (typeof desc === 'string' && desc.length > 0 && !r.description) {
+            return { ...r, description: desc };
+          }
+          return r;
+        }),
+      );
+    } catch {
+      // Enrichment is best-effort — failures don't degrade the visible list.
+    }
+  }
 
   const openPreview = useCallback(
     async (result: CatalogSearchResult) => {
@@ -300,14 +365,22 @@ export function DiscoverView({ query, onToast }: Props) {
     );
   }
 
-  const statusLine = !queryReady
-    ? t('discover.status.typePrompt')
-    : loading
-    ? loadingPhase === 'ai-ranking'
+  // Status-line copy. Five cases, in priority order:
+  //   loading + popular  → "Loading popular skills…"
+  //   loading + search   → "AI is ranking…" or "Searching catalog…"
+  //   error              → friendly error
+  //   isPopular + done   → "Popular on skills.sh"
+  //   search + done      → "{n} result(s)"
+  const statusLine = loading
+    ? isPopular
+      ? t('discover.status.popularLoading')
+      : loadingPhase === 'ai-ranking'
       ? t('discover.status.aiRanking')
       : t('discover.status.searching')
     : error
     ? error
+    : isPopular
+    ? t('discover.status.popular')
     : results.length === 1
     ? t('discover.status.result', { count: results.length })
     : t('discover.status.results', { count: results.length });
@@ -329,17 +402,28 @@ export function DiscoverView({ query, onToast }: Props) {
 
         <ScrollArea className="flex-1 scrollbar-thin">
           <div className="px-3 py-3">
-            {!queryReady ? (
-              <EmptyHint />
-            ) : loading && results.length === 0 ? (
+            {/* Loading-only states first. We never show the "type to search"
+                empty hint anymore — opening Discover always fires the popular
+                seed, so the user either sees rows or sees a loading spinner. */}
+            {loading && results.length === 0 ? (
               <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {loadingPhase === 'ai-ranking' ? t('discover.status.aiRanking') : t('discover.status.searching')}
+                {isPopular
+                  ? t('discover.status.popularLoading')
+                  : loadingPhase === 'ai-ranking'
+                  ? t('discover.status.aiRanking')
+                  : t('discover.status.searching')}
               </div>
             ) : results.length === 0 && !error ? (
-              <div className="px-3 py-6 text-sm text-muted-foreground">
-                {t('discover.empty.noMatch', { query: trimmedQuery })}
-              </div>
+              // Empty after a real search — distinguish from popular failure
+              // (which is rare; if popular returns 0, status line says so).
+              queryReady ? (
+                <div className="px-3 py-6 text-sm text-muted-foreground">
+                  {t('discover.empty.noMatch', { query: trimmedQuery })}
+                </div>
+              ) : (
+                <EmptyHint />
+              )
             ) : (
               <>
                 {aiRanked && (
@@ -437,9 +521,22 @@ function ResultRow({
           {result.source}
         </span>
       </div>
-      <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-        {result.description?.trim() || t('discover.preview.noDescription')}
-      </div>
+      {/* Description: shown when present, hidden (or shown as a thin
+          shimmer) when not. The enrichment IPC populates this in the
+          background after the initial render, so initially-empty rows
+          fill in within ~1 second on the first visit, instantly after.
+          Rows that genuinely have no description in frontmatter remain
+          empty — better than a sea of "(no description)" placeholders. */}
+      {result.description?.trim() ? (
+        <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+          {result.description.trim()}
+        </div>
+      ) : (
+        <div
+          aria-hidden="true"
+          className="mt-1 h-3 w-2/3 rounded bg-muted/40"
+        />
+      )}
       {why && (
         <div className="mt-1 line-clamp-2 text-xs italic text-muted-foreground/80">
           {why}
