@@ -50,8 +50,25 @@ export function DiscoverView({ query, onToast }: Props) {
   const [bridgeReady, setBridgeReady] = useState(false);
   const [results, setResults] = useState<CatalogSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
-  /** Which phase of an in-flight search is currently running (drives the spinner copy). */
-  const [loadingPhase, setLoadingPhase] = useState<'keyword' | 'ai-ranking' | null>(null);
+  /**
+   * Which phase of an in-flight search is currently running. Drives the
+   * status-line copy so users can tell whether the LLM is still thinking
+   * vs the keyword catalog is still responding. AI mode advances through:
+   *   keyword          (initial direct catalog hit, if any)
+   *   ai-understanding (Phase 1: decompose user intent into keywords)
+   *   ai-multisearch   (Phase 2: parallel skills.sh fetches per keyword)
+   *   ai-ranking       (Phase 3: rerank the union against original intent)
+   */
+  type LoadingPhase = 'keyword' | 'ai-understanding' | 'ai-multisearch' | 'ai-ranking';
+  const [loadingPhase, setLoadingPhase] = useState<LoadingPhase | null>(null);
+  /**
+   * Counters for the multi-search phase, so the status line can read
+   * "Searching {{count}} angles…" instead of a generic spinner.
+   */
+  const [aiKeywordCount, setAiKeywordCount] = useState(0);
+  const [aiCandidateCount, setAiCandidateCount] = useState(0);
+  /** One-sentence LLM summary of how the user's query was understood. */
+  const [aiIntent, setAiIntent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Map of skillId → one-sentence LLM rationale. Populated only in AI mode. */
   const [aiWhy, setAiWhy] = useState<Record<string, string>>({});
@@ -172,52 +189,49 @@ export function DiscoverView({ query, onToast }: Props) {
     setLoading(true);
     setLoadingPhase('keyword');
     setError(null);
+    setAiIntent(null);
+    setAiKeywordCount(0);
+    setAiCandidateCount(0);
     const timer = setTimeout(async () => {
       try {
-        // Phase 1: keyword. In AI mode we widen the pool so the reranker has
-        // more candidates to choose from.
-        const limit = effectiveMode === 'ai' ? AI_CANDIDATE_LIMIT : undefined;
-        const resp = await api.catalog.search(effectiveQuery, limit);
-        if (searchSeqRef.current !== mySeq) return;
+        let finalResults: CatalogSearchResult[] = [];
 
-        let finalResults: CatalogSearchResult[];
-        if (effectiveMode !== 'ai' || resp.skills.length === 0) {
+        if (effectiveMode === 'ai') {
+          // ── 3-phase AI pipeline ──────────────────────────────────────
+          // Phase 1: decompose user intent into English search terms.
+          // Phase 2: parallel keyword searches against skills.sh.
+          // Phase 3: rerank the union against the original (possibly
+          //          non-English) intent + add per-row "why" rationale.
+          // Any phase that fails falls back gracefully: a Phase 1 failure
+          // skips straight to a single direct search; a Phase 3 failure
+          // shows the unranked union with a toast.
+          const aiOutcome = await runAiSearch(
+            effectiveQuery,
+            mySeq,
+            searchSeqRef,
+            {
+              onPhase: setLoadingPhase,
+              onIntent: setAiIntent,
+              onKeywordCount: setAiKeywordCount,
+              onCandidateCount: setAiCandidateCount,
+            },
+          );
+          if (searchSeqRef.current !== mySeq) return;
+          if (aiOutcome.fallbackToast) onToast(aiOutcome.fallbackToast);
+          finalResults = aiOutcome.skills;
+          setResults(finalResults);
+          setAiWhy(aiOutcome.why);
+          setAiRanked(aiOutcome.ranked);
+          setIsPopular(false);
+        } else {
+          // ── Keyword mode: direct search, no LLM ──────────────────────
+          const resp = await api.catalog.search(effectiveQuery, undefined);
+          if (searchSeqRef.current !== mySeq) return;
           finalResults = resp.skills;
           setResults(finalResults);
           setAiWhy({});
           setAiRanked(false);
           setIsPopular(isPopularRun);
-        } else {
-          // Phase 2: AI rerank. The LLM returns the top-N ids + a "why" each.
-          setLoadingPhase('ai-ranking');
-          try {
-            const ranked = await aiRerank(effectiveQuery, resp.skills);
-            if (searchSeqRef.current !== mySeq) return;
-            if (ranked.length === 0) {
-              // Model returned nothing — fall back to the keyword pool rather
-              // than show an empty list. This isn't an error; the query may
-              // simply not match anything well.
-              finalResults = resp.skills;
-              setResults(finalResults);
-              setAiWhy({});
-              setAiRanked(false);
-            } else {
-              finalResults = ranked.map((r) => r.skill);
-              setResults(finalResults);
-              setAiWhy(Object.fromEntries(ranked.map((r) => [r.skill.skillId, r.why])));
-              setAiRanked(true);
-            }
-            setIsPopular(false);
-          } catch (llmErr) {
-            if (searchSeqRef.current !== mySeq) return;
-            console.error('AI rerank failed', llmErr);
-            finalResults = resp.skills;
-            setResults(finalResults);
-            setAiWhy({});
-            setAiRanked(false);
-            setIsPopular(false);
-            onToast(t('discover.ai.fallback'));
-          }
         }
 
         // Kick off background enrichment for the first N rows. We don't
@@ -366,16 +380,27 @@ export function DiscoverView({ query, onToast }: Props) {
   }
 
   // Status-line copy. Five cases, in priority order:
-  //   loading + popular  → "Loading popular skills…"
-  //   loading + search   → "AI is ranking…" or "Searching catalog…"
-  //   error              → friendly error
-  //   isPopular + done   → "Popular on skills.sh"
-  //   search + done      → "{n} result(s)"
+  // Status-line copy. AI mode now goes through 3 phases (understand →
+  // multi-search → rank), each with its own status. Priority order:
+  //   loading + popular         → "Loading popular skills…"
+  //   loading + ai-understanding → "AI is reading your intent…"
+  //   loading + ai-multisearch   → "Searching N angles…"
+  //   loading + ai-ranking       → "AI is picking the best of N matches…"
+  //   loading + keyword          → "Searching catalog…"
+  //   error                      → friendly error
+  //   isPopular + done           → "Popular on skills.sh"
+  //   search + done              → "{n} result(s)"
   const statusLine = loading
     ? isPopular
       ? t('discover.status.popularLoading')
+      : loadingPhase === 'ai-understanding'
+      ? t('discover.status.aiUnderstanding')
+      : loadingPhase === 'ai-multisearch'
+      ? t('discover.status.aiMultiSearch', { count: aiKeywordCount })
       : loadingPhase === 'ai-ranking'
-      ? t('discover.status.aiRanking')
+      ? aiCandidateCount > 0
+        ? t('discover.status.aiFiltering', { count: aiCandidateCount })
+        : t('discover.status.aiRanking')
       : t('discover.status.searching')
     : error
     ? error
@@ -409,11 +434,7 @@ export function DiscoverView({ query, onToast }: Props) {
             {loading && results.length === 0 ? (
               <div className="flex items-center gap-2 px-3 py-6 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                {isPopular
-                  ? t('discover.status.popularLoading')
-                  : loadingPhase === 'ai-ranking'
-                  ? t('discover.status.aiRanking')
-                  : t('discover.status.searching')}
+                {statusLine}
               </div>
             ) : results.length === 0 && !error ? (
               // Empty after a real search — distinguish from popular failure
@@ -428,9 +449,19 @@ export function DiscoverView({ query, onToast }: Props) {
             ) : (
               <>
                 {aiRanked && (
-                  <div className="mb-2 flex items-center gap-1.5 px-1 text-[11px] font-medium text-violet-600 dark:text-violet-300">
-                    <Sparkles className="h-3 w-3" />
-                    {t('discover.aiRanked.label')}
+                  <div className="mb-2 space-y-0.5 px-1">
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-violet-600 dark:text-violet-300">
+                      <Sparkles className="h-3 w-3" />
+                      {t('discover.aiRanked.label')}
+                    </div>
+                    {/* Intent echo lets the user see how the LLM read their
+                        query — important for non-English queries where the
+                        keyword decomposition would otherwise be invisible. */}
+                    {aiIntent && (
+                      <div className="text-[11px] italic text-muted-foreground/80">
+                        {t('discover.ai.intentHint', { intent: aiIntent })}
+                      </div>
+                    )}
                   </div>
                 )}
                 <ul className="space-y-1.5">
@@ -782,6 +813,216 @@ function PreviewDrawer({
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/** Outcome of a 3-phase AI search run, surfaced to the caller. */
+interface AiSearchOutcome {
+  skills: CatalogSearchResult[];
+  why: Record<string, string>;
+  /** True if Phase 3 (rerank) produced an explicit ranking — drives the
+   *  "AI ranked" badge in the result list. */
+  ranked: boolean;
+  /** If the pipeline degraded (e.g. Phase 3 failed), we still surface
+   *  something — this carries the toast message to show after. */
+  fallbackToast?: string;
+}
+
+/** Caller-side seq guard + phase callbacks for `runAiSearch`. */
+interface AiSearchHooks {
+  onPhase: (phase: 'ai-understanding' | 'ai-multisearch' | 'ai-ranking') => void;
+  onIntent: (intent: string | null) => void;
+  onKeywordCount: (n: number) => void;
+  onCandidateCount: (n: number) => void;
+}
+
+/** Per-keyword search cap. Smaller than AI_CANDIDATE_LIMIT because we run
+ *  several in parallel — total pool size is `keywords.length * this`. */
+const AI_PER_KEYWORD_LIMIT = 30;
+
+/**
+ * Three-phase AI search.
+ *
+ *   Phase 1 — decompose: LLM reads the user's free-form query (any language,
+ *             any specificity) and emits an intent summary + 3-5 English
+ *             keywords suitable for the English-only skills.sh catalog.
+ *   Phase 2 — multi-search: parallel keyword fetches against skills.sh.
+ *             Results unioned and deduped by (source, skillId).
+ *   Phase 3 — rerank: same LLM call as the old single-phase AI search,
+ *             but operates on the broader unioned pool against the
+ *             original (possibly non-English) intent for relevance.
+ *
+ * Each phase has its own degradation path:
+ *   - Phase 1 failure → fall back to direct keyword search with original query.
+ *   - Phase 2 returns empty union → return [].
+ *   - Phase 3 failure → return the union unranked, with a toast.
+ *
+ * The seqRef is checked between phases to bail early if a newer search has
+ * superseded this one (user kept typing).
+ */
+async function runAiSearch(
+  query: string,
+  mySeq: number,
+  seqRef: { current: number },
+  hooks: AiSearchHooks,
+): Promise<AiSearchOutcome> {
+  // ── Phase 1: decompose ────────────────────────────────────────────
+  hooks.onPhase('ai-understanding');
+  let decomposed: { intent: string; keywords: string[] };
+  try {
+    decomposed = await aiDecomposeIntent(query);
+  } catch {
+    // LLM failed before we could even decompose — fall back to direct
+    // keyword search with the original query. Better than nothing.
+    const resp = await api.catalog.search(query, AI_CANDIDATE_LIMIT);
+    return {
+      skills: resp.skills,
+      why: {},
+      ranked: false,
+      fallbackToast: 'AI rerank failed, showing keyword results',
+    };
+  }
+  if (seqRef.current !== mySeq) {
+    return { skills: [], why: {}, ranked: false };
+  }
+  hooks.onIntent(decomposed.intent || null);
+  hooks.onKeywordCount(decomposed.keywords.length);
+
+  // ── Phase 2: parallel multi-search ────────────────────────────────
+  hooks.onPhase('ai-multisearch');
+  // If decompose returned no keywords (model said "nothing actionable"),
+  // fall back to a single search with the raw query so we don't show
+  // nothing.
+  const keywords =
+    decomposed.keywords.length > 0 ? decomposed.keywords : [query];
+  const perSearch = await Promise.all(
+    keywords.map((kw) => api.catalog.search(kw, AI_PER_KEYWORD_LIMIT).catch(() => null)),
+  );
+  if (seqRef.current !== mySeq) {
+    return { skills: [], why: {}, ranked: false };
+  }
+  // Union + dedupe by (source, skillId). Preserves the order in which
+  // skills first appeared (first keyword's results come first).
+  const seen = new Set<string>();
+  const union: CatalogSearchResult[] = [];
+  for (const resp of perSearch) {
+    if (!resp) continue;
+    for (const s of resp.skills) {
+      const key = `${s.source}\x00${s.skillId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      union.push(s);
+    }
+  }
+  hooks.onCandidateCount(union.length);
+  if (union.length === 0) {
+    return { skills: [], why: {}, ranked: false };
+  }
+
+  // ── Phase 3: rerank against original intent ───────────────────────
+  hooks.onPhase('ai-ranking');
+  try {
+    // Cap candidates we send to the reranker to keep prompt size sane.
+    // skills.sh returns short rows (~80 chars each), so 100 fits well
+    // within the 4096-token output budget.
+    const ranked = await aiRerank(query, union.slice(0, 100));
+    if (seqRef.current !== mySeq) {
+      return { skills: [], why: {}, ranked: false };
+    }
+    if (ranked.length === 0) {
+      // LLM said "nothing matches well" — show union unranked rather
+      // than empty. User can scroll/filter manually.
+      return { skills: union, why: {}, ranked: false };
+    }
+    return {
+      skills: ranked.map((r) => r.skill),
+      why: Object.fromEntries(ranked.map((r) => [r.skill.skillId, r.why])),
+      ranked: true,
+    };
+  } catch (err) {
+    console.error('AI rerank failed', err);
+    return {
+      skills: union,
+      why: {},
+      ranked: false,
+      fallbackToast: 'AI rerank failed, showing keyword results',
+    };
+  }
+}
+
+/**
+ * Phase 1 of the AI search pipeline: decompose the user's natural-language
+ * query into an English-keyword search plan for the (English-only)
+ * skills.sh catalog. The model also returns a one-sentence intent summary
+ * so the UI can echo back "Understood as: …".
+ *
+ * Examples (illustrative — actual output depends on the model):
+ *   "PPT制作"          → { intent: "create slide decks",
+ *                          keywords: ["slides", "presentation", "deck", "ppt"] }
+ *   "make websites"   → { intent: "build a website",
+ *                          keywords: ["website", "html", "deploy"] }
+ *   "git workflow"    → { intent: "git development workflow",
+ *                          keywords: ["git"] }
+ *
+ * Throws on transport failure or unparseable JSON — caller catches and
+ * falls back to direct keyword search.
+ */
+async function aiDecomposeIntent(
+  query: string,
+): Promise<{ intent: string; keywords: string[] }> {
+  const systemPrompt =
+    'You translate a user\'s natural-language need (any language) into a ' +
+    'search plan for an English-only developer "skill" catalog (think: ' +
+    'standalone capabilities like "slide-builder" or "git-helper"). ' +
+    'Return strict JSON: ' +
+    '{ "intent": string, "keywords": string[] }. ' +
+    '"intent" is a short one-sentence summary IN THE SAME LANGUAGE AS THE ' +
+    'USER\'S QUERY of what they want. ' +
+    '"keywords" is 1-5 short English search terms (1-3 words each, ' +
+    'lowercase, no punctuation, no commas) likely to match catalog entries. ' +
+    'Cover the user\'s intent from multiple angles when natural. ' +
+    'Do not output anything outside the JSON.';
+  const resp = await api.llm.chat({
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: query },
+    ],
+    jsonMode: true,
+    temperature: 0.2,
+    // 4096 to stay safe with reasoning models — same rationale as the
+    // other LLM calls in this file.
+    maxTokens: 4096,
+  });
+  const parsed = parseDecomposeJson(resp.text);
+  if (!parsed) throw new Error('Decompose: LLM returned malformed JSON');
+  return parsed;
+}
+
+interface DecomposePayload {
+  intent: string;
+  keywords: string[];
+}
+
+function parseDecomposeJson(text: string): DecomposePayload | null {
+  try {
+    const obj = JSON.parse(text) as unknown;
+    if (!obj || typeof obj !== 'object') return null;
+    const o = obj as { intent?: unknown; keywords?: unknown };
+    const intent = typeof o.intent === 'string' ? o.intent.trim() : '';
+    if (!Array.isArray(o.keywords)) return null;
+    const keywords: string[] = [];
+    for (const k of o.keywords) {
+      if (typeof k !== 'string') continue;
+      const t = k.trim();
+      if (!t) continue;
+      // Defensive: dedupe + cap to 5.
+      if (keywords.some((existing) => existing.toLowerCase() === t.toLowerCase())) continue;
+      keywords.push(t);
+      if (keywords.length >= 5) break;
+    }
+    return { intent, keywords };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Ask the configured LLM to rerank a keyword-derived candidate pool by how
