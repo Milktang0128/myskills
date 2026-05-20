@@ -114,6 +114,8 @@ export const zh: Dict = {
 
   // ── 技能详情抽屉 ────────────────────────────────────────────────────────
   'detail.close': '关闭',
+  'detail.close.title': '关闭 (Esc)',
+  'detail.region.aria': '技能详情',
   'detail.openLocation': '在 Finder 中显示',
   'detail.version': '版本',
   'detail.author': '作者',
@@ -644,6 +646,7 @@ export const zh: Dict = {
   'common.refresh': '刷新',
   'common.copy': '复制',
   'common.copied': '已复制',
+  'common.clear': '清空',
   'common.openInFinder': '在 Finder 中显示',
 
   // ── 批量 AI 分类 ───────────────────────────────────────────────────────

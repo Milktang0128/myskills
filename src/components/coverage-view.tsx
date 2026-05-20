@@ -268,8 +268,10 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             <button
               key={f.value}
               onClick={() => setFilter(f.value)}
+              aria-pressed={filter === f.value}
               className={cn(
                 'rounded-md border px-2.5 py-1 text-xs',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
                 filter === f.value
                   ? 'border-transparent bg-primary text-primary-foreground'
                   : 'hover:bg-accent',

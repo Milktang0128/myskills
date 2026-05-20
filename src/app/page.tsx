@@ -237,13 +237,28 @@ export default function Workspace() {
                 />
               )}
               <div className="relative w-[280px]">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Search
+                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                  aria-hidden="true"
+                />
                 <input
+                  type="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={searchPlaceholder}
-                  className="h-7 w-full rounded-md border bg-background pl-8 pr-2 text-xs"
+                  aria-label={searchPlaceholder}
+                  className="h-7 w-full rounded-md border bg-background pl-8 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                 />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch('')}
+                    aria-label={t('common.clear')}
+                    className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span aria-hidden="true" className="text-[14px] leading-none">×</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>

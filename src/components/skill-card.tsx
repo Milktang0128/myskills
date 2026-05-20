@@ -22,15 +22,18 @@ export function SkillCard({ skill, selected, onSelect }: Props) {
   return (
     <button
       onClick={onSelect}
+      aria-pressed={selected}
+      aria-label={skill.name}
       className={cn(
         'group flex w-full flex-col gap-1 rounded-md border bg-card px-3 py-2.5 text-left transition-colors',
         'hover:border-foreground/20 hover:bg-accent/40',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
         selected && 'border-primary/50 bg-accent/60 ring-1 ring-primary/20',
         allDisabled && 'opacity-60',
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="truncate text-sm font-medium">{skill.name}</span>
+        <span className="truncate text-sm font-medium" title={skill.name}>{skill.name}</span>
         {hasBroken && <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" aria-label={t('card.brokenSymlink')} />}
         {allDisabled && <EyeOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label={t('card.disabledAria')} />}
         {anySymlink && !hasBroken && (

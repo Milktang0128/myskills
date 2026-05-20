@@ -119,13 +119,27 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
   }
 
   return (
-    <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
+    <aside
+      className="flex h-full w-[460px] flex-col border-l bg-card/40"
+      role="complementary"
+      aria-label={t('detail.region.aria')}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onClose();
+        }
+      }}
+    >
       <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
         <button
           onClick={onClose}
-          className="titlebar-no-drag text-xs text-muted-foreground hover:text-foreground"
+          aria-label={t('common.close')}
+          title={t('detail.close.title')}
+          className="titlebar-no-drag inline-flex h-6 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {t('common.close')}
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+          <span>{t('common.close')}</span>
         </button>
       </div>
 
@@ -203,7 +217,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                             await api.ai.dismissSuggestion(sg.id);
                             await refreshSuggestions();
                           }}
-                          className="border-l border-dashed border-primary/30 px-1.5 py-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                          className="border-l border-dashed border-primary/30 px-1.5 py-1 text-muted-foreground opacity-60 transition-opacity hover:bg-destructive/10 hover:text-destructive hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
                           title={t('detail.aiSuggestions.dismissAria')}
                           aria-label={t('detail.aiSuggestions.dismissAria')}
                         >

@@ -112,6 +112,8 @@ export const en = {
 
   // ── Skill detail drawer ─────────────────────────────────────────────────
   'detail.close': 'Close',
+  'detail.close.title': 'Close (Esc)',
+  'detail.region.aria': 'Skill details',
   'detail.openLocation': 'Reveal in Finder',
   'detail.version': 'Version',
   'detail.author': 'Author',
@@ -645,6 +647,7 @@ export const en = {
   'common.refresh': 'Refresh',
   'common.copy': 'Copy',
   'common.copied': 'Copied',
+  'common.clear': 'Clear',
   'common.openInFinder': 'Reveal in Finder',
 
   // ── Bulk AI categorize ──────────────────────────────────────────────────
