@@ -9,6 +9,7 @@ import { IPC } from '../../shared/ipc-channels';
 import type { AiScenarioSuggestion, BulkCategorizePlan } from '../../shared/types';
 import { getQueueLength, isSchedulerRunning } from '../ai/categorize';
 import { applyBulkPlan, buildBulkPlan } from '../ai/bulk-categorize';
+import { generateOverview, getCachedOverview } from '../ai/library-overview';
 
 interface SuggestionRow {
   id: number;
@@ -143,6 +144,31 @@ export function registerAiHandlers(): void {
     }
     return applyBulkPlan(plan);
   });
+
+  registerHandler(IPC.ai.libraryOverviewGet, (_e, payload) => {
+    const p = (payload ?? {}) as { language?: string };
+    const language = normalizeLanguage(p.language);
+    return getCachedOverview(language);
+  });
+
+  registerHandler(IPC.ai.libraryOverviewGenerate, async (_e, payload) => {
+    const p = (payload ?? {}) as { language?: string };
+    const language = normalizeLanguage(p.language);
+    try {
+      return await generateOverview(language);
+    } catch (err) {
+      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+        throw err;
+      }
+      throw makeError('AI_ERROR', err instanceof Error ? err.message : String(err));
+    }
+  });
+}
+
+/** Accept 'zh' | 'en' from the renderer; anything else falls back to 'en'. */
+function normalizeLanguage(raw: unknown): string {
+  if (raw === 'zh' || raw === 'en') return raw;
+  return 'en';
 }
 
 function rowToSuggestion(r: SuggestionRow): AiScenarioSuggestion {

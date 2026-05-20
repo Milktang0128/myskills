@@ -146,4 +146,20 @@ CREATE TABLE IF NOT EXISTS catalog_descriptions (
   PRIMARY KEY (source, skill_id)
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_descriptions_fetched ON catalog_descriptions(fetched_at);
+
+-- AI-generated library overview ("Skill Map"). A single-row table: id is
+-- always 1. set_hash is a SHA-256 over the sorted (skillId|content_hash)
+-- pairs that fed the generation; the UI compares the current set_hash to
+-- this one to decide whether the cached overview is stale and offer a
+-- regenerate prompt. overview_json holds the full LibraryOverview payload
+-- (intro + clusters + per-skill briefs). Wiped on every regenerate, never
+-- mutated in place.
+CREATE TABLE IF NOT EXISTS library_overview (
+  id             INTEGER PRIMARY KEY,
+  set_hash       TEXT NOT NULL,
+  overview_json  TEXT NOT NULL,
+  generated_at   INTEGER NOT NULL,
+  model          TEXT,
+  language       TEXT
+);
 `;

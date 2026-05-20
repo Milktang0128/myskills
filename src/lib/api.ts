@@ -11,6 +11,8 @@ import type {
   CatalogPreview,
   CatalogSearchResponse,
   CoverageMatrix,
+  LibraryOverview,
+  LibraryOverviewSnapshot,
   LlmChatRequest,
   LlmChatResponse,
   LlmConfig,
@@ -194,6 +196,15 @@ export const api = {
     /** Apply a (possibly user-edited) bulk plan in a DB transaction. */
     applyBulkCategorization: (plan: BulkCategorizePlan) =>
       bridge().invoke(IPC.ai.applyBulkCategorization, { plan }) as Promise<BulkCategorizeApplyResult>,
+    /**
+     * Library Map ("Skill Map") — read the cached overview snapshot plus a
+     * stale flag derived from the current skill set. Cheap (no LLM call).
+     */
+    libraryOverviewGet: (language: 'zh' | 'en') =>
+      bridge().invoke(IPC.ai.libraryOverviewGet, { language }) as Promise<LibraryOverviewSnapshot>,
+    /** Run the LLM, replace the cache, return the fresh overview. */
+    libraryOverviewGenerate: (language: 'zh' | 'en') =>
+      bridge().invoke(IPC.ai.libraryOverviewGenerate, { language }) as Promise<LibraryOverview>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

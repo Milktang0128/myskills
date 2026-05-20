@@ -76,6 +76,16 @@ export const IPC = {
     bulkCategorize: 'ai:bulkCategorize',
     /** Apply a (possibly user-edited) bulk plan in a single DB transaction. */
     applyBulkCategorization: 'ai:applyBulkCategorization',
+    /**
+     * Library Map — get the cached AI overview snapshot (may be null) plus
+     * a stale flag computed from the current skill-set hash.
+     */
+    libraryOverviewGet: 'ai:libraryOverview:get',
+    /**
+     * Generate (or regenerate) the AI library overview. Runs the LLM,
+     * writes the single-row cache, returns the fresh overview.
+     */
+    libraryOverviewGenerate: 'ai:libraryOverview:generate',
   },
   events: {
     scanStarted: 'event:scanStarted',

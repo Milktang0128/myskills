@@ -28,6 +28,7 @@ export const zh: Dict = {
   'sidebar.section.platforms': '平台',
   'sidebar.section.scenarios': '场景',
   'sidebar.coverage': '覆盖矩阵',
+  'sidebar.map': '技能地图',
   'sidebar.discover': '发现',
   'sidebar.allSkills': '全部技能',
   'sidebar.duplicates': '重复项',
@@ -42,6 +43,7 @@ export const zh: Dict = {
 
   // ── 顶部标题 ────────────────────────────────────────────────────────────
   'header.coverage': '覆盖矩阵',
+  'header.map': '技能地图',
   'header.discover': '发现',
   'header.scenario': '场景',
   'header.platform': '平台',
@@ -689,4 +691,23 @@ export const zh: Dict = {
   'bulkCat.apply': '应用',
   'bulkCat.applying': '应用中…',
   'bulkCat.applied': '已应用 —— 新建 {{created}} 个场景，归类 {{linked}} 个技能。',
+
+  // ── 技能地图（AI 生成的技能库总览）─────────────────────────────────────
+  'map.loading': '加载技能地图…',
+  'map.heading': '你的工具箱（共 {{count}} 个）',
+  'map.metadata': '{{when}} 由 {{model}} 生成',
+  'map.regenerate': '重新生成',
+  'map.regenerate.title': '上次于 {{when}} 用 {{model}} 生成。点击重新调用 AI。',
+  'map.regenerating': '生成中…',
+  'map.cluster.count': '{{count}} 个技能',
+  'map.uncategorized.heading': '未归类',
+  'map.uncategorized.body': 'AI 没能把这些技能稳妥地放进任何一个簇。通常意味着你的技能库比聚出来的几个主题更广。',
+  'map.stale.message': '自从这份地图生成以来，你的技能库发生了变化。',
+  'map.stale.refresh': '刷新地图',
+  'map.empty.title': '一眼看完你的工具箱',
+  'map.empty.body': 'AI 会读一遍你的所有技能，输出一份聚簇地图：主题分组、每条一句话定位、加一段整体概览，帮你看清自己的工具箱是为什么场景准备的。',
+  'map.empty.generate': '生成地图',
+  'map.empty.generating': '生成中…',
+  'map.llmRequired.title': '尚未配置 AI',
+  'map.llmRequired.body': '技能地图需要 LLM。请前往「设置 → AI」配置 API key，然后回来。',
 };

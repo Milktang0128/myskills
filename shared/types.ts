@@ -508,3 +508,63 @@ export interface BulkCategorizeApplyResult {
   /** Rows we couldn't apply (skill deleted, scenario name conflict, etc.). */
   errors: Array<{ skillId: string; message: string }>;
 }
+
+/* ---------------------------------------------------------------------------
+ * Library Overview ("Skill Map") — AI-generated read-only navigation aid.
+ *
+ * A single snapshot of the user's entire skill library, clustered by theme
+ * with per-skill briefs. NOT the same as scenarios:
+ *   - Scenarios are user-curated, persistent, written to disk via export.
+ *   - Library overview is AI-derived, transient (a cache keyed by set hash),
+ *     read-only — clicking a cluster doesn't create a scenario.
+ *
+ * Lives in the `library_overview` table as a single row (id=1) holding the
+ * full JSON payload. `setHash` is a fingerprint of the skill set used to
+ * generate it; the UI compares it to the live set and shows a "refresh"
+ * banner if they diverge.
+ * ------------------------------------------------------------------------- */
+
+export interface LibraryOverviewSkillEntry {
+  /** Skill id from the skills table. */
+  skillId: string;
+  /** Display name at generation time (may have drifted since). */
+  name: string;
+  /** AI-written ≤15-char (or chars-equivalent) one-line positioning. */
+  brief: string;
+}
+
+export interface LibraryOverviewCluster {
+  /** Stable slug derived from name; used as React key. */
+  key: string;
+  /** Display name in the user's UI language. */
+  name: string;
+  /** 1-2 sentence purpose statement for the cluster. */
+  purpose: string;
+  /** Skills in this cluster, in AI-chosen order (typically most central first). */
+  skills: LibraryOverviewSkillEntry[];
+}
+
+export interface LibraryOverview {
+  /** 1-2 sentence summary of the whole library, in user's language. */
+  intro: string;
+  clusters: LibraryOverviewCluster[];
+  /** Skills the AI failed to fit anywhere — surfaced as their own group. */
+  uncategorized: LibraryOverviewSkillEntry[];
+  /** Total skills the AI saw at generation time. */
+  totalSkills: number;
+  /** Wall-clock ms when this was generated. */
+  generatedAt: number;
+  /** Model used (e.g. 'deepseek-v4-pro') — surfaces in the regenerate hint. */
+  model: string;
+  /** UI language at generation time ('zh' | 'en'). */
+  language: string;
+}
+
+/** Returned by ai.libraryOverview.get — overview may be null on first launch. */
+export interface LibraryOverviewSnapshot {
+  overview: LibraryOverview | null;
+  /** True when overview exists but the underlying skill set has changed. */
+  stale: boolean;
+  /** Current set hash; UI uses this to decide whether to show "Refresh". */
+  currentSetHash: string;
+}
