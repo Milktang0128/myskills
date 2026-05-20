@@ -13,6 +13,7 @@ import {
   History as HistoryIcon,
   Grid3x3,
   Globe,
+  Map as MapIcon,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
 import { Button } from '@/components/ui/button';
@@ -21,12 +22,13 @@ import { LangToggle } from '@/components/lang-toggle';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
-export type WorkspaceView = 'list' | 'matrix' | 'discover';
+export type WorkspaceView = 'list' | 'matrix' | 'discover' | 'map';
 
 interface Props {
   view: WorkspaceView;
   onSelectCoverage: () => void;
   onSelectDiscover: () => void;
+  onSelectMap: () => void;
   filter: SkillFilter;
   onFilterChange: (f: SkillFilter) => void;
   platforms: Platform[];
@@ -49,6 +51,7 @@ export function Sidebar({
   view,
   onSelectCoverage,
   onSelectDiscover,
+  onSelectMap,
   filter,
   onFilterChange,
   platforms,
@@ -113,6 +116,13 @@ export function Sidebar({
             icon={<Grid3x3 className="h-4 w-4" />}
           >
             {t('sidebar.coverage')}
+          </SidebarRow>
+          <SidebarRow
+            active={view === 'map'}
+            onClick={onSelectMap}
+            icon={<MapIcon className="h-4 w-4" />}
+          >
+            {t('sidebar.map')}
           </SidebarRow>
           <SidebarRow
             active={view === 'discover'}

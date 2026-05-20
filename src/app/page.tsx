@@ -10,6 +10,7 @@ import { SkillDetail } from '@/components/skill-detail';
 import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView, ModeSegmented, type SearchMode } from '@/components/discover-view';
+import { LibraryMapView } from '@/components/library-map-view';
 import { OnboardingWizard } from '@/components/onboarding';
 import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { Toast } from '@/components/ui/toast';
@@ -188,6 +189,8 @@ export default function Workspace() {
       ? t('header.coverage')
       : view === 'discover'
       ? t('header.discover')
+      : view === 'map'
+      ? t('header.map')
       : titleForListFilter(filter, platforms, scenarios, t);
 
   const searchPlaceholder =
@@ -207,6 +210,10 @@ export default function Workspace() {
         }}
         onSelectDiscover={() => {
           setView('discover');
+          setSelectedId(null);
+        }}
+        onSelectMap={() => {
+          setView('map');
           setSelectedId(null);
         }}
         filter={filter}
@@ -238,6 +245,7 @@ export default function Workspace() {
                   onChange={setDiscoverMode}
                 />
               )}
+              {view !== 'map' && (
               <div className="relative w-[280px]">
                 <Search
                   className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
@@ -262,6 +270,7 @@ export default function Workspace() {
                   </button>
                 )}
               </div>
+              )}
             </div>
           </div>
         </header>
@@ -281,6 +290,11 @@ export default function Workspace() {
             onModeChange={setDiscoverMode}
             aiAvailable={aiSearchAvailable}
             onToast={showToast}
+          />
+        ) : view === 'map' ? (
+          <LibraryMapView
+            onSelectSkill={setSelectedId}
+            llmConfigured={llmConfigured}
           />
         ) : (
           <>

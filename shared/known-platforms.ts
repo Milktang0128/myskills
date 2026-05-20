@@ -10,16 +10,21 @@
  * Only platforms whose canonical skill format is **SKILL.md** (YAML
  * frontmatter + Markdown body, one skill per directory) are auto-detected
  * here. This is a curated set, not a discovery layer — we'd rather miss a
- * platform than wrongly suggest one. The five officially-supported entries:
+ * platform than wrongly suggest one. The four officially-supported entries:
  *
  *   - claude     — Anthropic Claude Code
  *   - codex      — OpenAI Codex CLI
- *   - opencode   — sst/opencode
  *   - openclaw   — OpenClaw
  *   - shared     — the cross-tool user agents folder (`~/.agents/skills`)
  *                  (DB id is still `shared`; label/description rebranded
  *                  away from "Shared Pool" because users found it opaque.
- *                  The convention itself is shared by OpenClaw and others.)
+ *                  The convention itself is shared by OpenClaw, OpenCode,
+ *                  and others.)
+ *
+ * Note on OpenCode: not listed separately because it reads from the user
+ * agents folder (`~/.agents/skills`) — the `shared` entry already covers
+ * it. Adding a fake `~/.opencode/skills` candidate misled users into
+ * thinking it had its own dir.
  *
  * # What's intentionally NOT here
  *
@@ -67,12 +72,6 @@ export const KNOWN_PLATFORMS: KnownPlatformCandidate[] = [
     label: 'Codex',
     defaultDir: '~/.codex/skills',
     description: 'Codex CLI',
-  },
-  {
-    id: 'opencode',
-    label: 'OpenCode',
-    defaultDir: '~/.opencode/skills',
-    description: 'OpenCode CLI (sst/opencode)',
   },
   {
     id: 'openclaw',

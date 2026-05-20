@@ -131,6 +131,24 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 9,
+    name: 'library_overview',
+    up: (db) => {
+      // Single-row cache for the AI-generated Skill Map view. Fresh installs
+      // already have the table from SCHEMA_V1; existing DBs get it here.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS library_overview (
+          id             INTEGER PRIMARY KEY,
+          set_hash       TEXT NOT NULL,
+          overview_json  TEXT NOT NULL,
+          generated_at   INTEGER NOT NULL,
+          model          TEXT,
+          language       TEXT
+        );
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

@@ -26,6 +26,7 @@ export const en = {
   'sidebar.section.platforms': 'Platforms',
   'sidebar.section.scenarios': 'Scenarios',
   'sidebar.coverage': 'Coverage matrix',
+  'sidebar.map': 'Skill map',
   'sidebar.discover': 'Discover',
   'sidebar.allSkills': 'All Skills',
   'sidebar.duplicates': 'Duplicates',
@@ -40,6 +41,7 @@ export const en = {
 
   // ── Header (page titles) ────────────────────────────────────────────────
   'header.coverage': 'Coverage matrix',
+  'header.map': 'Skill map',
   'header.discover': 'Discover',
   'header.scenario': 'Scenario',
   'header.platform': 'Platform',
@@ -70,7 +72,7 @@ export const en = {
   'matrix.empty.guidance.discover.title': 'Browse popular skills in Discover',
   'matrix.empty.guidance.discover.body': 'Switch to the Discover tab in the sidebar to install community skills with one click.',
   'matrix.empty.guidance.settings.title': 'Add a platform in Settings',
-  'matrix.empty.guidance.settings.body': 'Point MySkills at your Claude / Codex / OpenCode skill folder so it can index what you already have.',
+  'matrix.empty.guidance.settings.body': 'Point MySkills at your Claude / Codex / OpenClaw skill folder so it can index what you already have.',
   'matrix.empty.guidance.rescan.title': 'Rescan',
   'matrix.empty.guidance.rescan.body': 'If you just added a SKILL.md file by hand, use the Rescan button in the sidebar.',
   'matrix.action.promote': 'Promote',
@@ -237,7 +239,7 @@ export const en = {
   'discover.mode.keyword.label': 'Keyword',
   'discover.mode.ai.title.enabled': 'AI-ranked search using your configured LLM',
   'discover.mode.ai.title.disabled': 'Enable AI search in Settings + configure LLM key',
-  'discover.mode.ai.title.needQuery': 'Type a query — AI mode reranks search results, it needs something to rank',
+  'discover.mode.ai.title.willEngage': 'AI mode selected — engages once you type a query',
   'discover.preview.installsCount': '{{n}} installs',
   'discover.preview.viaSkills': 'Preview from skills.sh',
   'discover.preview.installTo.heading': 'Install to',
@@ -694,4 +696,27 @@ export const en = {
   'bulkCat.applying': 'Applying…',
   'bulkCat.applied':
     'Applied — {{created}} new scenarios, {{linked}} skills categorized.',
+
+  // ── Library map (AI-generated skill overview) ───────────────────────────
+  'map.loading': 'Loading skill map…',
+  'map.heading': 'Your toolbox ({{count}})',
+  'map.metadata': 'Generated {{when}} · {{model}}',
+  'map.regenerate': 'Regenerate',
+  'map.regenerate.title': 'Last generated {{when}} with {{model}}. Click to re-run AI.',
+  'map.regenerating': 'Generating…',
+  'map.cluster.count': '{{count}} skills',
+  'map.uncategorized.heading': 'Uncategorized',
+  'map.uncategorized.body':
+    "Skills the AI couldn't confidently place into a cluster. Often a hint that your library is wider than the clusters captured.",
+  'map.stale.message':
+    'Your skill library has changed since this map was generated.',
+  'map.stale.refresh': 'Refresh map',
+  'map.empty.title': 'See your library at a glance',
+  'map.empty.body':
+    'AI will read every skill once and produce a clustered map: themed groups, one-line briefs, and a short overview of what your toolbox is built for.',
+  'map.empty.generate': 'Generate map',
+  'map.empty.generating': 'Generating…',
+  'map.llmRequired.title': 'AI not configured',
+  'map.llmRequired.body':
+    'The skill map needs an LLM. Add an API key in Settings → AI, then come back.',
 } as const;

@@ -42,6 +42,7 @@ The renderer and main process are compiled by **separate `tsconfig.json` files**
 - All filesystem and SQLite work lives in the **main process**. The renderer reads cached data via IPC only.
 - IPC goes through `contextBridge` + `ipcMain.handle()`; the renderer runs with `nodeIntegration: false` and only sees a whitelisted API surface.
 - `shared/types.ts` is the contract between processes — keep it **dependency-free** (it's imported by both sides).
+- **Adding a new IPC channel requires an Electron restart, not just a renderer reload.** The preload is esbuild-bundled at `dev:electron` startup ([electron/build-preload.mjs](electron/build-preload.mjs)) to allow `sandbox: true`, which freezes the `ALL_INVOKE_CHANNELS` whitelist into the bundle. The renderer will see `Channel "x:y" is not allowed` until you kill + restart Electron. Workflow: add channel to [shared/ipc-channels.ts](shared/ipc-channels.ts) → restart `npm run dev:electron` (Next stays up).
 
 ### Data model
 
