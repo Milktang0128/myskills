@@ -254,6 +254,8 @@ export const zh: Dict = {
   'discover.preview.installCount.one': '安装到 {{count}} 个平台',
   'discover.preview.installCount.many': '安装到 {{count}} 个平台',
   'discover.installs.label': '次安装',
+  'discover.installedBadge': '已安装',
+  'discover.installedBadge.title': '本地已有同名技能。',
   'discover.install.result': '已安装 {{applied}} 个文件',
   'discover.install.result.skipped': ' · 跳过 {{skipped}}',
   'discover.install.result.failed': ' · 失败 {{failed}}',

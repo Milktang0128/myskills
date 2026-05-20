@@ -121,6 +121,16 @@ function shouldSkipDecompose(query: string): boolean {
   return tokens.every((t) => /^[A-Za-z0-9._-]+$/.test(t));
 }
 
+/**
+ * Lowercase + strip non-alphanumerics so we can match catalog skillIds
+ * against locally-installed skill names that may differ in case or
+ * separators (e.g. "PDF-Form" vs "pdf_form"). Mirrors the same
+ * normalization used by the bulk-categorize matcher.
+ */
+function normalizeSkillKey(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }: Props) {
   const t = useT();
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -181,6 +191,11 @@ export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }
   // Master kill-switch from settings — when off, skip every network call.
   const [networkAllowed, setNetworkAllowed] = useState<boolean | null>(null);
 
+  // Set of normalized skill names installed locally — used to flag
+  // already-installed catalog results so users don't accidentally
+  // re-install the same skill.
+  const [installedNames, setInstalledNames] = useState<Set<string>>(new Set());
+
   // Used to ignore stale search responses (the user typed faster than the API).
   const searchSeqRef = useRef(0);
   // Separate sequence for enrichment so a slow GitHub batch from a previous
@@ -211,10 +226,11 @@ export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }
     let cancelled = false;
     (async () => {
       try {
-        const [pls, canon, gate] = await Promise.all([
+        const [pls, canon, gate, installed] = await Promise.all([
           api.platforms.list(),
           api.settings.get('canonical_platform'),
           api.settings.get('allow_external_network'),
+          api.skills.list({ scope: 'all' }),
         ]);
         if (cancelled) return;
         setPlatforms(pls);
@@ -225,6 +241,7 @@ export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }
         setSelectedPlatforms(new Set([canonId]));
         // '0' means explicitly disabled; missing key / '1' means allowed.
         setNetworkAllowed(gate !== '0');
+        setInstalledNames(new Set(installed.map((s) => normalizeSkillKey(s.name))));
       } catch (e) {
         if (!cancelled) console.error('discover meta load failed', e);
       }
@@ -700,6 +717,10 @@ export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }
                       <ResultRow
                         result={r}
                         why={aiWhy[r.skillId]}
+                        installed={
+                          installedNames.has(normalizeSkillKey(r.skillId)) ||
+                          installedNames.has(normalizeSkillKey(r.name))
+                        }
                         selected={
                           selectedResult?.source === r.source &&
                           selectedResult?.skillId === r.skillId
@@ -754,12 +775,15 @@ function EmptyHint() {
 function ResultRow({
   result,
   why,
+  installed,
   selected,
   onClick,
 }: {
   result: CatalogSearchResult;
   /** LLM-generated rationale, only present in AI mode. */
   why?: string;
+  /** True when a local skill with a matching name already exists. */
+  installed?: boolean;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -776,6 +800,14 @@ function ResultRow({
         <span className="truncate font-medium text-sm" title={result.name}>
           {result.name}
         </span>
+        {installed && (
+          <span
+            className="shrink-0 rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
+            title={t('discover.installedBadge.title')}
+          >
+            {t('discover.installedBadge')}
+          </span>
+        )}
         <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">
           {formatInstalls(result.installs)} {t('discover.installs.label')}
         </span>

@@ -252,6 +252,8 @@ export const en = {
   'discover.preview.installCount.one': 'Install to {{count}} platform',
   'discover.preview.installCount.many': 'Install to {{count}} platforms',
   'discover.installs.label': 'installs',
+  'discover.installedBadge': 'Installed',
+  'discover.installedBadge.title': 'A local skill with this name already exists.',
   'discover.install.result': 'Installed {{applied}} file(s)',
   'discover.install.result.skipped': '· {{skipped}} skipped',
   'discover.install.result.failed': '· {{failed}} failed',
