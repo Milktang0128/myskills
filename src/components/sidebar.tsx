@@ -121,6 +121,11 @@ export function Sidebar({
           have visual breathing room. Status info lives below. */}
       <div className="titlebar-drag h-12 shrink-0 border-b" />
 
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
+        <img src="./app-logo.png" alt="" aria-hidden="true" className="h-7 w-7 shrink-0" />
+        <span className="text-sm font-semibold tracking-tight">{t('app.title')}</span>
+      </div>
+
       {/* Scan status row — lives below the top bar, in the sidebar's regular
           content flow. Ambient info (dot + count) on its own line; the small
           refresh icon is the only interactive element. */}
