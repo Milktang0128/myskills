@@ -3,10 +3,10 @@
 /**
  * Kanban view — skills grouped by scenario.
  *
- * Columns: one per scenario, plus a trailing "未分类" column for skills with
- * scenarios.length === 0. A skill with N scenarios appears in N columns (the
- * Skill is a tool, scenarios are usage horizons — multi-membership is the
- * intended model).
+ * Columns: a leading "未分类" column (when non-empty) for skills with
+ * scenarios.length === 0, followed by one column per scenario. A skill with
+ * N scenarios appears in N columns (the Skill is a tool, scenarios are
+ * usage horizons — multi-membership is the intended model).
  *
  * Empty-state behavior: when essentially nothing has been categorized
  * (unscenarized / total > UNSCENARIZED_GUIDANCE_THRESHOLD), the view shows a
@@ -48,9 +48,8 @@ export function KanbanView({
 }: Props) {
   const t = useT();
 
-  // Group skills into columns. Sorted scenarios first (stable order), then
-  // the catch-all "未分类" column at the end so the eye lands on user-curated
-  // groups before the inbox.
+  // Group skills into columns. Catch-all "未分类" rendered first as the
+  // inbox the user works through, then sorted scenarios (stable order).
   const { columns, unscenarized, unscenarizedRatio } = useMemo(() => {
     const byScenario = new Map<number, Skill[]>();
     const orphans: Skill[] = [];
@@ -100,16 +99,6 @@ export function KanbanView({
           card grid is consistent across scenarios with varying skill counts. */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden">
         <div className="flex h-full gap-3 px-6 py-5">
-          {columns.map((col) => (
-            <KanbanColumn
-              key={col.key}
-              title={col.name}
-              dotColor={col.color}
-              items={col.items}
-              selectedId={selectedId}
-              onSelect={onSelect}
-            />
-          ))}
           {unscenarized.length > 0 && (
             <KanbanColumn
               key="unscenarized"
@@ -122,6 +111,16 @@ export function KanbanView({
               onSelect={onSelect}
             />
           )}
+          {columns.map((col) => (
+            <KanbanColumn
+              key={col.key}
+              title={col.name}
+              dotColor={col.color}
+              items={col.items}
+              selectedId={selectedId}
+              onSelect={onSelect}
+            />
+          ))}
         </div>
       </div>
     </div>
