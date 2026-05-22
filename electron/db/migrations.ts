@@ -149,6 +149,25 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 10,
+    name: 'sync_history_op_group',
+    up: (db) => {
+      // Persist the opGroupId that buildSync/buildPromote/buildInstall
+      // already generate in memory, so the rollback handler can recover all
+      // FS steps that belong to one user-level action. Existing rows stay
+      // NULL — they roll back as singletons (the UI treats NULL groups as
+      // groups-of-one). Idempotent: skipped for fresh installs that already
+      // got the column via SCHEMA_V1.
+      const cols = db.prepare("PRAGMA table_info('sync_history')").all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'op_group_id')) {
+        db.exec('ALTER TABLE sync_history ADD COLUMN op_group_id TEXT');
+      }
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_history_op_group ON sync_history(op_group_id)',
+      );
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

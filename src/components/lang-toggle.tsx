@@ -67,7 +67,9 @@ function Half({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        'rounded-[5px] font-medium leading-none transition-colors',
+        // rounded-none matches the right-angle geometry; arbitrary radii bypass
+        // the tailwind config's zero-out and would re-introduce roundness here.
+        'rounded-none font-medium leading-none transition-colors',
         sizeCls,
         active
           ? 'bg-primary text-primary-foreground'

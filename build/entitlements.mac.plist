@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Hardened Runtime entitlements for an Electron app destined for
+    Developer ID distribution (NOT Mac App Store).
+
+    These three are the minimum for a notarizable Electron app. Each one
+    relaxes a specific check that hardened runtime tightens by default:
+
+    - allow-jit: V8 needs to JIT-compile JavaScript at runtime, which
+      requires writable+executable memory pages. Without this, V8 crashes
+      on launch.
+
+    - allow-unsigned-executable-memory: Electron creates executable pages
+      not signed by us (V8 generated code, FFI thunks). Without this, the
+      kernel kills the process.
+
+    - disable-library-validation: We load native modules (better-sqlite3)
+      and Electron's Helper bundles. Their code signatures aren't issued
+      by the same Team ID as our app's main signature. Without this, the
+      loader refuses to dlopen them.
+
+    We DELIBERATELY do NOT enable App Sandbox here — that's for Mac App
+    Store distribution and would require additional entitlements for
+    network, file access etc. Developer ID + hardened runtime gives us
+    the "no Gatekeeper trash" outcome without the sandbox restrictions.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

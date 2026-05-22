@@ -947,7 +947,7 @@ function PreviewDrawer({
     busy || selectedPlatforms.size === 0 || enabledPlatforms.length === 0;
   return (
     <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
-      <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
+      <div className="titlebar-drag flex h-12 shrink-0 items-center justify-end border-b px-3">
         <button
           onClick={onClose}
           className="titlebar-no-drag text-xs text-muted-foreground hover:text-foreground"

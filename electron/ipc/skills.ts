@@ -107,10 +107,23 @@ function loadSkillsByIds(ids: string[], preloaded?: SkillRow[]): Skill[] {
       .prepare(`SELECT * FROM skills WHERE id IN (${ids.map(() => '?').join(',')})`)
       .all(...ids) as SkillRow[]);
 
+  // Canonical-first ordering is a system-wide rule: anywhere the UI shows
+  // a mix of canonical and non-canonical platforms, canonical leads. We
+  // enforce it at the data layer so every consumer (detail drawer, card
+  // chips, kanban, list) inherits the correct order for free.
+  const canonical =
+    (db.prepare('SELECT value FROM settings WHERE key = ?').get('canonical_platform') as
+      | { value: string }
+      | undefined)?.value ?? 'shared';
+
   const placeholders = ids.map(() => '?').join(',');
   const locationRows = db
-    .prepare(`SELECT * FROM skill_locations WHERE skill_id IN (${placeholders}) ORDER BY platform_id, install_path`)
-    .all(...ids) as LocationRow[];
+    .prepare(
+      `SELECT * FROM skill_locations WHERE skill_id IN (${placeholders})
+       ORDER BY CASE WHEN platform_id = ? THEN 0 ELSE 1 END,
+                platform_id, install_path`,
+    )
+    .all(...ids, canonical) as LocationRow[];
   const scenarioRows = db
     .prepare(
       `SELECT ss.skill_id, sc.id, sc.key, sc.name

@@ -8,11 +8,34 @@ import { setAllowedSender } from './ipc/dispatcher';
 import { registerAllHandlers } from './ipc';
 import { makeScanProgressForwarder } from './ipc/scan';
 import { maybeAutoScan } from './scanner';
+import { recoverPendingBackups } from './sync/backup';
+import { cleanupOldBackupsBestEffort } from './sync/backup-cleanup';
+import { recoverPendingHistory } from './sync/symlink';
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_URL = 'http://localhost:4477';
 
 let mainWindow: BrowserWindow | null = null;
+
+// Single-instance lock. Two MySkills instances sharing the same myskills.db
+// (and the same skill directories) can race on writes — one starts a plan,
+// the other invalidates its DB rows mid-execute. Refuse to launch a second
+// instance; instead surface the existing window. Acquired BEFORE whenReady
+// so the second process exits immediately without running any FS init.
+const gotInstanceLock = app.requestSingleInstanceLock();
+if (!gotInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // User opened MySkills again (e.g. clicked dock icon, double-clicked DMG).
+    // Bring the existing window forward instead of starting fresh.
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
@@ -100,6 +123,26 @@ app.whenReady().then(async () => {
   // Same DI pattern as paths: install the platform-specific SecretStore here,
   // and the rest of the codebase talks to the interface in safe-storage.ts.
   setSecretStore(electronSafeStorage);
+  // Finish any cross-volume backup operations that were interrupted last
+  // launch (power loss, force-quit). Safe to run before any sync handler
+  // is registered — it only touches our own backupRoot.
+  try {
+    recoverPendingBackups();
+  } catch (err) {
+    console.error('[backup] recoverPendingBackups failed:', err);
+  }
+  // Mark any sync_history rows still in '_pending_' state as '_interrupted_'.
+  // This is the DB-side counterpart to recoverPendingBackups: catches crashes
+  // between the executor's pending-INSERT and final UPDATE.
+  try {
+    recoverPendingHistory();
+  } catch (err) {
+    console.error('[sync] recoverPendingHistory failed:', err);
+  }
+  // Sweep backups older than retention (default 30 days). Catches the
+  // "user kept MySkills closed for months and just opened it" case so the
+  // backups dir doesn't grow unbounded. Errors are logged inside the helper.
+  cleanupOldBackupsBestEffort();
   registerAllHandlers();
   await createWindow();
   if (mainWindow) {

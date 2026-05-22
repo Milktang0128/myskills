@@ -1,7 +1,13 @@
 import { getDb } from '../db';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
-import type { Scenario, ScenarioExport, ScenarioImportResult } from '../../shared/types';
+import type {
+  CreateFromClusterRequest,
+  CreateFromClusterResult,
+  Scenario,
+  ScenarioExport,
+  ScenarioImportResult,
+} from '../../shared/types';
 import { slugify, isValidKey } from '../../shared/slug';
 
 interface ScenarioRow {
@@ -99,6 +105,23 @@ export function registerScenarioHandlers(): void {
     if (!payload || typeof payload !== 'object') throw makeError('INVALID_INPUT', 'export payload required');
     return importScenarios(payload as ScenarioExport);
   });
+
+  // Sole AI-Lens write entry. Atomic: scenario insert + skill links all
+  // happen in one transaction so a partial-success state is impossible.
+  // If a scenario with the same slug-key already exists, MERGES into it
+  // (links the cluster's skills to the existing scenario). Re-running on
+  // the same cluster is idempotent — already-linked skills are counted as
+  // skipped, not error.
+  registerHandler(IPC.scenarios.createFromCluster, (_e, payload) => {
+    const p = payload as Partial<CreateFromClusterRequest>;
+    if (!p?.name?.trim()) throw makeError('INVALID_INPUT', 'name required');
+    if (!Array.isArray(p.skillIds)) throw makeError('INVALID_INPUT', 'skillIds required');
+    return createFromCluster({
+      name: p.name.trim(),
+      skillIds: p.skillIds.filter((s): s is string => typeof s === 'string'),
+      color: p.color ?? null,
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +198,66 @@ function exportScenarios(): ScenarioExport {
       skills: skillMap.get(sc.id) ?? [],
     })),
   };
+}
+
+function createFromCluster(req: {
+  name: string;
+  skillIds: string[];
+  color: string | null;
+}): CreateFromClusterResult {
+  const db = getDb();
+  const now = Date.now();
+  const key = slugify(req.name);
+  if (!key) throw makeError('INVALID_INPUT', `cannot derive a key from "${req.name}"`);
+
+  // Pre-prepared statements so the transaction stays tight.
+  const findByKey = db.prepare('SELECT id FROM scenarios WHERE key = ?');
+  const insertScenario = db.prepare(
+    `INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
+     VALUES (?, ?, NULL, ?, NULL, 999, 0, ?)`,
+  );
+  const findSkill = db.prepare('SELECT 1 FROM skills WHERE id = ?');
+  const linkSkill = db.prepare(
+    'INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?, ?, ?)',
+  );
+
+  let scenarioId = 0;
+  let created = false;
+  let skillsLinked = 0;
+  let skillsSkipped = 0;
+
+  const tx = db.transaction(() => {
+    const existing = findByKey.get(key) as { id: number } | undefined;
+    if (existing) {
+      scenarioId = existing.id;
+      created = false;
+    } else {
+      const r = insertScenario.run(key, req.name, req.color, now);
+      scenarioId = Number(r.lastInsertRowid);
+      created = true;
+    }
+    // De-dup the inbound id list before iterating — the AI shouldn't send
+    // duplicates, but guarding here makes the counts honest.
+    const seen = new Set<string>();
+    for (const skillId of req.skillIds) {
+      if (seen.has(skillId)) continue;
+      seen.add(skillId);
+      const exists = findSkill.get(skillId) as { 1: number } | undefined;
+      if (!exists) {
+        // Stale skill ids (e.g., the skill was rescanned-out between Map
+        // generation and the user clicking Convert). Count as skipped
+        // rather than failing the whole transaction.
+        skillsSkipped += 1;
+        continue;
+      }
+      const r = linkSkill.run(skillId, scenarioId, now);
+      if (r.changes > 0) skillsLinked += 1;
+      else skillsSkipped += 1; // already in this scenario
+    }
+  });
+  tx();
+
+  return { scenarioId, created, skillsLinked, skillsSkipped };
 }
 
 function importScenarios(payload: ScenarioExport): ScenarioImportResult {

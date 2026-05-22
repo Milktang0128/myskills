@@ -22,6 +22,12 @@ export const en = {
   // ── Sidebar ──────────────────────────────────────────────────────────────
   'sidebar.rescan': 'Rescan all platforms',
   'sidebar.scanning': 'Scanning…',
+  // Scan banner — white-surface card at the top of the sidebar, replaces the
+  // bare outlined button. Status text + count + black-pill action.
+  'sidebar.scanBanner.scanned': 'Scanned',
+  'sidebar.scanBanner.scanning': 'Scanning',
+  'sidebar.scanBanner.count': '{{count}} skills',
+  'sidebar.scanBanner.action': 'Rescan',
   'sidebar.section.library': 'Library',
   'sidebar.section.platforms': 'Platforms',
   'sidebar.section.scenarios': 'Scenarios',
@@ -42,6 +48,22 @@ export const en = {
   // ── Header (page titles) ────────────────────────────────────────────────
   'header.coverage': 'Coverage matrix',
   'header.map': 'Skill map',
+  'header.aiLens': 'AI Lens',
+  'header.kanban': 'Scenario board',
+  // Sync history / Scenarios management are workspace views now (peers of
+  // Coverage matrix), not drawers or separate routes.
+  'header.history': 'Sync history',
+  'header.scenarios': 'Manage scenarios',
+  // Library sub-toolbar (3-way switcher above the content area).
+  'libraryView.list': 'List',
+  'libraryView.kanban': 'Scenarios',
+  'libraryView.aiLens': 'AI Lens',
+  'libraryView.summary': '{{skills}} skills · {{platforms}} platforms · {{scenarios}} scenarios',
+  // Kanban view labels.
+  'kanban.column.unscenarized': 'Untagged',
+  'kanban.empty.guidance.title': 'Your skills are not in any scenario yet',
+  'kanban.empty.guidance.body': '{{unscenarized}} of {{total}} skills have no scenario tags. Let the AI Lens cluster them first — you can promote any cluster into a real scenario in one click.',
+  'kanban.empty.guidance.cta': 'Open AI Lens',
   'header.discover': 'Discover',
   'header.scenario': 'Scenario',
   'header.platform': 'Platform',
@@ -75,15 +97,19 @@ export const en = {
   'matrix.empty.guidance.settings.body': 'Point MySkills at your Claude / Codex / OpenClaw skill folder so it can index what you already have.',
   'matrix.empty.guidance.rescan.title': 'Rescan',
   'matrix.empty.guidance.rescan.body': 'If you just added a SKILL.md file by hand, use the Rescan button in the sidebar.',
-  'matrix.action.promote': 'Promote',
+  // "Promote" was internal jargon — users had to learn what it meant.
+  // "Manage sync" reuses the verb they already know ("sync") and signals
+  // via "manage" that clicking opens the plan-confirm dialog instead of
+  // firing immediately. Tooltip keeps the mechanical description.
+  'matrix.action.promote': 'Manage sync',
   'matrix.action.inSync': 'in sync',
   'matrix.action.syncTotal': 'Sync {{count}} total',
   'matrix.action.replaceStale': 'Replace {{count}} stale',
   'matrix.action.fillGap': 'Fill {{count}} gap',
   'matrix.action.fillGaps': 'Fill {{count}} gaps',
   'matrix.action.syncTitle.stale': '{{count}} platform(s) have stale content — they will be backed up and replaced with a symlink to canonical',
-  'matrix.bulk.promote': 'Promote {{count}} orphan',
-  'matrix.bulk.promotePlural': 'Promote {{count}} orphans',
+  'matrix.bulk.promote': 'Manage sync ({{count}})',
+  'matrix.bulk.promotePlural': 'Manage sync ({{count}})',
   'matrix.bulk.promote.title': 'Copy each orphan into the canonical platform, then symlink the original to it',
   'matrix.bulk.sync': 'Sync {{count}} gap/stale',
   'matrix.bulk.syncPlural': 'Sync {{count}} gaps/stale',
@@ -354,6 +380,10 @@ export const en = {
   'syncConfirm.summary.alreadyInSync': ' · {{count}} already in sync',
   'syncConfirm.summary.needAttention': ' · {{count}} need attention',
   'syncConfirm.timedOut': 'Sync timed out — check Application Support logs.',
+  // Tells the user the operation is reversible before they confirm, and
+  // points at the specific entry (sidebar → Sync history) so the recovery
+  // path is concrete, not abstract.
+  'syncConfirm.rollbackHint': 'You can roll this back anytime from Sync history in the sidebar.',
   'syncConfirm.nothingToApply': 'Nothing to apply',
   'syncConfirm.applyN.one': 'Apply {{count}} write',
   'syncConfirm.applyN.many': 'Apply {{count}} writes',
@@ -371,6 +401,12 @@ export const en = {
   'syncConfirm.reason.target_outside_root': 'Computed target is outside the platform\'s skills_dir — refused for safety.',
   'syncConfirm.reason.source_outside_roots': 'Source path is outside the configured skill roots.',
   'syncConfirm.reason.source_changed_since_plan': 'The source changed between plan and execute. Re-run the plan.',
+  'syncConfirm.reason.unreadable':
+    'Source path could not be read — it may be evicted from iCloud, or permission was denied. Download/verify the source directory in Finder, then rescan and try again.',
+  'syncConfirm.reason.source_has_symlink':
+    'Source tree contains a symbolic link — refused for safety (a hostile link could exfiltrate data outside the skills directory). Flatten the source to a pure file tree before retrying.',
+  'syncConfirm.reason.case_collision':
+    'Target platform already has a skill with the same name in different casing — APFS is case-insensitive, writing would silently overwrite. Rename one of them and retry.',
 
   // ── Sync history page ───────────────────────────────────────────────────
   'history.title': 'Sync history',
@@ -383,6 +419,9 @@ export const en = {
   'history.col.actions': '',
   'history.rollback': 'Rollback',
   'history.rolledBack': 'rolled back',
+  // When the backup file is gone (retention cleanup or manual delete) the
+  // row can no longer be undone — UI shows this in place of the Undo button.
+  'history.backupExpired': 'Backup expired',
   'history.rollback.confirm': 'Roll back this change?',
   'history.rollback.success': 'Rolled back.',
   'history.rollback.failure': 'Rollback failed: {{message}}',
@@ -396,6 +435,22 @@ export const en = {
   'history.result.fail': 'fail',
   'history.backupPrefix': 'backup →',
   'history.rollback.confirmAction': 'Rollback this {{action}} for {{path}}?',
+  // Batch undo = one opGroup (one user-level action that expanded into N FS
+  // steps). Reverse-execution-order under the hood.
+  'history.rollback.batchConfirm': 'Roll back this batch of {{count}} FS step(s)? Will be undone in reverse order.',
+  'history.rollback.batchSelectedConfirm':
+    'Roll back the {{count}} selected batch(es)? Newest first, sequentially.',
+  'history.rollback.batchSuccess': 'Rolled back {{count}} batch(es).',
+  'history.rollback.batchPartialFail':
+    'Rolled back {{done}} of {{total}} — one batch failed; stopped to preserve state. Review and retry.',
+  // Multi-select / bulk action bar
+  'history.bulk.selectedN': '{{count}} operation(s) selected',
+  'history.bulk.rollback': 'Roll back selected',
+  'history.bulk.clear': 'Clear',
+  'history.bulk.selectRow': 'Select this operation',
+  // Appended to the leader row's action cell so users know one undo covers
+  // multiple FS steps.
+  'history.batchStepCount': '· {{count}} steps',
 
   // ── Settings page ───────────────────────────────────────────────────────
   'settings.title': 'Settings',
@@ -479,6 +534,8 @@ export const en = {
   'settings.scan.running': 'Scanning…',
   'settings.backups.retentionDays': 'Retention (days)',
   'settings.backups.cleanup': 'Clean up old backups now',
+  'settings.backups.cleanupResult':
+    'Removed {{deleted}} backup(s), freed {{bytes}}. Current usage: {{remaining}}.',
   'settings.danger.resetDb': 'Reset database',
   'settings.danger.resetDb.help': 'Drop all rows, then rescan from disk. Skill files are not touched. Scenarios and tags will be lost.',
   'settings.danger.resetDb.confirm': 'Drop all rows from the database? Scenarios and tags will be lost. Skill files are NOT touched.',
@@ -636,7 +693,10 @@ export const en = {
   'onboarding.llm.keyLabel': 'API key',
   'onboarding.llm.keyPlaceholder': 'sk-…',
   'onboarding.llm.skipBtn': 'Skip — set up later',
-  'onboarding.llm.save': 'Save and continue',
+  // The function only persists + runs a connection test. Advancement to the
+  // next step is the footer's separate Next/Finish button — the label must
+  // not promise a "continue" that doesn't happen.
+  'onboarding.llm.save': 'Save',
   'onboarding.llm.saving': 'Saving…',
   'onboarding.llm.testBtn': 'Test connection',
   'onboarding.llm.testing': 'Testing connection…',
@@ -705,7 +765,19 @@ export const en = {
   'map.regenerate.title': 'Last generated {{when}} with {{model}}. Click to re-run AI.',
   'map.regenerating': 'Generating…',
   'map.cluster.count': '{{count}} skills',
-  'map.uncategorized.heading': 'Uncategorized',
+  // "AI uncategorized" — distinct from Kanban's "Untagged" column. This bucket
+  // means "the AI failed to fit these into any cluster"; the Kanban column
+  // means "the user hasn't tagged these with a scenario". Same idea, different
+  // owners — keeping the labels apart avoids the word collision the team
+  // identified during IA review.
+  'map.uncategorized.heading': 'AI uncategorized',
+  // AI Lens's sole write entry — one-click convert a cluster into a real scenario.
+  'map.cluster.convert': 'Convert to scenario',
+  'map.cluster.convert.title': 'Create (or merge into) a same-named scenario and link every skill in this cluster',
+  'map.cluster.converting': 'Converting…',
+  'map.cluster.created': 'Created scenario "{{name}}" — linked {{linked}} skills',
+  'map.cluster.merged': 'Merged into existing "{{name}}" — added {{linked}} links',
+  'map.cluster.failed': 'Convert failed: {{message}}',
   'map.uncategorized.body':
     "Skills the AI couldn't confidently place into a cluster. Often a hint that your library is wider than the clusters captured.",
   'map.stale.message':

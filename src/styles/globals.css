@@ -4,47 +4,69 @@
 
 @layer base {
   :root {
+    /* Right-angle geometry: zero radius is a design rule, not a fallback. */
+    --radius: 0;
+
+    /* Light palette — pure neutral (0° hue), three surface tiers.
+       Light mode collapses canvas and surface to the same white; they are
+       distinguished by hairline borders, not background contrast. */
     --background: 0 0% 100%;
-    --foreground: 224 9% 14%;
+    --foreground: 0 0% 9%;            /* near-black, neutral-900 */
     --card: 0 0% 100%;
-    --card-foreground: 224 9% 14%;
-    --primary: 224 9% 14%;
+    --card-foreground: 0 0% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+
+    /* Primary = black pill. Used by default Button variant. */
+    --primary: 0 0% 9%;
     --primary-foreground: 0 0% 98%;
-    --secondary: 220 14% 96%;
-    --secondary-foreground: 224 9% 14%;
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
-    --accent: 220 14% 94%;
-    --accent-foreground: 224 9% 14%;
+
+    --secondary: 0 0% 96%;            /* neutral-100, light elevation */
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96%;                /* canvas tone for sidebar etc. */
+    --muted-foreground: 0 0% 45%;     /* neutral-500 */
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 9%;
+
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 98%;
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 224 9% 14%;
-    --radius: 0.5rem;
 
+    --border: 0 0% 90%;               /* hairline #e5e5e5 — alpha at use-site */
+    --input: 0 0% 90%;
+    --ring: 0 0% 9%;
+
+    /* Platform brand tints — feed platform-badge. Unchanged. */
     --platform-claude: 24 95% 53%;
     --platform-codex: 271 91% 65%;
     --platform-shared: 142 76% 36%;
   }
 
   .dark {
-    --background: 222 14% 8%;
-    --foreground: 0 0% 95%;
-    --card: 222 14% 11%;
-    --card-foreground: 0 0% 95%;
-    --primary: 0 0% 95%;
-    --primary-foreground: 222 14% 8%;
-    --secondary: 222 14% 16%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 222 14% 16%;
-    --muted-foreground: 220 9% 65%;
-    --accent: 222 14% 20%;
-    --accent-foreground: 0 0% 95%;
+    /* Three dark tiers: canvas → surface → elevation. Cards in dark mode
+       contrast via lighter elevation, not by losing the canvas. */
+    --background: 240 7% 9%;          /* #131316 canvas */
+    --foreground: 0 0% 98%;
+    --card: 240 4% 12%;               /* #1c1c1f surface */
+    --card-foreground: 0 0% 98%;
+    --popover: 240 4% 12%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Primary inverts in dark — black pill becomes white pill. */
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+
+    --secondary: 240 7% 15%;          /* #232327 elevation+1 */
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 7% 15%;
+    --muted-foreground: 240 5% 65%;   /* #a1a1aa */
+    --accent: 240 7% 15%;
+    --accent-foreground: 0 0% 98%;
+
     --destructive: 0 62% 50%;
     --destructive-foreground: 0 0% 98%;
-    --border: 222 14% 18%;
-    --input: 222 14% 18%;
+
+    --border: 240 5% 16%;             /* #27272a */
+    --input: 240 5% 16%;
     --ring: 0 0% 80%;
   }
 
@@ -78,5 +100,24 @@
   .scrollbar-thin::-webkit-scrollbar-thumb {
     background-color: hsl(var(--border));
     border-radius: 4px;
+  }
+
+  /* Slide-in animation for right-side panels (skill detail drawer etc.).
+     Ease-out-expo feels snappy without overshoot; 200ms is the sweet spot
+     between "perceived as motion" and "fast enough to not feel like a
+     loading state". Pure enter animation — exit is instant, which matches
+     macOS conventions for click-driven panels (Mail, Notes detail views). */
+  @keyframes ms-slide-in-right {
+    from {
+      transform: translateX(8%);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+  .animate-slide-in-right {
+    animation: ms-slide-in-right 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 }

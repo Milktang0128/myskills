@@ -545,8 +545,11 @@ function CanonicalStep() {
 
 function LlmStep() {
   const t = useT();
+  // DeepSeek is the default recommendation — cheap, fast, OpenAI-compatible.
+  // Pre-fill the model too so the user can hit Save without typing anything;
+  // if they load a previously saved config the useEffect below overrides.
   const [provider, setProvider] = useState<LlmProvider>('deepseek');
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState('deepseek-v4-flash');
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -559,7 +562,10 @@ function LlmStep() {
       try {
         const cfg = await api.llm.getConfig();
         setProvider(cfg.provider);
-        setModel(cfg.model);
+        // Only override the prefilled default if the saved config actually
+        // has a model — otherwise we'd blank the field for a first-run user
+        // whose stored config is just {provider:'deepseek', model:''}.
+        if (cfg.model) setModel(cfg.model);
         setAlreadyConfigured(cfg.hasApiKey);
       } catch {
         /* ignore */
@@ -644,9 +650,12 @@ function LlmStep() {
             onChange={(e) => setProvider(e.target.value as LlmProvider)}
             className="h-9 rounded-md border border-input bg-background px-3 text-sm"
           >
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
+            {/* DeepSeek first — it's the recommended default (price/quality
+                ratio + OpenAI-compatible wire format). Anthropic and OpenAI
+                follow as the most familiar fallbacks. */}
             <option value="deepseek">DeepSeek</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="openai">OpenAI</option>
             <option value="openrouter">OpenRouter</option>
             <option value="ollama">Ollama (local)</option>
             <option value="custom">Custom (OpenAI-compatible)</option>
@@ -716,7 +725,7 @@ function modelPlaceholder(provider: LlmProvider): string {
     case 'anthropic':
       return 'claude-haiku-4-5';
     case 'deepseek':
-      return 'deepseek-v4-pro';
+      return 'deepseek-v4-flash';
     case 'openrouter':
       return 'anthropic/claude-3.5-sonnet';
     case 'ollama':

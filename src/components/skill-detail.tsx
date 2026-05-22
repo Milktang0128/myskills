@@ -89,8 +89,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
   if (loading || !skill) {
     return (
-      <aside className="flex h-full w-[460px] flex-col border-l bg-card/40">
-        <div className="titlebar-drag h-9 shrink-0 border-b" />
+      <aside className="flex h-full w-[460px] flex-col border-l bg-card/40 animate-slide-in-right">
+        {/* Matches main header + sidebar top at 48px so the window-wide
+            border-b stays continuous even during the loading state. */}
+        <div className="titlebar-drag h-12 shrink-0 border-b" />
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
           {loading ? t('detail.loading') : t('detail.notFound')}
         </div>
@@ -120,7 +122,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
   return (
     <aside
-      className="flex h-full w-[460px] flex-col border-l bg-card/40"
+      className="flex h-full w-[460px] flex-col border-l bg-card/40 animate-slide-in-right"
       role="complementary"
       aria-label={t('detail.region.aria')}
       tabIndex={-1}
@@ -131,7 +133,9 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
         }
       }}
     >
-      <div className="titlebar-drag flex h-9 shrink-0 items-center justify-end border-b px-3">
+      {/* h-12 to align with main header + sidebar top — single continuous
+          border-b across the full window. */}
+      <div className="titlebar-drag flex h-12 shrink-0 items-center justify-end border-b px-3">
         <button
           onClick={onClose}
           aria-label={t('common.close')}
@@ -251,14 +255,21 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
                       }}
                       className={cn(
                         'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors',
+                        // Inactive chips drop the scenario color on both
+                        // the dot AND the text so the user can tell at a
+                        // glance which scenarios this skill is *actually*
+                        // in (vs. which are merely available to assign).
                         active
                           ? 'border-transparent bg-primary text-primary-foreground'
-                          : 'hover:bg-accent',
+                          : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                       )}
                     >
                       <span
-                        className="inline-block h-2 w-2 rounded-full"
-                        style={{ backgroundColor: sc.color ?? '#888' }}
+                        className={cn(
+                          'inline-block h-2 w-2 rounded-full',
+                          !active && 'bg-muted-foreground/30',
+                        )}
+                        style={active ? { backgroundColor: sc.color ?? '#888' } : undefined}
                       />
                       {sc.name}
                     </button>
@@ -280,6 +291,9 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               </span>
             </div>
             <div className="space-y-2">
+              {/* Canonical-first ordering comes from the backend
+                  (electron/ipc/skills.ts ORDER BY clause), so we render the
+                  array as-is — no client-side sort needed here. */}
               {skill.locations.map((loc) => (
                 <LocationRow
                   key={loc.id}

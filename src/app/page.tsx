@@ -1,27 +1,46 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search } from 'lucide-react';
+import { LayoutList, Columns3, Search, Sparkles } from 'lucide-react';
 import type { AppStats, Platform, Scenario, Skill, SkillFilter } from '@shared/types';
 import { api } from '@/lib/api';
-import { Sidebar, type WorkspaceView } from '@/components/sidebar';
+import { Sidebar, type SidebarView } from '@/components/sidebar';
 import { SkillList } from '@/components/skill-list';
 import { SkillDetail } from '@/components/skill-detail';
 import { ScenarioForm } from '@/components/scenario-form';
 import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView, ModeSegmented, type SearchMode } from '@/components/discover-view';
 import { LibraryMapView } from '@/components/library-map-view';
+import { KanbanView } from '@/components/kanban-view';
 import { OnboardingWizard } from '@/components/onboarding';
 import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
+import { HistoryView } from '@/components/history-view';
+import { ScenariosView } from '@/components/scenarios-view';
 import { Toast } from '@/components/ui/toast';
 import { useT } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
+
+/**
+ * The Library section has three sub-views, picked via the sub-toolbar above
+ * the content area. They are PEERS, not a nav hierarchy:
+ *   - list:    the daily-driver flat table
+ *   - kanban:  user-curated grouping (scenarios as columns)
+ *   - ai-lens: AI-generated clustering (read-only commentary on the library)
+ *
+ * The sub-toolbar is only meaningful when filter is at default. As soon as
+ * the user picks a scope/scenario/platform, libraryView is forced back to
+ * 'list' for that filtered slice — the alternative groupings don't help
+ * when you've already narrowed to a subset.
+ */
+type LibraryView = 'list' | 'kanban' | 'ai-lens';
 
 export default function Workspace() {
   const t = useT();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
-  const [view, setView] = useState<WorkspaceView>('matrix');
+  const [sidebarView, setSidebarView] = useState<SidebarView>('matrix');
+  const [libraryView, setLibraryView] = useState<LibraryView>('list');
   const [filter, setFilter] = useState<SkillFilter>({ scope: 'all' });
   const [search, setSearch] = useState('');
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -36,29 +55,43 @@ export default function Workspace() {
   //   true  → completed previously, hide wizard
   //   false → first launch, show wizard
   const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
-  // Bulk-categorize is only enabled when an LLM key is present. Read at
-  // bridge-ready time and refreshed after the dialog applies (in case user
-  // changes settings or the apply flow created scenarios).
+  // Bulk-categorize is only enabled when an LLM key is present.
   const [llmConfigured, setLlmConfigured] = useState(false);
   const [bulkCatOpen, setBulkCatOpen] = useState(false);
-  // Discover mode lives at the workspace level so the Keyword/AI toggle
-  // can render in the page header next to the search input (grouped with
-  // the search affordance instead of buried in the status row).
   const [discoverMode, setDiscoverMode] = useState<SearchMode>('keyword');
-  // Whether AI search is usable: API key stored AND search feature enabled.
-  // Used to disable the AI tab in the header toggle.
   const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
 
   const reqIdRef = useRef(0);
+
+  // Filter is "at default" when nothing's been narrowed — all scope + no
+  // scenario + no platform. The sub-toolbar only renders in this state; any
+  // narrowing forces the user into the list (kanban/lens don't help slices).
+  const isFilterDefault = useMemo(
+    () =>
+      (filter.scope ?? 'all') === 'all' &&
+      filter.scenarioId == null &&
+      (filter.platforms?.length ?? 0) === 0,
+    [filter],
+  );
+
+  // What the library currently renders. Falls back to list when filter is
+  // narrowed, regardless of what the user previously picked in the toolbar.
+  const effectiveLibraryView: LibraryView = isFilterDefault ? libraryView : 'list';
 
   const effectiveFilter = useMemo<SkillFilter>(
     () => ({ ...filter, search: search.trim() || undefined }),
     [filter, search],
   );
 
+  // Skills fetch covers both list and kanban (both consume the flat list and
+  // present it differently). Matrix fetches its own data via CoverageView;
+  // ai-lens fetches the overview snapshot via LibraryMapView.
+  const needsSkillsFetch =
+    sidebarView === 'library' && effectiveLibraryView !== 'ai-lens';
+
   const refreshSkills = useCallback(async () => {
     if (!bridgeReady) return;
-    if (view !== 'list') return; // matrix view fetches its own data
+    if (!needsSkillsFetch) return;
     const myReq = ++reqIdRef.current;
     setSkillsLoading(true);
     try {
@@ -70,7 +103,7 @@ export default function Workspace() {
     } finally {
       if (reqIdRef.current === myReq) setSkillsLoading(false);
     }
-  }, [bridgeReady, effectiveFilter, view]);
+  }, [bridgeReady, effectiveFilter, needsSkillsFetch]);
 
   const refreshMeta = useCallback(async () => {
     if (!bridgeReady) return;
@@ -108,11 +141,6 @@ export default function Workspace() {
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
 
-  // Check LLM availability for two consumers:
-  //   - bulk-categorize CTA (requires any LLM key configured)
-  //   - Discover AI mode (requires key AND the AI-search feature toggle)
-  // Single round trip on bridge-ready; both consumers read different
-  // booleans off the same fetch.
   useEffect(() => {
     if (!bridgeReady) return;
     let cancelled = false;
@@ -130,8 +158,6 @@ export default function Workspace() {
     };
   }, [bridgeReady]);
 
-  // Resolve onboarding completion on first render. Re-resolves whenever the
-  // bridge becomes ready (e.g. window restart after a settings reset).
   useEffect(() => {
     if (!bridgeReady) return;
     let cancelled = false;
@@ -141,8 +167,6 @@ export default function Workspace() {
         if (!cancelled) setOnboardingDone(v != null && v !== '');
       })
       .catch(() => {
-        // If we can't tell, assume done — never block the workspace on a
-        // setting read failure.
         if (!cancelled) setOnboardingDone(true);
       });
     return () => {
@@ -179,46 +203,61 @@ export default function Workspace() {
   }, [scanning]);
 
   function showToast(msg: string) {
-    // Toast component owns its own auto-dismiss (with pause-on-hover).
-    // Setting a new message resets the timer via the keyed useEffect.
     setToast(msg);
   }
 
-  const headerTitle =
-    view === 'matrix'
-      ? t('header.coverage')
-      : view === 'discover'
-      ? t('header.discover')
-      : view === 'map'
-      ? t('header.map')
-      : titleForListFilter(filter, platforms, scenarios, t);
+  // Header title resolves through (sidebarView, libraryView) rather than the
+  // old flat WorkspaceView. AI Lens replaces the old 'map' title; the i18n
+  // key was already renamed.
+  const headerTitle = (() => {
+    if (sidebarView === 'matrix') return t('header.coverage');
+    if (sidebarView === 'discover') return t('header.discover');
+    if (sidebarView === 'history') return t('header.history');
+    if (sidebarView === 'scenarios') return t('header.scenarios');
+    if (effectiveLibraryView === 'ai-lens') return t('header.aiLens');
+    if (effectiveLibraryView === 'kanban') return t('header.kanban');
+    return titleForListFilter(filter, platforms, scenarios, t);
+  })();
 
   const searchPlaceholder =
-    view === 'matrix'
+    sidebarView === 'matrix'
       ? t('app.search.matrix.placeholder')
-      : view === 'discover'
+      : sidebarView === 'discover'
       ? t('app.search.discover.placeholder')
       : t('app.search.placeholder');
+
+  // Search input is hidden on views that have nothing to filter from it:
+  //   - AI Lens has its own regenerate affordance, no list
+  //   - History entries / Scenarios aren't skills, so the global search
+  //     (wired to api.skills.list) doesn't apply
+  const showSearchInput =
+    sidebarView !== 'history' &&
+    sidebarView !== 'scenarios' &&
+    !(sidebarView === 'library' && effectiveLibraryView === 'ai-lens');
+
+  // Sub-toolbar — Library only, and only when filter is at default.
+  const showSubToolbar = sidebarView === 'library' && isFilterDefault;
 
   return (
     <main className="flex h-screen w-screen overflow-hidden">
       <Sidebar
-        view={view}
+        view={sidebarView}
+        onSelectAllSkills={() => {
+          setSidebarView('library');
+          setFilter({ scope: 'all' });
+          setSelectedId(null);
+        }}
         onSelectCoverage={() => {
-          setView('matrix');
+          setSidebarView('matrix');
           setSelectedId(null);
         }}
         onSelectDiscover={() => {
-          setView('discover');
-          setSelectedId(null);
-        }}
-        onSelectMap={() => {
-          setView('map');
+          setSidebarView('discover');
           setSelectedId(null);
         }}
         filter={filter}
         onFilterChange={(f) => {
-          setView('list');
+          setSidebarView('library');
           setFilter(f);
           setSelectedId(null);
         }}
@@ -226,26 +265,39 @@ export default function Workspace() {
         scenarios={scenarios}
         stats={stats}
         onCreateScenario={() => setScenarioFormOpen(true)}
+        onSelectScenarios={() => {
+          setSidebarView('scenarios');
+          setSelectedId(null);
+        }}
+        onSelectHistory={() => {
+          setSidebarView('history');
+          setSelectedId(null);
+        }}
         onRescan={runScan}
         scanning={scanning}
       />
 
-      <div className="flex flex-1 min-w-0 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Drag-region rule: the whole header is `-webkit-app-region: drag` so
+            the user can grab any empty space — title text, padding, gaps — to
+            move the window. Only the interactive cluster on the right opts
+            OUT via `titlebar-no-drag`. The earlier version wrapped the entire
+            inner row in no-drag, leaving only the 68px traffic-light spacer
+            draggable, which produced the "sometimes works" feeling. */}
         <header className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b pr-3">
           {/* Reserve room for macOS traffic lights */}
           <div className="w-[68px]" />
-          <div className="titlebar-no-drag flex flex-1 items-center gap-3">
-            <h1 className="text-sm font-semibold">{headerTitle}</h1>
-            <div className="ml-auto flex items-center gap-2">
-              {view === 'discover' && (
-                <ModeSegmented
-                  mode={discoverMode}
-                  aiAvailable={aiSearchAvailable}
-                  queryReady={search.trim().length >= 2}
-                  onChange={setDiscoverMode}
-                />
-              )}
-              {view !== 'map' && (
+          <h1 className="text-sm font-semibold">{headerTitle}</h1>
+          <div className="titlebar-no-drag ml-auto flex items-center gap-2">
+            {sidebarView === 'discover' && (
+              <ModeSegmented
+                mode={discoverMode}
+                aiAvailable={aiSearchAvailable}
+                queryReady={search.trim().length >= 2}
+                onChange={setDiscoverMode}
+              />
+            )}
+            {showSearchInput && (
               <div className="relative w-[280px]">
                 <Search
                   className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
@@ -257,25 +309,37 @@ export default function Workspace() {
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={searchPlaceholder}
                   aria-label={searchPlaceholder}
-                  className="h-7 w-full rounded-md border bg-background pl-8 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                  className="h-7 w-full border bg-background pl-8 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                 />
                 {search && (
                   <button
                     type="button"
                     onClick={() => setSearch('')}
                     aria-label={t('common.clear')}
-                    className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span aria-hidden="true" className="text-[14px] leading-none">×</span>
                   </button>
                 )}
               </div>
-              )}
-            </div>
+            )}
           </div>
         </header>
 
-        {view === 'matrix' ? (
+        {showSubToolbar && (
+          <LibrarySubToolbar
+            value={libraryView}
+            onChange={(v) => {
+              setLibraryView(v);
+              setSelectedId(null);
+            }}
+            totalCount={stats?.totalSkills ?? 0}
+            scenarioCount={scenarios.length}
+            platformCount={platforms.length}
+          />
+        )}
+
+        {sidebarView === 'matrix' ? (
           <CoverageView
             outerFilter={effectiveFilter}
             onToast={showToast}
@@ -283,7 +347,7 @@ export default function Workspace() {
             selectedSkillId={selectedId}
             onMutated={refreshMeta}
           />
-        ) : view === 'discover' ? (
+        ) : sidebarView === 'discover' ? (
           <DiscoverView
             query={search}
             mode={discoverMode}
@@ -291,17 +355,31 @@ export default function Workspace() {
             aiAvailable={aiSearchAvailable}
             onToast={showToast}
           />
-        ) : view === 'map' ? (
+        ) : sidebarView === 'history' ? (
+          <HistoryView />
+        ) : sidebarView === 'scenarios' ? (
+          <ScenariosView onChanged={refreshMeta} />
+        ) : effectiveLibraryView === 'ai-lens' ? (
           <LibraryMapView
             onSelectSkill={setSelectedId}
             llmConfigured={llmConfigured}
+            onScenariosChanged={refreshMeta}
+            onToast={showToast}
+          />
+        ) : effectiveLibraryView === 'kanban' ? (
+          <KanbanView
+            skills={skills}
+            scenarios={scenarios}
+            loading={skillsLoading}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onOpenAiLens={() => setLibraryView('ai-lens')}
           />
         ) : (
           <>
             {/* Bulk-categorize CTA — only shows on the 未分类 view, when
                 LLM is configured, and when there's at least one skill to
-                categorize. Disabled states use a muted bar with a hint
-                instead of a button to keep the affordance discoverable. */}
+                categorize. */}
             {filter.scope === 'unscenarized' && (
               <BulkCatBanner
                 count={skills.length}
@@ -351,9 +429,6 @@ export default function Workspace() {
         <OnboardingWizard
           onDone={() => {
             setOnboardingDone(true);
-            // Re-pull platforms/scenarios/stats — wizard may have enabled
-            // platforms or changed the canonical, so the workspace needs
-            // to re-render with the new context.
             refreshMeta();
           }}
         />
@@ -376,6 +451,62 @@ export default function Workspace() {
         }}
       />
     </main>
+  );
+}
+
+/**
+ * Three-way library sub-view switcher. Only renders when the user is in the
+ * Library section and the filter is at default. Mirrors the redesign's
+ * 看板/列表 segmented control, extended with AI Lens as a third peer.
+ */
+function LibrarySubToolbar({
+  value,
+  onChange,
+  totalCount,
+  scenarioCount,
+  platformCount,
+}: {
+  value: LibraryView;
+  onChange: (v: LibraryView) => void;
+  totalCount: number;
+  scenarioCount: number;
+  platformCount: number;
+}) {
+  const t = useT();
+  const items: { id: LibraryView; label: string; icon: React.ReactNode }[] = [
+    { id: 'list', label: t('libraryView.list'), icon: <LayoutList className="h-3.5 w-3.5" /> },
+    { id: 'kanban', label: t('libraryView.kanban'), icon: <Columns3 className="h-3.5 w-3.5" /> },
+    { id: 'ai-lens', label: t('libraryView.aiLens'), icon: <Sparkles className="h-3.5 w-3.5" /> },
+  ];
+  return (
+    <div className="flex shrink-0 items-center gap-1.5 px-6 pt-3">
+      <div className="flex items-center gap-0.5 bg-secondary p-0.5">
+        {items.map((it) => (
+          <button
+            key={it.id}
+            type="button"
+            onClick={() => onChange(it.id)}
+            className={cn(
+              'inline-flex h-6 items-center gap-1 whitespace-nowrap px-2.5 text-[11.5px] transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              value === it.id
+                ? 'bg-card text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {it.icon}
+            {it.label}
+          </button>
+        ))}
+      </div>
+      <div className="ml-2 whitespace-nowrap text-[11.5px] text-muted-foreground">
+        {t('libraryView.summary', {
+          skills: totalCount,
+          platforms: platformCount,
+          scenarios: scenarioCount,
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -417,11 +548,9 @@ function BulkCatBanner({
           {t('bulkCat.helper')}
         </p>
       </div>
-      {/* Solid violet button so the CTA reads unambiguously as actionable.
-          The earlier text-only link form blended with the helper copy. */}
       <button
         onClick={onClick}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-violet-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1"
+        className="inline-flex shrink-0 items-center gap-1.5 bg-violet-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1"
       >
         ✨ {t('bulkCat.cta', { count })}
       </button>

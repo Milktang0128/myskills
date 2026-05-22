@@ -38,6 +38,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { getDb } from '../db';
 import { listPlatforms } from '../scanner/platforms';
 import { scanAll } from '../scanner';
@@ -50,11 +51,18 @@ import type {
 } from '../../shared/types';
 
 const PLAN_TTL_MS = 5 * 60 * 1000;
+// G2/P2-5: hard cap on in-memory plan store. Each plan carries its full item
+// list, so a compromised (or buggy) renderer that hammers sync:plan could
+// inflate memory unbounded. evictExpired only removes TTL-expired plans; the
+// LRU eviction guards the steady-state size.
+const MAX_PLAN_STORE = 50;
 
 interface StoredPlan {
   plan: SyncPlan;
   expiresAt: number;
 }
+// Map iteration order is insertion order in JS — finalizePlan inserts at the
+// end, so the FIRST entries via Map.keys() are the oldest by insertion time.
 const PLAN_STORE = new Map<string, StoredPlan>();
 
 let executeInFlight = false;
@@ -286,6 +294,45 @@ export function planInstallFromStaging(args: PlanInstallArgs): SyncPlan {
     mtime: null,
   };
 
+  // Plan-time check: reject any staging tree that contains internal symlinks.
+  // Today install.ts only writes a single SKILL.md so this is preventive — but
+  // any future code path (tarball install, multi-file install, recursive
+  // catalog) that hands us a synthetic source tree gets this defense for free.
+  // The check is at the executor too (defense in depth), but surfacing here
+  // means the user sees the conflict in the confirm dialog instead of at apply.
+  try {
+    const symlinkAt = findFirstSymlinkInTree(args.stagingDir);
+    if (symlinkAt) {
+      items.push(placeholderItem({
+        skill,
+        sourcePlatformId: 'staging',
+        targetPlatformId: canonical,
+        targetPath: '',
+        action: 'conflict',
+        reason: 'source_has_symlink',
+        opGroupId,
+        sourceLocationId: -1,
+        sourceRealPath: symlinkAt,
+      }));
+      return finalizePlan(items, 'promote_to_canonical');
+    }
+  } catch (err) {
+    // Tree was too big / too deep to walk safely — treat as a conflict.
+    items.push(placeholderItem({
+      skill,
+      sourcePlatformId: 'staging',
+      targetPlatformId: canonical,
+      targetPath: '',
+      action: 'conflict',
+      reason: 'source_has_symlink',
+      opGroupId,
+      sourceLocationId: -1,
+      sourceRealPath: args.stagingDir,
+    }));
+    void err;
+    return finalizePlan(items, 'promote_to_canonical');
+  }
+
   // Step 1: copy staging → canonical.
   const copyItem = buildItem({
     skill,
@@ -463,35 +510,48 @@ function buildItem(args: BuildArgs): SyncPlanItem {
     });
   }
 
-  // 1) Pin source identity at plan time.
-  let srcStat: fs.Stats;
-  try {
-    srcStat = fs.statSync(sourceLoc.real_path);
-  } catch (err) {
-    return placeholderItem({
-      skill,
-      sourcePlatformId,
-      targetPlatformId,
-      targetPath: '',
-      action: 'conflict',
-      reason: 'unreadable',
-      opGroupId,
-      sourceLocationId: sourceLoc.id,
-      sourceRealPath: sourceLoc.real_path,
-    });
-  }
-  if (!srcStat.isDirectory()) {
-    return placeholderItem({
-      skill,
-      sourcePlatformId,
-      targetPlatformId,
-      targetPath: '',
-      action: 'conflict',
-      reason: 'source_outside_roots',
-      opGroupId,
-      sourceLocationId: sourceLoc.id,
-      sourceRealPath: sourceLoc.real_path,
-    });
+  // Synthetic source sentinel — sourceLoc.id < 0 means "this source path
+  // will be produced by an earlier step in the same opGroup" (promote step
+  // 2+: canonical path that step 1's copy_to_canonical will create; install
+  // step 2+: same pattern). The path can't be stat-ed at plan time, but
+  // that's OK: the executor aborts the whole group if step 1 fails, and
+  // the dev=0/ino=0 sentinel on the emitted item tells the executor to
+  // skip the TOCTOU dev+ino check at execute time. Without this branch,
+  // buildItem naively statSync'd the future path and surfaced a spurious
+  // `unreadable` conflict in the confirm dialog.
+  const isSyntheticSource = sourceLoc.id < 0;
+
+  // 1) Pin source identity at plan time (real sources only).
+  let srcStat: fs.Stats | null = null;
+  if (!isSyntheticSource) {
+    try {
+      srcStat = fs.statSync(sourceLoc.real_path);
+    } catch (err) {
+      return placeholderItem({
+        skill,
+        sourcePlatformId,
+        targetPlatformId,
+        targetPath: '',
+        action: 'conflict',
+        reason: 'unreadable',
+        opGroupId,
+        sourceLocationId: sourceLoc.id,
+        sourceRealPath: sourceLoc.real_path,
+      });
+    }
+    if (!srcStat.isDirectory()) {
+      return placeholderItem({
+        skill,
+        sourcePlatformId,
+        targetPlatformId,
+        targetPath: '',
+        action: 'conflict',
+        reason: 'source_outside_roots',
+        opGroupId,
+        sourceLocationId: sourceLoc.id,
+        sourceRealPath: sourceLoc.real_path,
+      });
+    }
   }
 
   // 2) Derive a safe target basename from the actual source directory.
@@ -528,6 +588,39 @@ function buildItem(args: BuildArgs): SyncPlanItem {
     });
   }
 
+  // 3.5) Case-insensitive collision check.
+  //
+  // macOS APFS (default config) is case-preserving but case-insensitive: if
+  // `<dir>/MySkill` exists and we try to mkdir/rename `<dir>/myskill`, the
+  // OS treats them as the same inode and either no-ops or silently
+  // overwrites. The scanner sees the existing entry under its real
+  // (case-preserved) name, so it never matches the new lowercased name in
+  // `targetLoc` lookups → classifyTarget returns `symlink_create` → the
+  // executor walks straight into the silent clobber. We readdir at plan
+  // time and refuse if any entry would collide case-insensitively.
+  try {
+    const siblings = fs.readdirSync(targetPlatformDir);
+    const targetLower = rawBasename.toLowerCase();
+    for (const sib of siblings) {
+      if (sib !== rawBasename && sib.toLowerCase() === targetLower) {
+        return placeholderItem({
+          skill,
+          sourcePlatformId,
+          targetPlatformId,
+          targetPath,
+          action: 'conflict',
+          reason: 'case_collision',
+          opGroupId,
+          sourceLocationId: sourceLoc.id,
+          sourceRealPath: sourceLoc.real_path,
+          targetBasename: rawBasename,
+        });
+      }
+    }
+  } catch {
+    /* targetPlatformDir might not exist yet — mkdirSync will create it. */
+  }
+
   // 4) Classify current target state.
   const action: SyncPlanItem['action'] = overrideAction ?? classifyTarget(
     targetPath,
@@ -548,8 +641,10 @@ function buildItem(args: BuildArgs): SyncPlanItem {
     sourcePlatformId,
     sourceLocationId: sourceLoc.id,
     sourceRealPath: sourceLoc.real_path,
-    sourceDev: Number(srcStat.dev),
-    sourceIno: Number(srcStat.ino),
+    // dev/ino = 0/0 marks the synthetic-source case for the executor —
+    // see doSymlinkCreate (it skips the inode pin check in that case).
+    sourceDev: srcStat ? Number(srcStat.dev) : 0,
+    sourceIno: srcStat ? Number(srcStat.ino) : 0,
     sourceHash: sourceLoc.content_hash,
     targetPlatformId,
     targetPath,
@@ -650,6 +745,13 @@ function finalizePlan(items: SyncPlanItem[], op: SyncPlan['operation']): SyncPla
   };
   PLAN_STORE.set(token, { plan, expiresAt: plan.expiresAt });
   evictExpired();
+  // After TTL eviction, also enforce the hard size cap: evict the oldest
+  // entries (Map insertion order) until we're back under MAX_PLAN_STORE.
+  while (PLAN_STORE.size > MAX_PLAN_STORE) {
+    const oldestKey = PLAN_STORE.keys().next().value;
+    if (oldestKey === undefined) break;
+    PLAN_STORE.delete(oldestKey);
+  }
   return plan;
 }
 
@@ -674,12 +776,41 @@ function evictExpired(): void {
 
 async function doExecute(plan: SyncPlan): Promise<SyncExecuteResult> {
   const db = getDb();
-  const insertHistory = db.prepare(
+  // Pending-row pattern for crash safety.
+  // Before each FS op we INSERT a row marked '_pending_'. After the op completes
+  // (success or failure) we UPDATE the row with the outcome. If the process is
+  // killed between insert and update, the row stays pending; recoverPendingHistory
+  // (called at startup) marks abandoned rows as '_interrupted_' so they don't
+  // get confused with in-progress operations on the next launch. The previous
+  // post-op-only INSERT pattern lost the breadcrumb entirely if killed between
+  // FS rename and INSERT — backups would orphan forever.
+  //
+  // op_group_id persists the in-memory grouping (already used to abort a
+  // multi-step op when step 1 fails) so the rollback handler can later
+  // recover all FS steps that belong to one user-level action.
+  const insertPending = db.prepare(
     `INSERT INTO sync_history
-       (skill_id, action, from_path, to_path, platform_id, before_hash, after_hash,
-        backup_path, dry_run_plan, conflict_resolution, success, message, created_at,
-        installed_from_source, installed_from_skill_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (skill_id, action, from_path, to_path, platform_id,
+        before_hash, after_hash, backup_path,
+        dry_run_plan, conflict_resolution,
+        success, message, created_at,
+        installed_from_source, installed_from_skill_id, op_group_id)
+     VALUES (?, ?, ?, ?, ?,
+             NULL, NULL, NULL,
+             ?, ?,
+             0, '_pending_', ?,
+             ?, ?, ?)`,
+  );
+  const updateHistorySuccess = db.prepare(
+    `UPDATE sync_history
+     SET success = 1, message = NULL,
+         before_hash = ?, after_hash = ?, backup_path = ?
+     WHERE id = ?`,
+  );
+  const updateHistoryFailure = db.prepare(
+    `UPDATE sync_history
+     SET success = 0, message = ?
+     WHERE id = ?`,
   );
 
   const applied: SyncPlanItem[] = [];
@@ -708,45 +839,37 @@ async function doExecute(plan: SyncPlan): Promise<SyncExecuteResult> {
         skipped.push(item);
         continue;
       }
+      // Insert pending row BEFORE the FS op. If we crash mid-op, the row
+      // survives (marked '_pending_' until recoverPendingHistory at next boot
+      // bumps it to '_interrupted_'). We never UPDATE the constant columns
+      // (skill_id, action, paths) — they're written once at insert and the
+      // outcome-related columns get filled in by either update statement.
+      const pendingInsert = insertPending.run(
+        item.skillId,
+        item.action,
+        item.sourceRealPath,
+        item.targetPath,
+        item.targetPlatformId,
+        planJson,
+        item.action,
+        now,
+        item.installedFromSource ?? null,
+        item.installedFromSkillId ?? null,
+        item.opGroupId,
+      );
+      const historyId = Number(pendingInsert.lastInsertRowid);
       try {
         const outcome = doExecuteOne(item);
-        insertHistory.run(
-          item.skillId,
-          item.action,
-          item.sourceRealPath,
-          item.targetPath,
-          item.targetPlatformId,
+        updateHistorySuccess.run(
           outcome.beforeHash,
           outcome.afterHash,
           outcome.backupPath,
-          planJson,
-          item.action,
-          1,
-          null,
-          now,
-          item.installedFromSource ?? null,
-          item.installedFromSkillId ?? null,
+          historyId,
         );
         applied.push(item);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        insertHistory.run(
-          item.skillId,
-          item.action,
-          item.sourceRealPath,
-          item.targetPath,
-          item.targetPlatformId,
-          null,
-          null,
-          null,
-          planJson,
-          item.action,
-          0,
-          msg,
-          now,
-          item.installedFromSource ?? null,
-          item.installedFromSkillId ?? null,
-        );
+        updateHistoryFailure.run(msg, historyId);
         failed.push({ item, message: msg });
         groupAborted = true; // don't run later steps in the same op group
       }
@@ -794,6 +917,33 @@ function doSymlinkCreate(item: SyncPlanItem, allowReplace: boolean): ExecuteOutc
     throw new Error(`source is no longer a directory: ${sourceReal}`);
   }
 
+  // E3/P2-2: defend against in-place edits between plan and execute. The
+  // dev/ino pin above catches inode replacement (mv, cp -i), but an editor
+  // that opens-rewrites-saves keeps the same inode. Re-hash the source's
+  // SKILL.md and compare to the hash the planner recorded. If they differ,
+  // the plan was confirmed against content the user no longer has → throw
+  // so they re-plan and re-confirm with the current state.
+  if (item.sourceHash) {
+    try {
+      const currentHash = createHash('sha256')
+        .update(fs.readFileSync(path.join(sourceReal, 'SKILL.md')))
+        .digest('hex');
+      if (currentHash !== item.sourceHash) {
+        throw new Error(
+          `source content changed since plan was generated — re-plan and try again ` +
+            `(plan=${item.sourceHash.slice(0, 8)} current=${currentHash.slice(0, 8)})`,
+        );
+      }
+    } catch (err) {
+      // ENOENT (source SKILL.md gone) is itself a "source changed" condition.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        throw new Error('source SKILL.md disappeared since plan was generated — re-plan and try again');
+      }
+      throw err;
+    }
+  }
+
   // Re-check target containment against the platform root's current realpath.
   reAssertTargetInPlatformRoot(item);
 
@@ -805,8 +955,12 @@ function doSymlinkCreate(item: SyncPlanItem, allowReplace: boolean): ExecuteOutc
     const lstat = fs.lstatSync(item.targetPath);
     if (lstat.isSymbolicLink()) {
       if (isBrokenSymlink(item.targetPath)) {
-        // Dead symlink — safe to unlink without backup.
-        fs.unlinkSync(item.targetPath);
+        // Even a broken symlink is user data — it could be their last
+        // pointer to a temporarily-unavailable file (iCloud evicted,
+        // unmounted volume, etc.). Renaming a symlink entry is one inode
+        // op, so cost is nil. createBackup preserves the link verbatim
+        // and rollback can put it back.
+        backupPath = createBackup(item.targetPath, item.skillName, item.targetPlatformId);
       } else {
         const resolved = fs.realpathSync(item.targetPath);
         if (resolved === sourceReal) return { beforeHash: null, afterHash: null, backupPath: null };
@@ -819,6 +973,24 @@ function doSymlinkCreate(item: SyncPlanItem, allowReplace: boolean): ExecuteOutc
     }
   }
 
+  // E2/H5: if we just backed up a real directory, compute its SKILL.md hash
+  // from the backup so the history row carries a verifiable record of what
+  // was there pre-write. Rollback can later sanity-check the backup against
+  // this hash to catch silent corruption. (Backed-up symlinks have no
+  // SKILL.md to read — beforeHash stays null in that case.)
+  let beforeHash: string | null = null;
+  if (backupPath) {
+    try {
+      const backedUpSkillMd = path.join(backupPath, 'SKILL.md');
+      const st = fs.lstatSync(backedUpSkillMd);
+      if (st.isFile()) {
+        beforeHash = createHash('sha256').update(fs.readFileSync(backedUpSkillMd)).digest('hex');
+      }
+    } catch {
+      /* No SKILL.md in backup (symlink backup, missing file) — beforeHash stays null. */
+    }
+  }
+
   // Atomic create: temp link → rename.
   const tmpPath = `${item.targetPath}.myskills-tmp-${randomUUID()}`;
   fs.symlinkSync(sourceReal, tmpPath);
@@ -828,7 +1000,7 @@ function doSymlinkCreate(item: SyncPlanItem, allowReplace: boolean): ExecuteOutc
     try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
     throw err;
   }
-  return { beforeHash: null, afterHash: item.sourceHash, backupPath };
+  return { beforeHash, afterHash: item.sourceHash, backupPath };
 }
 
 function doCopyToCanonical(item: SyncPlanItem): ExecuteOutcome {
@@ -839,6 +1011,19 @@ function doCopyToCanonical(item: SyncPlanItem): ExecuteOutcome {
     throw new Error('source has changed since plan was generated — re-plan and try again');
   }
   if (!srcStat.isDirectory()) throw new Error(`source is not a directory`);
+
+  // Defense in depth — even if the planner missed it (or a future caller
+  // bypassed the planner), refuse to copy any tree containing internal
+  // symlinks. `cpSync({dereference:false})` would preserve them and a later
+  // sync step could be tricked into pointing canonical-derived symlinks at
+  // attacker-controlled targets outside the skills dir.
+  const symlinkAt = findFirstSymlinkInTree(sourceReal);
+  if (symlinkAt) {
+    throw new Error(
+      `refusing to copy: source tree contains a symbolic link at ${symlinkAt} — ` +
+        'materialize the tree without symlinks before retrying.',
+    );
+  }
 
   reAssertTargetInPlatformRoot(item);
 
@@ -865,7 +1050,13 @@ function doCopyToCanonical(item: SyncPlanItem): ExecuteOutcome {
       preserveTimestamps: true,
     });
     // Verify the copy's SKILL.md hash matches what the scanner recorded.
+    // lstat first — if SKILL.md is itself a symlink we refuse to follow it
+    // and hash some attacker-chosen file outside the staging tree.
     const copiedSkillMd = path.join(tmpPath, 'SKILL.md');
+    const skillMdStat = fs.lstatSync(copiedSkillMd);
+    if (skillMdStat.isSymbolicLink()) {
+      throw new Error('copied SKILL.md is a symlink — refusing to hash through it');
+    }
     const hash = createHash('sha256').update(fs.readFileSync(copiedSkillMd)).digest('hex');
     if (item.sourceHash && hash !== item.sourceHash) {
       throw new Error(`copy hash mismatch — got ${hash.slice(0, 8)} expected ${item.sourceHash.slice(0, 8)}`);
@@ -882,6 +1073,21 @@ function doCopyToCanonical(item: SyncPlanItem): ExecuteOutcome {
     }
     throw err;
   }
+
+  // G3/P2-6: strip com.apple.quarantine recursively from the new canonical
+  // copy. Skills downloaded via catalog install carry quarantine from the
+  // HTTP fetch; Gatekeeper then refuses to execute any helper scripts the
+  // skill bundles. ditto preserves the xattr through copy (a feature, in
+  // general), so we have to clear it explicitly. Best-effort — failure
+  // here is non-fatal (the skill content still works for the AI-prompt
+  // use case; only embedded scripts would be blocked).
+  try {
+    spawnSync('/usr/bin/xattr', ['-dr', 'com.apple.quarantine', item.targetPath], {
+      encoding: 'utf8',
+    });
+  } catch {
+    /* best-effort — no-op on failure */
+  }
   return { beforeHash: item.targetHash, afterHash: item.sourceHash, backupPath };
 }
 
@@ -894,8 +1100,27 @@ function reAssertTargetInPlatformRoot(item: SyncPlanItem): void {
   } catch {
     root = path.resolve(platform.skillsDir);
   }
-  if (!isInside(item.targetPath, root)) {
-    throw new Error(`target ${item.targetPath} is no longer inside platform root ${root}`);
+  // Resolve the target's PARENT dir via realpath, not just the platform root.
+  // The previous lexical check let an attacker (or a misbehaving sync
+  // elsewhere) win by symlinking, say, `<skillsDir>/sub` to a path outside
+  // root: `item.targetPath` would still start with `root` as a string, but
+  // the actual FS resolution would write outside. Realpath the parent and
+  // re-form the target so the containment check sees the real destination.
+  // (targetPath itself doesn't exist yet — we're about to create it — so we
+  // can only realpath the parent.)
+  const parentDir = path.dirname(item.targetPath);
+  let realParent: string;
+  try {
+    realParent = fs.realpathSync(parentDir);
+  } catch {
+    // Parent doesn't exist yet (mkdirSync runs later) — fall back to lexical.
+    realParent = path.resolve(parentDir);
+  }
+  const realTarget = path.join(realParent, path.basename(item.targetPath));
+  if (!isInside(realTarget, root)) {
+    throw new Error(
+      `target ${item.targetPath} resolves to ${realTarget}, which is outside platform root ${root}`,
+    );
   }
 }
 
@@ -916,12 +1141,101 @@ function realDirIndex(platforms: ReturnType<typeof listPlatforms>): Map<string, 
 }
 
 function isSafeBasename(name: string): boolean {
-  if (!name || name === '.' || name === '..') return false;
-  if (name.includes('/') || name.includes('\\') || name.includes('\0')) return false;
-  if (name.length > 240) return false;
+  if (!name) return false;
+  // E4/P2-10: normalize to NFC for the safety check (but the caller keeps
+  // the raw name for FS ops — APFS doesn't auto-normalize and we don't
+  // want to silently rename user files). Then reject:
+  //   - Any Unicode control / format / surrogate / private-use / unassigned
+  //     character (\p{C}). Catches null bytes, BiDi tricks, RTL overrides,
+  //     unassigned codepoints that may render differently across systems.
+  //   - Known-dangerous path-separator lookalikes:
+  //       U+FF0F FULLWIDTH SOLIDUS  — looks like `/` in many fonts
+  //       U+FE68 SMALL REVERSE SOLIDUS — looks like `\`
+  //   - Trailing dot or whitespace — APFS keeps them but Finder operations
+  //     strip them, producing hash-identity mismatches on re-scan.
+  const normalized = name.normalize('NFC');
+  if (/\p{C}/u.test(normalized)) return false;
+  if (/[／﹨]/.test(normalized)) return false;
+  if (normalized === '.' || normalized === '..') return false;
+  if (normalized.includes('/') || normalized.includes('\\') || normalized.includes('\0')) return false;
+  if (/[.\s]$/.test(normalized)) return false;
+  if (normalized.length > 240) return false;
   // Reject hidden names ('.something') — skills should never start with a dot.
-  if (name.startsWith('.')) return false;
+  if (normalized.startsWith('.')) return false;
   return true;
+}
+
+/**
+ * Walk a directory tree (lstat-only) and return the path of the first symbolic
+ * link encountered, or null if the tree is symlink-free. Used by callers that
+ * are about to `cpSync` a tree with `dereference: false` — a hostile symlink
+ * inside the source would be preserved as a link in the destination and later
+ * code (hash verify, scanner, sync to other platforms) could be tricked into
+ * dereferencing it.
+ *
+ * Capped at MAX_TREE_NODES nodes / MAX_TREE_DEPTH depth to defend against
+ * pathological inputs (a malicious tar with thousands of directories).
+ */
+const MAX_TREE_NODES = 5000;
+const MAX_TREE_DEPTH = 32;
+function findFirstSymlinkInTree(root: string): string | null {
+  const stack: Array<{ p: string; d: number }> = [{ p: root, d: 0 }];
+  let visited = 0;
+  while (stack.length > 0) {
+    const { p, d } = stack.pop()!;
+    if (++visited > MAX_TREE_NODES) {
+      throw new Error(`tree exceeds ${MAX_TREE_NODES} nodes — refusing to walk`);
+    }
+    if (d > MAX_TREE_DEPTH) {
+      throw new Error(`tree depth exceeds ${MAX_TREE_DEPTH} — refusing to walk`);
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(p, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(p, e.name);
+      // `withFileTypes` already gives us symlink info without following.
+      if (e.isSymbolicLink()) return full;
+      if (e.isDirectory()) stack.push({ p: full, d: d + 1 });
+    }
+  }
+  return null;
+}
+
+/**
+ * Find any sync_history rows that were left in the pending state by a previous
+ * launch that crashed mid-execute. Mark them '_interrupted_' so they're
+ * documented, never confused with in-progress writes on this launch, and
+ * surface clearly in the history view as failed-and-not-rollback-able.
+ *
+ * Pending rows older than GRACE_MS are considered abandoned. The grace
+ * period guards against a race where this function runs while a legitimate
+ * execute is still in flight (shouldn't happen — main.ts calls us before
+ * registerAllHandlers — but cheap belt-and-suspenders).
+ *
+ * NOTE: this only handles the DB-side breadcrumb. Backup files that were
+ * created but never linked to a successful row become orphans on disk; the
+ * backup retention sweep (G1) will clean them up after retention days.
+ */
+export function recoverPendingHistory(): void {
+  const GRACE_MS = 30_000;
+  const cutoff = Date.now() - GRACE_MS;
+  const db = getDb();
+  const result = db
+    .prepare(
+      `UPDATE sync_history
+       SET success = 0, message = '_interrupted_'
+       WHERE message = '_pending_' AND created_at <= ?`,
+    )
+    .run(cutoff);
+  if (result.changes > 0) {
+    console.error(
+      `[sync] recoverPendingHistory: marked ${result.changes} interrupted row(s) from previous launch`,
+    );
+  }
 }
 
 function isInside(child: string, parent: string): boolean {

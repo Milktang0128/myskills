@@ -25,8 +25,14 @@ import {
   AlertCircle,
   Loader2,
   Map as MapIcon,
+  Plus,
 } from 'lucide-react';
-import type { LibraryOverview, LibraryOverviewSnapshot, Skill } from '@shared/types';
+import type {
+  LibraryOverview,
+  LibraryOverviewCluster,
+  LibraryOverviewSnapshot,
+  Skill,
+} from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { api } from '@/lib/api';
@@ -43,9 +49,22 @@ interface Props {
   /** True if LLM key + search/categorize feature is configured. Drives the
    *  "AI required" gate so we don't pretend the button works. */
   llmConfigured: boolean;
+  /**
+   * Called after a cluster has been successfully converted into a scenario
+   * (or merged into an existing one). The workspace uses this to refresh
+   * sidebar scenario counts / colors.
+   */
+  onScenariosChanged: () => void;
+  /** Shared workspace toast — surfaces the "created N skills linked" message. */
+  onToast: (message: string) => void;
 }
 
-export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
+export function LibraryMapView({
+  onSelectSkill,
+  llmConfigured,
+  onScenariosChanged,
+  onToast,
+}: Props) {
   const t = useT();
   const { locale } = useI18n();
   const lang: 'zh' | 'en' = locale;
@@ -54,6 +73,49 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bridgeReady, setBridgeReady] = useState(false);
+  // Per-cluster in-flight state. Keyed by cluster.key (slug). Don't track
+  // "already converted" — regenerating the Map invalidates that boolean,
+  // and merging into an existing scenario is idempotent anyway.
+  const [converting, setConverting] = useState<Set<string>>(() => new Set());
+
+  const convertCluster = useCallback(
+    async (cluster: LibraryOverviewCluster) => {
+      // Optimistic: mark in-flight immediately so the button locks. We do
+      // NOT remove the cluster from the UI on success — the user might want
+      // to read the cluster's brief positions after converting.
+      setConverting((prev) => {
+        const next = new Set(prev);
+        next.add(cluster.key);
+        return next;
+      });
+      try {
+        const result = await api.scenarios.createFromCluster({
+          name: cluster.name,
+          skillIds: cluster.skills.map((s) => s.skillId),
+        });
+        const toastKey = result.created
+          ? 'map.cluster.created'
+          : 'map.cluster.merged';
+        onToast(
+          t(toastKey, {
+            name: cluster.name,
+            linked: result.skillsLinked,
+            skipped: result.skillsSkipped,
+          }),
+        );
+        onScenariosChanged();
+      } catch (err) {
+        onToast(t('map.cluster.failed', { message: messageOf(err) }));
+      } finally {
+        setConverting((prev) => {
+          const next = new Set(prev);
+          next.delete(cluster.key);
+          return next;
+        });
+      }
+    },
+    [onScenariosChanged, onToast, t],
+  );
 
   // Bridge readiness — same pattern as other views.
   useEffect(() => {
@@ -198,24 +260,50 @@ export function LibraryMapView({ onSelectSkill, llmConfigured }: Props) {
 
           {/* Clusters */}
           <div className="space-y-5">
-            {overview.clusters.map((c) => (
-              <section key={c.key} className="rounded-lg border bg-card p-4">
-                <header className="mb-2 flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">{c.name}</h2>
-                  <span className="text-[11px] text-muted-foreground">
-                    {t('map.cluster.count', { count: c.skills.length })}
-                  </span>
-                </header>
-                {c.purpose && (
-                  <p className="mb-3 text-xs text-muted-foreground">{c.purpose}</p>
-                )}
-                <ul className="space-y-1">
-                  {c.skills.map((s) => (
-                    <SkillRow key={s.skillId} entry={s} onClick={() => onSelectSkill(s.skillId)} />
-                  ))}
-                </ul>
-              </section>
-            ))}
+            {overview.clusters.map((c) => {
+              const isConverting = converting.has(c.key);
+              return (
+                <section key={c.key} className="rounded-lg border bg-card p-4">
+                  <header className="mb-2 flex items-center gap-2">
+                    <h2 className="text-sm font-semibold">{c.name}</h2>
+                    <span className="text-[11px] text-muted-foreground">
+                      {t('map.cluster.count', { count: c.skills.length })}
+                    </span>
+                    {/* AI Lens's sole write entry. Outline button keeps it
+                        visually quieter than a primary action (this is still
+                        a "lens" view, after all), but visible enough that
+                        users find it on their second look. */}
+                    <button
+                      type="button"
+                      onClick={() => convertCluster(c)}
+                      disabled={isConverting || c.skills.length === 0}
+                      title={t('map.cluster.convert.title')}
+                      className="ml-auto inline-flex h-6 items-center gap-1 border border-input bg-background px-2 text-[11px] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                    >
+                      {isConverting ? (
+                        <>
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          {t('map.cluster.converting')}
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-3 w-3" />
+                          {t('map.cluster.convert')}
+                        </>
+                      )}
+                    </button>
+                  </header>
+                  {c.purpose && (
+                    <p className="mb-3 text-xs text-muted-foreground">{c.purpose}</p>
+                  )}
+                  <ul className="space-y-1">
+                    {c.skills.map((s) => (
+                      <SkillRow key={s.skillId} entry={s} onClick={() => onSelectSkill(s.skillId)} />
+                    ))}
+                  </ul>
+                </section>
+              );
+            })}
 
             {/* Uncategorized: shown as its own section ONLY if non-empty.
                 It's not a normal cluster — it's a "the AI didn't fit these"

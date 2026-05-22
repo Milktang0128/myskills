@@ -2,6 +2,7 @@ import { getDb, getDbPath } from '../db';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
 import type { AppStats } from '../../shared/types';
+import { cleanupOldBackups } from '../sync/backup-cleanup';
 
 export function registerSettingsHandlers(): void {
   registerHandler(IPC.settings.get, (_e, payload) => {
@@ -23,6 +24,17 @@ export function registerSettingsHandlers(): void {
   });
 
   registerHandler(IPC.settings.stats, () => stats());
+
+  registerHandler(IPC.settings.cleanupBackups, () => {
+    // Read the current retention setting (default 30 days). Caller doesn't
+    // pass it in — the user changed it in settings, so we always read the
+    // up-to-date value.
+    const row = getDb()
+      .prepare(`SELECT value FROM settings WHERE key = 'backup_retention_days'`)
+      .get() as { value: string } | undefined;
+    const days = row ? Number(row.value) : 30;
+    return cleanupOldBackups(days);
+  });
 }
 
 function stats(): AppStats {

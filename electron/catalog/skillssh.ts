@@ -14,6 +14,7 @@ import type {
   CatalogSearchResponse,
   CatalogSearchResult,
 } from '../../shared/types';
+import { isExternalNetworkAllowed } from '../secrets/network-gate';
 
 const USER_AGENT = 'MySkills/0.1 (+https://github.com/Milktang0128/myskills)';
 const SEARCH_BASE = 'https://skills.sh/api/search';
@@ -42,6 +43,15 @@ export async function searchCatalog(
   limit = 30,
   offset = 0,
 ): Promise<CatalogSearchResponse> {
+  // Master network toggle. Without this guard the catalog can leak queries
+  // to skills.sh even when the user set allow_external_network=0 — that
+  // toggle is supposed to keep MySkills fully offline.
+  if (!isExternalNetworkAllowed()) {
+    throw new CatalogError(
+      'EXTERNAL_NETWORK_DISABLED',
+      'External network is disabled in Settings. Enable "Allow external network" to use Discover.',
+    );
+  }
   const q = (query ?? '').trim();
   if (!q) {
     return { query: '', searchType: 'fuzzy', skills: [], count: 0, duration_ms: 0 };
@@ -104,6 +114,15 @@ export async function searchCatalog(
  * Throws `{ code: 'CONTENT_NOT_FOUND' }` if every candidate path 404s.
  */
 export async function fetchSkillContent(source: string, skillId: string): Promise<string> {
+  // Same master-toggle gate as searchCatalog — install-side path was previously
+  // unprotected, which broke the "fully offline" promise on the most data-
+  // sensitive operation (fetching remote SKILL.md before install).
+  if (!isExternalNetworkAllowed()) {
+    throw new CatalogError(
+      'EXTERNAL_NETWORK_DISABLED',
+      'External network is disabled in Settings — cannot fetch remote SKILL.md.',
+    );
+  }
   if (!isValidSource(source)) {
     throw new CatalogError('INVALID_INPUT', `bad source "${source}" — expected owner/repo`);
   }
@@ -158,6 +177,16 @@ export async function fetchSkillContent(source: string, skillId: string): Promis
  * ========================================================================== */
 
 async function getDefaultBranch(source: string): Promise<string> {
+  // Belt-and-suspenders gate. Both public callers (searchCatalog,
+  // fetchSkillContent) already check, but this function is exported via
+  // module scope and the cache pre-populates the result before any call —
+  // so a future code path that reuses it must not bypass the toggle.
+  if (!isExternalNetworkAllowed()) {
+    throw new CatalogError(
+      'EXTERNAL_NETWORK_DISABLED',
+      'External network is disabled in Settings.',
+    );
+  }
   const cached = defaultBranchCache.get(source);
   if (cached) return cached;
 
@@ -168,8 +197,10 @@ async function getDefaultBranch(source: string): Promise<string> {
       headers: { 'User-Agent': USER_AGENT, Accept: 'application/vnd.github+json' },
     });
   } catch (err) {
-    // Network problems — fall back to "main" rather than failing the whole
-    // install. The caller will throw CONTENT_NOT_FOUND if every path 404s.
+    // Transient network problems — fall back to "main" rather than failing
+    // the whole install. The caller will throw CONTENT_NOT_FOUND if every
+    // path 404s. Distinct from the 401/403/429 case below, which is a
+    // *signal from the server* that we should stop, not retry.
     const msg = err instanceof Error ? err.message : String(err);
     void msg;
     defaultBranchCache.set(source, 'main');
@@ -182,12 +213,26 @@ async function getDefaultBranch(source: string): Promise<string> {
       `GitHub repository "${source}" does not exist.`,
     );
   }
-  if (res.status === 429 || res.status === 403) {
-    // GitHub unauth rate limit is 60/hour. Fall back to "main".
-    defaultBranchCache.set(source, 'main');
-    return 'main';
+  // 401/403/429 = server is telling us "stop". Silently falling back to
+  // 'main' lets an attacker who controls a branch named main on an
+  // otherwise-default-other-branch repo win every install during a rate-
+  // limit window. Fail loudly so the install dialog tells the user to
+  // wait/authenticate instead of installing from an unverified branch.
+  if (res.status === 429) {
+    throw new CatalogError(
+      'CATALOG_RATE_LIMITED',
+      'GitHub rate-limited the request. Wait a few minutes and try again.',
+    );
+  }
+  if (res.status === 401 || res.status === 403) {
+    throw new CatalogError(
+      'CATALOG_UNAUTHORIZED',
+      `GitHub denied the request for "${source}" (HTTP ${res.status}). Likely rate-limit on unauthenticated calls.`,
+    );
   }
   if (!res.ok) {
+    // Other 5xx etc. — transient. Fall back to main, since these don't
+    // carry the "branch identity" risk that 401/403/429 do.
     defaultBranchCache.set(source, 'main');
     return 'main';
   }

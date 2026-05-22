@@ -24,6 +24,11 @@ export const zh: Dict = {
   // ── 侧边栏 ──────────────────────────────────────────────────────────────
   'sidebar.rescan': '重新扫描全部平台',
   'sidebar.scanning': '扫描中…',
+  // 扫描状态卡 —— 替换原先单调的描边按钮，现为白底卡片，含状态点 + 数量 + 黑药丸操作。
+  'sidebar.scanBanner.scanned': '已扫描',
+  'sidebar.scanBanner.scanning': '扫描中',
+  'sidebar.scanBanner.count': '{{count}} 项技能',
+  'sidebar.scanBanner.action': '重新扫描',
   'sidebar.section.library': '资源库',
   'sidebar.section.platforms': '平台',
   'sidebar.section.scenarios': '场景',
@@ -44,6 +49,21 @@ export const zh: Dict = {
   // ── 顶部标题 ────────────────────────────────────────────────────────────
   'header.coverage': '覆盖矩阵',
   'header.map': '技能地图',
+  'header.aiLens': 'AI 透视',
+  'header.kanban': '场景看板',
+  // 同步历史 / 场景管理 现在是工作区视图（和覆盖矩阵同级），不再是抽屉或独立路由。
+  'header.history': '同步历史',
+  'header.scenarios': '管理场景',
+  // 资源库子工具栏（内容区上方的三选一切换器）
+  'libraryView.list': '列表',
+  'libraryView.kanban': '场景看板',
+  'libraryView.aiLens': 'AI 透视',
+  'libraryView.summary': '{{skills}} 项技能 · {{platforms}} 个平台 · {{scenarios}} 个场景',
+  // 场景看板专用文案
+  'kanban.column.unscenarized': '未分类',
+  'kanban.empty.guidance.title': '你的技能还没有贴上场景标签',
+  'kanban.empty.guidance.body': '{{total}} 项技能里有 {{unscenarized}} 项还没归到任何场景。让 AI 透视先给你聚个簇，看到合适的簇可以一键转成正式场景。',
+  'kanban.empty.guidance.cta': '打开 AI 透视',
   'header.discover': '发现',
   'header.scenario': '场景',
   'header.platform': '平台',
@@ -77,15 +97,18 @@ export const zh: Dict = {
   'matrix.empty.guidance.settings.body': '把 Claude / Codex / OpenClaw 的技能目录告诉 MySkills，它会自动索引你已有的技能。',
   'matrix.empty.guidance.rescan.title': '重新扫描',
   'matrix.empty.guidance.rescan.body': '如果你刚刚手动添加了 SKILL.md 文件，点击侧边栏的「重新扫描」按钮。',
-  'matrix.action.promote': '提升',
+  // 「提升」是产品内部话术，用户看不出要干什么。「同步管理」既复用了
+  // 用户已经熟悉的"同步"动词，又通过"管理"暗示了点击后会进入计划-确认
+  // 对话框（不是直接执行）。tooltip 仍然保留机械描述。
+  'matrix.action.promote': '同步管理',
   'matrix.action.inSync': '已同步',
   'matrix.action.syncTotal': '同步 {{count}} 项',
   'matrix.action.replaceStale': '替换 {{count}} 个过期版本',
   'matrix.action.fillGap': '补齐 {{count}} 个缺口',
   'matrix.action.fillGaps': '补齐 {{count}} 个缺口',
   'matrix.action.syncTitle.stale': '{{count}} 个平台的内容已过期 — 将会先备份再替换为指向核心库的软链接',
-  'matrix.bulk.promote': '提升 {{count}} 个孤立项',
-  'matrix.bulk.promotePlural': '提升 {{count}} 个孤立项',
+  'matrix.bulk.promote': '一键同步管理 {{count}} 项',
+  'matrix.bulk.promotePlural': '一键同步管理 {{count}} 项',
   'matrix.bulk.promote.title': '把每个孤立项复制进核心库，并将原位置替换为软链接',
   'matrix.bulk.sync': '同步 {{count}} 项缺口/过期',
   'matrix.bulk.syncPlural': '同步 {{count}} 项缺口/过期',
@@ -356,6 +379,10 @@ export const zh: Dict = {
   'syncConfirm.summary.alreadyInSync': ' · {{count}} 项已同步',
   'syncConfirm.summary.needAttention': ' · {{count}} 项需要处理',
   'syncConfirm.timedOut': '同步超时 — 请查看 Application Support 中的日志。',
+  // 用户在按下确认前，应当知道这是安全可逆的操作。文案指向具体入口而非
+  // 抽象描述："同步历史"——左侧栏底部那个标签——这样比"操作可撤销"更有
+  // 操作性。
+  'syncConfirm.rollbackHint': '操作完成后可随时在左下角「同步历史」中撤销。',
   'syncConfirm.nothingToApply': '没有可应用的项',
   'syncConfirm.applyN.one': '应用 {{count}} 项写入',
   'syncConfirm.applyN.many': '应用 {{count}} 项写入',
@@ -373,6 +400,12 @@ export const zh: Dict = {
   'syncConfirm.reason.target_outside_root': '计算出的目标位于平台 skills_dir 之外 — 为安全起见已拒绝。',
   'syncConfirm.reason.source_outside_roots': '源路径在配置的技能根目录之外。',
   'syncConfirm.reason.source_changed_since_plan': '从计划到执行期间源发生了变化，请重新生成计划。',
+  'syncConfirm.reason.unreadable':
+    '源路径无法读取 — 可能在 iCloud 上还未下载，或者文件权限被拒绝。请先在 Finder 中下载/确认源目录，然后重新扫描再试。',
+  'syncConfirm.reason.source_has_symlink':
+    '源目录里含有软链接 — 出于安全考虑（防止数据外泄），MySkills 拒绝拷贝任何包含内部软链的目录。请先把源整理成纯文件树再重试。',
+  'syncConfirm.reason.case_collision':
+    '目标平台已有同名（仅大小写不同）的技能 — macOS APFS 不区分大小写，强行写入会静默覆盖现有目录。请先重命名其中一方再重试。',
 
   // ── 同步历史页 ──────────────────────────────────────────────────────────
   'history.title': '同步历史',
@@ -385,6 +418,8 @@ export const zh: Dict = {
   'history.col.actions': '',
   'history.rollback': '回滚',
   'history.rolledBack': '已回滚',
+  // 备份文件被清理（达到保留期、手动删除等）后该行就无法撤销了，UI 提示用。
+  'history.backupExpired': '备份已清理',
   'history.rollback.confirm': '回滚此次更改？',
   'history.rollback.success': '已回滚。',
   'history.rollback.failure': '回滚失败：{{message}}',
@@ -398,6 +433,20 @@ export const zh: Dict = {
   'history.result.fail': '失败',
   'history.backupPrefix': '备份 →',
   'history.rollback.confirmAction': '回滚针对 {{path}} 的 {{action}} 操作？',
+  // 撤销整批 = 单个 opGroup（一次用户动作展开成多步 FS）。逆序展开。
+  'history.rollback.batchConfirm': '撤销此批 {{count}} 步 FS 操作？将逆序还原。',
+  'history.rollback.batchSelectedConfirm':
+    '撤销选中的 {{count}} 个批次操作？将按时间从新到旧依次回滚。',
+  'history.rollback.batchSuccess': '已撤销 {{count}} 个批次。',
+  'history.rollback.batchPartialFail':
+    '已撤销 {{done}}/{{total}} 个批次，某批失败 — 已停止并保留状态，请检查后重试。',
+  // 多选 / 批量行动栏
+  'history.bulk.selectedN': '已选 {{count}} 项操作',
+  'history.bulk.rollback': '撤销选中',
+  'history.bulk.clear': '取消',
+  'history.bulk.selectRow': '选择此操作',
+  // 在 leader 行的 action 单元格里附加，告诉用户这一次撤销会展开为几步 FS 动作
+  'history.batchStepCount': '· {{count}} 步',
 
   // ── 设置页 ──────────────────────────────────────────────────────────────
   'settings.title': '设置',
@@ -481,6 +530,8 @@ export const zh: Dict = {
   'settings.scan.running': '扫描中…',
   'settings.backups.retentionDays': '保留天数',
   'settings.backups.cleanup': '立即清理旧备份',
+  'settings.backups.cleanupResult':
+    '已清理 {{deleted}} 个备份，释放 {{bytes}}；当前备份占用 {{remaining}}',
   'settings.danger.resetDb': '重置数据库',
   'settings.danger.resetDb.help': '清空所有行后从磁盘重新扫描。技能文件不会被改动；场景和标签会丢失。',
   'settings.danger.resetDb.confirm': '清空数据库的所有行？场景和标签会丢失，技能文件不受影响。',
@@ -635,7 +686,9 @@ export const zh: Dict = {
   'onboarding.llm.keyLabel': 'API key',
   'onboarding.llm.keyPlaceholder': 'sk-…',
   'onboarding.llm.skipBtn': '跳过 —— 以后再配置',
-  'onboarding.llm.save': '保存并继续',
+  // 仅持久化 + 测连接；推进到下一步由 footer 的"下一步/开始使用"独立按钮负责。
+  // 文案不能承诺它不做的"继续"。
+  'onboarding.llm.save': '保存',
   'onboarding.llm.saving': '保存中…',
   'onboarding.llm.testBtn': '测试连接',
   'onboarding.llm.testing': '正在测试连接…',
@@ -700,7 +753,17 @@ export const zh: Dict = {
   'map.regenerate.title': '上次于 {{when}} 用 {{model}} 生成。点击重新调用 AI。',
   'map.regenerating': '生成中…',
   'map.cluster.count': '{{count}} 个技能',
-  'map.uncategorized.heading': '未归类',
+  // "AI 未归类" 与场景看板的 "未分类" 列刻意区分：前者是"AI 没把这些技能塞进
+  // 任何聚簇"，后者是"用户还没给这些技能贴上场景标签"。两个概念不同所有者，
+  // 各自的标签也分开。
+  'map.uncategorized.heading': 'AI 未归类',
+  // AI 透视的唯一写入口 —— 把一个 AI 聚簇一键转成正式场景。
+  'map.cluster.convert': '转成场景',
+  'map.cluster.convert.title': '把这个簇里的所有技能创建/合并到一个同名场景',
+  'map.cluster.converting': '转换中…',
+  'map.cluster.created': '已创建场景"{{name}}" · 关联 {{linked}} 项技能',
+  'map.cluster.merged': '已合并到现有场景"{{name}}" · 新增 {{linked}} 项关联',
+  'map.cluster.failed': '转换失败：{{message}}',
   'map.uncategorized.body': 'AI 没能把这些技能稳妥地放进任何一个簇。通常意味着你的技能库比聚出来的几个主题更广。',
   'map.stale.message': '自从这份地图生成以来，你的技能库发生了变化。',
   'map.stale.refresh': '刷新地图',

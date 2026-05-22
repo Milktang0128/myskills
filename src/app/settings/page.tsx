@@ -439,9 +439,11 @@ export default function SettingsPage() {
                   disabled={!networkAllowed}
                   className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <option value="openai">{t('settings.ai.providerOpt.openai')}</option>
-                  <option value="anthropic">{t('settings.ai.providerOpt.anthropic')}</option>
+                  {/* Same order as the onboarding step — DeepSeek first as
+                      the recommended default. */}
                   <option value="deepseek">{t('settings.ai.providerOpt.deepseek')}</option>
+                  <option value="anthropic">{t('settings.ai.providerOpt.anthropic')}</option>
+                  <option value="openai">{t('settings.ai.providerOpt.openai')}</option>
                   <option value="openrouter">{t('settings.ai.providerOpt.openrouter')}</option>
                   <option value="ollama">{t('settings.ai.providerOpt.ollama')}</option>
                   <option value="custom">{t('settings.ai.providerOpt.custom')}</option>
@@ -820,6 +822,10 @@ export default function SettingsPage() {
 
           <Separator />
 
+          <BackupsSection />
+
+          <Separator />
+
           <section className="space-y-3">
             <h2 className="text-base font-semibold">{t('settings.stats.header')}</h2>
             {stats && (
@@ -856,6 +862,97 @@ function Stat({
       <div className={`text-base font-semibold tabular-nums ${tone === 'warn' ? 'text-amber-600' : ''}`}>{value}</div>
     </div>
   );
+}
+
+/**
+ * Backups: retention setting + on-demand cleanup. Wired to the cleanupBackups
+ * IPC handler. The retention setting itself uses the generic settings:set IPC
+ * so the value persists across launches and is read by the startup auto-sweep.
+ */
+function BackupsSection() {
+  const t = useT();
+  const [retentionDays, setRetentionDays] = useState<string>('30');
+  const [cleaning, setCleaning] = useState(false);
+  const [lastResult, setLastResult] = useState<{
+    deletedDirs: number;
+    deletedBytes: number;
+    nulledRows: number;
+    remainingBytes: number;
+  } | null>(null);
+
+  // Load the current setting on first mount (bridge-ready already by this section).
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.myskills) return;
+    api.settings
+      .get('backup_retention_days')
+      .then((v) => v && setRetentionDays(v))
+      .catch(() => {});
+  }, []);
+
+  const saveRetention = async (raw: string) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return;
+    setRetentionDays(String(Math.floor(n)));
+    await api.settings.set('backup_retention_days', String(Math.floor(n)));
+  };
+
+  const runCleanup = async () => {
+    setCleaning(true);
+    try {
+      const r = await api.settings.cleanupBackups();
+      setLastResult(r);
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  return (
+    <>
+      <Separator />
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold">{t('settings.section.backups')}</h2>
+        <div className="flex items-center gap-3">
+          <Label htmlFor="retention-days" className="shrink-0 text-sm">
+            {t('settings.backups.retentionDays')}
+          </Label>
+          <input
+            id="retention-days"
+            type="number"
+            min={0}
+            max={3650}
+            value={retentionDays}
+            onChange={(e) => setRetentionDays(e.target.value)}
+            onBlur={(e) => saveRetention(e.target.value)}
+            className="h-8 w-20 rounded-md border border-input bg-background px-2 text-sm"
+          />
+          <button
+            type="button"
+            onClick={runCleanup}
+            disabled={cleaning}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-sm transition-colors hover:bg-accent disabled:opacity-50"
+          >
+            {t('settings.backups.cleanup')}
+          </button>
+        </div>
+        {lastResult && (
+          <p className="text-xs text-muted-foreground">
+            {t('settings.backups.cleanupResult', {
+              deleted: lastResult.deletedDirs,
+              bytes: formatBytes(lastResult.deletedBytes),
+              remaining: formatBytes(lastResult.remainingBytes),
+            })}
+          </p>
+        )}
+      </section>
+    </>
+  );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 function ErrorIcon({ kind }: { kind: string }) {

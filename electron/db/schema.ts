@@ -99,10 +99,16 @@ CREATE TABLE IF NOT EXISTS sync_history (
   message                  TEXT,
   created_at               INTEGER NOT NULL,
   installed_from_source    TEXT,
-  installed_from_skill_id  TEXT
+  installed_from_skill_id  TEXT,
+  -- Identifies all FS actions that came from the same user-level operation
+  -- (e.g. one click of "Manage sync" expands into copy_to_canonical + N
+  -- symlink_replace, all sharing this id). Nullable for legacy rows written
+  -- before this column existed — those rows roll back as singletons.
+  op_group_id              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_history_skill ON sync_history(skill_id);
 CREATE INDEX IF NOT EXISTS idx_history_created ON sync_history(created_at);
+CREATE INDEX IF NOT EXISTS idx_history_op_group ON sync_history(op_group_id);
 
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,

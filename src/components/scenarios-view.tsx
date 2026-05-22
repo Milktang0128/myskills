@@ -1,8 +1,18 @@
 'use client';
 
+/**
+ * Scenarios management — workspace view (peer of CoverageView).
+ *
+ * Page-level header handles the title. Import/Export/New buttons sit in a
+ * sub-toolbar above the grid (mirroring the CoverageView filter row).
+ * Grid widens back to 3 columns at lg now that the view owns the full
+ * main area.
+ *
+ * onChanged fires whenever the scenarios list mutates, so the workspace
+ * can refresh sidebar counts.
+ */
 import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { ArrowLeft, Pencil, Plus, Trash2, Download, Upload } from 'lucide-react';
+import { Pencil, Plus, Trash2, Download, Upload } from 'lucide-react';
 import type { Scenario, ScenarioExport, ScenarioImportResult, Skill } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -13,7 +23,12 @@ import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
-export default function ScenariosPage() {
+interface Props {
+  /** Called whenever the scenarios list changes — workspace refreshes sidebar counts. */
+  onChanged: () => void;
+}
+
+export function ScenariosView({ onChanged }: Props) {
   const t = useT();
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [formOpen, setFormOpen] = useState(false);
@@ -25,9 +40,9 @@ export default function ScenariosPage() {
 
   const refresh = useCallback(async () => {
     setScenarios(await api.scenarios.list());
-  }, []);
+    onChanged();
+  }, [onChanged]);
 
-  // Reload installed skills whenever the selected scenario changes.
   const loadSelectedSkills = useCallback(async (scenarioId: number) => {
     setSkillsLoading(true);
     try {
@@ -106,39 +121,30 @@ export default function ScenariosPage() {
   };
 
   return (
-    <main className="flex h-screen w-screen flex-col overflow-hidden">
-      <header className="titlebar-drag flex h-12 shrink-0 items-center justify-between border-b pl-[88px] pr-4">
-        <div className="titlebar-no-drag flex items-center gap-2">
-          <Link
-            href="/"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
-            aria-label={t('scenarios.back')}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <h1 className="text-sm font-semibold">{t('scenarios.title')}</h1>
-        </div>
-        <div className="titlebar-no-drag flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleImport}>
-            <Upload className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.import')}
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.export')}
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => {
-              setEditing(null);
-              setFormOpen(true);
-            }}
-          >
-            <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.new')}
-          </Button>
-        </div>
-      </header>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Sub-toolbar: import / export / new. Mirrors CoverageView's filter row
+          position so the user finds primary actions in the same place across
+          views. */}
+      <div className="flex items-center gap-1.5 px-6 pb-3 pt-3">
+        <Button variant="outline" size="sm" onClick={handleImport}>
+          <Upload className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.import')}
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExport}>
+          <Download className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.export')}
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => {
+            setEditing(null);
+            setFormOpen(true);
+          }}
+        >
+          <Plus className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.new')}
+        </Button>
+      </div>
 
       {importResult && (
-        <div className="border-b bg-secondary/40 px-4 py-2 text-xs">
+        <div className="border-y bg-secondary/40 px-6 py-2 text-xs">
           {t('scenarios.import.summary.short', {
             created: importResult.scenariosCreated,
             merged: importResult.scenariosMerged,
@@ -175,32 +181,32 @@ export default function ScenariosPage() {
                   }
                 }}
                 className={cn(
-                  'cursor-pointer rounded-lg border bg-card p-4 transition-colors',
+                  'cursor-pointer border bg-card p-4 transition-colors',
                   'hover:border-foreground/20 hover:bg-accent/30',
                   isSelected && 'border-primary/60 bg-accent/40 ring-1 ring-primary/20',
                 )}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     <span
-                      className="inline-block h-3 w-3 rounded-full"
+                      className="inline-block h-3 w-3 shrink-0 rounded-full"
                       style={{ backgroundColor: sc.color ?? '#888' }}
                     />
-                    <h2 className="text-sm font-semibold">{sc.name}</h2>
+                    <h3 className="truncate text-sm font-semibold">{sc.name}</h3>
                     {sc.isBuiltin && (
-                      <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      <span className="shrink-0 bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         {t('scenarios.builtin')}
                       </span>
                     )}
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex shrink-0 gap-1">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setEditing(sc);
                         setFormOpen(true);
                       }}
-                      className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className="p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                       aria-label={t('scenarios.edit.aria')}
                     >
                       <Pencil className="h-3.5 w-3.5" />
@@ -211,7 +217,7 @@ export default function ScenariosPage() {
                           e.stopPropagation();
                           handleDelete(sc);
                         }}
-                        className="rounded p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        className="p-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                         aria-label={t('scenarios.delete.aria')}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -219,77 +225,83 @@ export default function ScenariosPage() {
                     )}
                   </div>
                 </div>
-                <p className="mt-1 font-mono text-[10px] text-muted-foreground">{sc.key}</p>
-                {sc.description && <p className="mt-2 text-xs text-muted-foreground">{sc.description}</p>}
-                <p className="mt-3 text-xs text-muted-foreground">{t('scenarios.skillCount', { count: sc.skillCount ?? 0 })}</p>
+                <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">{sc.key}</p>
+                {sc.description && (
+                  <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{sc.description}</p>
+                )}
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {t('scenarios.skillCount', { count: sc.skillCount ?? 0 })}
+                </p>
               </div>
             );
           })}
         </div>
 
-        {selectedId != null && (() => {
-          const sc = scenarios.find((s) => s.id === selectedId);
-          if (!sc) return null;
-          return (
-            <div className="border-t bg-secondary/20 px-6 py-6">
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="inline-block h-3 w-3 rounded-full"
-                      style={{ backgroundColor: sc.color ?? '#888' }}
-                    />
-                    <h2 className="text-base font-semibold">{sc.name}</h2>
+        {selectedId != null &&
+          (() => {
+            const sc = scenarios.find((s) => s.id === selectedId);
+            if (!sc) return null;
+            return (
+              <div className="border-t bg-secondary/20 px-6 py-6">
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="inline-block h-3 w-3 rounded-full"
+                        style={{ backgroundColor: sc.color ?? '#888' }}
+                      />
+                      <h3 className="text-base font-semibold">{sc.name}</h3>
+                    </div>
+                    {sc.description && (
+                      <p className="mt-1 text-xs text-muted-foreground">{sc.description}</p>
+                    )}
                   </div>
-                  {sc.description && (
-                    <p className="mt-1 text-xs text-muted-foreground">{sc.description}</p>
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setSelectedId(null)}
+                  >
+                    {t('scenarios.detail.close')}
+                  </button>
+                </div>
+
+                <section className="mb-6 space-y-2">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {t('scenarios.detail.skillsHeading', { count: selectedSkills.length })}
+                  </div>
+                  {skillsLoading ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t('scenarios.detail.skillsLoading')}
+                    </p>
+                  ) : selectedSkills.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      {t('scenarios.detail.skillsEmpty')}
+                    </p>
+                  ) : (
+                    <ul className="flex flex-wrap gap-1.5">
+                      {selectedSkills.map((s) => (
+                        <li
+                          key={s.id}
+                          className="bg-background px-2 py-1 text-xs"
+                          title={s.description ?? undefined}
+                        >
+                          {s.name}
+                        </li>
+                      ))}
+                    </ul>
                   )}
-                </div>
-                <button
-                  className="text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => setSelectedId(null)}
-                >
-                  {t('scenarios.detail.close')}
-                </button>
+                </section>
+
+                <ScenarioRecommendations
+                  scenario={sc}
+                  installedSkills={selectedSkills}
+                  onInstalled={() => {
+                    refresh();
+                    loadSelectedSkills(sc.id);
+                  }}
+                />
               </div>
-
-              <section className="mb-6 space-y-2">
-                <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {t('scenarios.detail.skillsHeading', { count: selectedSkills.length })}
-                </div>
-                {skillsLoading ? (
-                  <p className="text-xs text-muted-foreground">{t('scenarios.detail.skillsLoading')}</p>
-                ) : selectedSkills.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    {t('scenarios.detail.skillsEmpty')}
-                  </p>
-                ) : (
-                  <ul className="flex flex-wrap gap-1.5">
-                    {selectedSkills.map((s) => (
-                      <li
-                        key={s.id}
-                        className="rounded bg-background px-2 py-1 text-xs"
-                        title={s.description ?? undefined}
-                      >
-                        {s.name}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-
-              <ScenarioRecommendations
-                scenario={sc}
-                installedSkills={selectedSkills}
-                onInstalled={() => {
-                  // Refresh skill counts on the cards and the installed list.
-                  refresh();
-                  loadSelectedSkills(sc.id);
-                }}
-              />
-            </div>
-          );
-        })()}
+            );
+          })()}
       </ScrollArea>
 
       <ScenarioForm
@@ -298,7 +310,7 @@ export default function ScenariosPage() {
         scenario={editing}
         onSaved={refresh}
       />
-    </main>
+    </div>
   );
 }
 

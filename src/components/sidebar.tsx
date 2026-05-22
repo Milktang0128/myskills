@@ -13,28 +13,42 @@ import {
   History as HistoryIcon,
   Grid3x3,
   Globe,
-  Map as MapIcon,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
-import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { LangToggle } from '@/components/lang-toggle';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
-export type WorkspaceView = 'list' | 'matrix' | 'discover' | 'map';
+/**
+ * Sidebar selects the top-level section. The AI Lens (formerly "Skill map")
+ * is NOT here — it's a sub-view of Library, picked via the sub-toolbar.
+ *
+ * 'history' and 'scenarios' are peers of 'matrix' / 'discover' — they were
+ * once full routes, then drawers, and now they're plain workspace views
+ * that take over the main content area while the sidebar stays put. The
+ * footer rows highlight when their view is active.
+ *
+ * Splitting this from the library's own `'list' | 'kanban' | 'ai-lens'`
+ * sub-toggle keeps the navigation concerns clean: this component only
+ * decides which page-level surface is showing.
+ */
+export type SidebarView = 'library' | 'matrix' | 'discover' | 'history' | 'scenarios';
 
 interface Props {
-  view: WorkspaceView;
+  view: SidebarView;
+  onSelectAllSkills: () => void;
   onSelectCoverage: () => void;
   onSelectDiscover: () => void;
-  onSelectMap: () => void;
   filter: SkillFilter;
   onFilterChange: (f: SkillFilter) => void;
   platforms: Platform[];
   scenarios: Scenario[];
   stats: AppStats | null;
   onCreateScenario: () => void;
+  /** Switch the workspace to the Scenarios management view. */
+  onSelectScenarios: () => void;
+  /** Switch the workspace to the Sync history view. */
+  onSelectHistory: () => void;
   onRescan: () => void;
   scanning: boolean;
 }
@@ -49,15 +63,17 @@ interface ScopeItem {
 
 export function Sidebar({
   view,
+  onSelectAllSkills,
   onSelectCoverage,
   onSelectDiscover,
-  onSelectMap,
   filter,
   onFilterChange,
   platforms,
   scenarios,
   stats,
   onCreateScenario,
+  onSelectScenarios,
+  onSelectHistory,
   onRescan,
   scanning,
 }: Props) {
@@ -77,39 +93,78 @@ export function Sidebar({
     [stats, t],
   );
 
-  // Sidebar highlights are only meaningful in list view. In matrix view, only
-  // the "Coverage matrix" item is active; other rows return to grey.
-  const inList = view === 'list';
+  // Active states: a scope/scenario/platform row only highlights when we are
+  // in the Library section AND that specific filter is set. Coverage and
+  // Discover are pure sidebarView checks — no filter coupling.
+  const inLibrary = view === 'library';
 
   const isScopeActive = (scope: SkillScope) =>
-    inList &&
+    inLibrary &&
     (filter.scope ?? 'all') === scope &&
     (filter.platforms?.length ?? 0) === 0 &&
     filter.scenarioId == null;
 
   const isPlatformActive = (id: string) =>
-    inList && filter.platforms?.length === 1 && filter.platforms[0] === id && filter.scenarioId == null;
+    inLibrary && filter.platforms?.length === 1 && filter.platforms[0] === id && filter.scenarioId == null;
 
-  const isScenarioActive = (id: number) => inList && filter.scenarioId === id;
+  const isScenarioActive = (id: number) => inLibrary && filter.scenarioId === id;
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r bg-card/40">
-      <div className="titlebar-drag h-9 shrink-0 border-b" />
-      <div className="px-3 py-3 titlebar-no-drag">
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full justify-start gap-2"
+    // Canvas tier — sidebar sits on a slightly off-white tone in light mode so
+    // it reads distinct from the white main content area. In dark mode the
+    // sidebar and main area share the same canvas (#131316); contrast there
+    // comes from card elevation, not from the sidebar tone.
+    <aside className="flex h-full w-64 flex-col border-r bg-neutral-50/80 dark:bg-background">
+      {/* Top region — pure drag bar, same height as main header (h-12, 48px)
+          so the border-b lines up across the entire window. macOS traffic
+          lights live here; we deliberately keep this region empty so they
+          have visual breathing room. Status info lives below. */}
+      <div className="titlebar-drag h-12 shrink-0 border-b" />
+
+      {/* Scan status row — lives below the top bar, in the sidebar's regular
+          content flow. Ambient info (dot + count) on its own line; the small
+          refresh icon is the only interactive element. */}
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <span
+          className={cn(
+            'h-1.5 w-1.5 shrink-0 rounded-full',
+            scanning ? 'animate-pulse bg-amber-500' : 'bg-emerald-500',
+          )}
+        />
+        <span className="whitespace-nowrap text-[11.5px] text-muted-foreground">
+          {scanning ? t('sidebar.scanBanner.scanning') : t('sidebar.scanBanner.scanned')}
+        </span>
+        <span className="ml-auto whitespace-nowrap text-[11.5px] tabular-nums text-muted-foreground">
+          {t('sidebar.scanBanner.count', { count: stats?.totalSkills ?? 0 })}
+        </span>
+        <button
+          type="button"
           onClick={onRescan}
           disabled={scanning}
+          title={t('sidebar.scanBanner.action')}
+          aria-label={t('sidebar.scanBanner.action')}
+          className={cn(
+            'inline-flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground transition-colors',
+            'hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          )}
         >
-          <RefreshCw className={cn('h-3.5 w-3.5', scanning && 'animate-spin')} />
-          {scanning ? t('sidebar.scanning') : t('sidebar.rescan')}
-        </Button>
+          <RefreshCw className={cn('h-3 w-3', scanning && 'animate-spin')} />
+        </button>
       </div>
 
       <ScrollArea className="flex-1 px-2 scrollbar-thin">
         <Section title={t('sidebar.section.library')}>
+          {/* "All Skills" row enters the Library section with the default filter.
+              The actual list/kanban/ai-lens choice is made in the sub-toolbar. */}
+          <SidebarRow
+            active={isScopeActive('all')}
+            onClick={onSelectAllSkills}
+            icon={<Layers className="h-4 w-4" />}
+            count={stats?.totalSkills}
+          >
+            {t('sidebar.allSkills')}
+          </SidebarRow>
           <SidebarRow
             active={view === 'matrix'}
             onClick={onSelectCoverage}
@@ -118,31 +173,28 @@ export function Sidebar({
             {t('sidebar.coverage')}
           </SidebarRow>
           <SidebarRow
-            active={view === 'map'}
-            onClick={onSelectMap}
-            icon={<MapIcon className="h-4 w-4" />}
-          >
-            {t('sidebar.map')}
-          </SidebarRow>
-          <SidebarRow
             active={view === 'discover'}
             onClick={onSelectDiscover}
             icon={<Globe className="h-4 w-4" />}
           >
             {t('sidebar.discover')}
           </SidebarRow>
-          {scopes.map((s) => (
-            <SidebarRow
-              key={s.scope}
-              active={isScopeActive(s.scope)}
-              onClick={() => onFilterChange({ scope: s.scope })}
-              icon={s.icon}
-              tone={s.tone}
-              count={s.count}
-            >
-              {s.label}
-            </SidebarRow>
-          ))}
+          {/* Scope filters that don't fit kanban/lens — they always route
+              into list view (the sub-toolbar collapses when filter ≠ default). */}
+          {scopes
+            .filter((s) => s.scope !== 'all')
+            .map((s) => (
+              <SidebarRow
+                key={s.scope}
+                active={isScopeActive(s.scope)}
+                onClick={() => onFilterChange({ scope: s.scope })}
+                icon={s.icon}
+                tone={s.tone}
+                count={s.count}
+              >
+                {s.label}
+              </SidebarRow>
+            ))}
         </Section>
 
         <Section title={t('sidebar.section.platforms')}>
@@ -164,7 +216,7 @@ export function Sidebar({
           action={
             <button
               onClick={onCreateScenario}
-              className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               aria-label={t('sidebar.newScenario')}
             >
               <Plus className="h-3.5 w-3.5" />
@@ -174,7 +226,7 @@ export function Sidebar({
           {scenarios.length === 0 ? (
             <button
               onClick={onCreateScenario}
-              className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="block w-full px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
             >
               {t('sidebar.scenarios.empty')}
             </button>
@@ -194,31 +246,53 @@ export function Sidebar({
         </Section>
       </ScrollArea>
 
+      {/* Bottom utility row.
+          - Manage Scenarios + Sync History are peer workspace views: they
+            highlight active state like the top-level Library/Matrix/Discover
+            rows do.
+          - Settings keeps its own route — Settings is big enough that
+            inlining it into the workspace shell would crowd everything else;
+            full-page is the right home for it. */}
       <div className="space-y-px border-t p-2">
-        <Link
-          href="/scenarios"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        <button
+          type="button"
+          onClick={onSelectScenarios}
+          aria-pressed={view === 'scenarios'}
+          className={cn(
+            'flex w-full items-center gap-2 px-2 py-1.5 text-sm',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            view === 'scenarios'
+              ? 'bg-accent text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
         >
           <Layers className="h-4 w-4" />
           {t('sidebar.manageScenarios')}
-        </Link>
-        <Link
-          href="/history"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        </button>
+        <button
+          type="button"
+          onClick={onSelectHistory}
+          aria-pressed={view === 'history'}
+          className={cn(
+            'flex w-full items-center gap-2 px-2 py-1.5 text-sm',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            view === 'history'
+              ? 'bg-accent text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
         >
           <HistoryIcon className="h-4 w-4" />
           {t('sidebar.syncHistory')}
-        </Link>
+        </button>
         <Link
           href="/settings"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         >
           <SettingsIcon className="h-4 w-4" />
           {t('sidebar.settings')}
         </Link>
-        <div className="mt-1 flex items-center justify-end px-1 pt-1">
-          <LangToggle size="sm" />
-        </div>
+        {/* Language toggle lives only in Settings now — keeping it here too
+            doubled the affordance for a setting most users flip once. */}
       </div>
     </aside>
   );
@@ -271,7 +345,7 @@ function SidebarRow({
       aria-pressed={active}
       title={typeof children === 'string' ? children : undefined}
       className={cn(
-        'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm',
+        'group flex w-full items-center gap-2 px-2 py-1.5 text-sm',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
         active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60',
       )}

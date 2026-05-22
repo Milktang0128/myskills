@@ -394,11 +394,13 @@ function Table({
               key={p}
               className={cn(
                 'px-3 py-2 text-center font-medium',
-                // Canonical column gets a subtle left/right border instead of
-                // a saturated amber tint — Crown icon already says "canonical"
-                // and the row-level amber competed with warn states (broken,
-                // drift) for the user's attention.
-                p === matrix.canonicalPlatform && 'border-x border-amber-200/60 dark:border-amber-900/40',
+                // Canonical column: visible amber wash on the header + side
+                // rules. amber-50 (#fffbeb) is pale enough that it doesn't
+                // compete with the inner-cell state glyphs (broken/stale
+                // still read cleanly on top), but provides the column-wide
+                // identity the side-strokes-only version was missing.
+                p === matrix.canonicalPlatform &&
+                  'bg-amber-50 dark:bg-amber-900/25 border-x border-amber-200/80 dark:border-amber-800/40',
               )}
             >
               <div className="inline-flex items-center gap-1">
@@ -485,11 +487,23 @@ function Table({
                 return (
                   <td
                     key={p}
+                    // Cells are passive status indicators (display + hover
+                    // tooltip via CellGlyph's title attr). Don't propagate
+                    // clicks to the row — clicking on a glyph shouldn't
+                    // count as "I want to see this skill's detail". The
+                    // natural click target for that is the skill-name cell
+                    // on the left. cursor-default neutralizes the row-level
+                    // cursor-pointer so the visual matches the behavior.
+                    onClick={(e) => e.stopPropagation()}
                     className={cn(
-                      'px-3 py-2 text-center',
-                      // Match the header: subtle vertical rule instead of
-                      // a row-wide amber tint.
-                      p === matrix.canonicalPlatform && 'border-x border-amber-200/40 dark:border-amber-900/30',
+                      'cursor-default px-3 py-2 text-center',
+                      // Canonical column body: lighter amber wash than the
+                      // header so the eye still reads the header as "louder"
+                      // but every cell in the column is now visibly tied
+                      // back to it. Row hover/selected accents don't paint
+                      // <td>s, so this wash stays through interaction states.
+                      p === matrix.canonicalPlatform &&
+                        'bg-amber-50/60 dark:bg-amber-900/15 border-x border-amber-200/60 dark:border-amber-800/30',
                     )}
                   >
                     <CellGlyph

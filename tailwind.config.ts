@@ -45,14 +45,40 @@ const config: Config = {
           foreground: 'hsl(var(--card-foreground))',
         },
       },
+      // Right-angle geometry: every named radius is zero. Circles (rounded-full)
+      // and the literal rounded-none stay as Tailwind defaults so color dots,
+      // avatars, and explicit zero-radius callers keep working.
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        DEFAULT: '0',
+        sm: '0',
+        md: '0',
+        lg: '0',
+        xl: '0',
+        '2xl': '0',
+        '3xl': '0',
       },
+      // System font stack — we cannot use next/font with assetPrefix: './' (the
+      // Electron file:// loading requirement). SF Pro Text on macOS is the
+      // visual neighbour of Inter, PingFang SC handles CJK glyphs natively,
+      // and SF Mono covers the code-style needs.
       fontFamily: {
-        sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"Helvetica Neue"', 'sans-serif'],
-        mono: ['"SF Mono"', 'Menlo', 'monospace'],
+        sans: [
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"SF Pro Text"',
+          '"Helvetica Neue"',
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          'sans-serif',
+        ],
+        mono: [
+          'ui-monospace',
+          '"SF Mono"',
+          'Menlo',
+          'Monaco',
+          '"Cascadia Code"',
+          'monospace',
+        ],
       },
     },
   },

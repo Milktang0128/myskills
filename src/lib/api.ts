@@ -11,6 +11,8 @@ import type {
   CatalogPreview,
   CatalogSearchResponse,
   CoverageMatrix,
+  CreateFromClusterRequest,
+  CreateFromClusterResult,
   LibraryOverview,
   LibraryOverviewSnapshot,
   LlmChatRequest,
@@ -45,6 +47,20 @@ export interface SyncHistoryRow {
   success: number;
   message: string | null;
   created_at: number;
+  /**
+   * UUID shared by every FS step that came from the same user-level action.
+   * NULL on legacy rows written before the column existed — those render
+   * as singleton groups in the UI.
+   */
+  op_group_id: string | null;
+  /**
+   * Annotated by the IPC handler at query time: true when this row recorded
+   * a backup_path but the backup file no longer exists on disk (retention
+   * cleanup, manual deletion). The UI uses this to disable the Undo button
+   * for orphaned rows instead of failing at execute time with a confusing
+   * "backup not found" error.
+   */
+  backup_orphaned?: boolean;
 }
 
 interface BridgeApi {
@@ -106,16 +122,32 @@ export const api = {
     export: () => bridge().invoke(IPC.scenarios.export) as Promise<ScenarioExport>,
     import: (payload: ScenarioExport) =>
       bridge().invoke(IPC.scenarios.import, payload) as Promise<ScenarioImportResult>,
+    /**
+     * Convert an AI Lens cluster into a real scenario (or merge into an
+     * existing one with the same name). The renderer hands off the cluster
+     * name + skill ids; main runs the atomic insert + links.
+     */
+    createFromCluster: (req: CreateFromClusterRequest) =>
+      bridge().invoke(IPC.scenarios.createFromCluster, req) as Promise<CreateFromClusterResult>,
   },
   scan: {
     run: () => bridge().invoke(IPC.scan.run) as Promise<ScanResult>,
     lastResult: () => bridge().invoke(IPC.scan.lastResult) as Promise<ScanResult | null>,
   },
+  // Result shape mirrors electron/sync/backup-cleanup.ts BackupCleanupResult.
+  // Inlined here so the renderer doesn't have to import a backend module type.
   settings: {
     get: (key: string) => bridge().invoke(IPC.settings.get, { key }) as Promise<string | null>,
     set: (key: string, value: string) =>
       bridge().invoke(IPC.settings.set, { key, value }) as Promise<{ ok: true }>,
     stats: () => bridge().invoke(IPC.settings.stats) as Promise<AppStats>,
+    cleanupBackups: () =>
+      bridge().invoke(IPC.settings.cleanupBackups) as Promise<{
+        deletedDirs: number;
+        deletedBytes: number;
+        nulledRows: number;
+        remainingBytes: number;
+      }>,
   },
   coverage: {
     matrix: () => bridge().invoke(IPC.coverage.matrix) as Promise<CoverageMatrix>,

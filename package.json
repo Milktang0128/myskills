@@ -12,6 +12,7 @@
     "build": "next build && npm run build:electron",
     "build:electron": "tsc -p electron/tsconfig.json && node electron/build-preload.mjs",
     "package": "npm run build && electron-builder --mac",
+    "package:signed": "set -a && [ -f .env.local ] && . ./.env.local; set +a; npm run package",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -36,6 +37,7 @@
     "tailwind-merge": "^2.5.4"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@electron/rebuild": "^3.7.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.9.0",
@@ -54,7 +56,7 @@
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.myskills.app",
+    "appId": "com.kanbenzhi.myskills",
     "productName": "MySkills",
     "directories": {
       "output": "release"
@@ -64,11 +66,16 @@
       "out/**",
       "package.json"
     ],
+    "afterSign": "scripts/notarize.cjs",
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": [
         "dmg"
-      ]
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     }
   }
 }

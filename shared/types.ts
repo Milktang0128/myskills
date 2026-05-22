@@ -137,6 +137,36 @@ export interface ScenarioImportResult {
 }
 
 /**
+ * Request body for scenarios:createFromCluster — the AI Lens's sole write
+ * entry. The renderer derives `name` and `skillIds` from a
+ * LibraryOverviewCluster; color is optional (AI clusters don't carry a
+ * color, so the user-edits-later flow is the default).
+ */
+export interface CreateFromClusterRequest {
+  name: string;
+  skillIds: string[];
+  color?: string | null;
+}
+
+/**
+ * Response from scenarios:createFromCluster.
+ *   - `created`  true if a new scenario was inserted, false if the slug-key
+ *                already existed and we merged into it.
+ *   - `skillsLinked` is the count of *newly* added (skill, scenario) pairs.
+ *   - `skillsSkipped` covers two cases:
+ *       a) skill was already in the scenario (idempotent re-run)
+ *       b) skill id no longer exists (stale Map snapshot)
+ *     The UI treats both as "already covered" — toast just shows the linked
+ *     count and a quiet skipped count.
+ */
+export interface CreateFromClusterResult {
+  scenarioId: number;
+  created: boolean;
+  skillsLinked: number;
+  skillsSkipped: number;
+}
+
+/**
  * Per-platform cell in the coverage matrix.
  *
  *   missing        — skill not present on this platform
@@ -242,7 +272,24 @@ export type SyncConflictReason =
   | 'canonical_missing'
   | 'unsafe_target_name'
   | 'source_changed_since_plan'
-  | 'unreadable';
+  | 'unreadable'
+  /**
+   * Source tree contains a symbolic link. We refuse to copy any tree that
+   * has internal symlinks — they could point outside the staging/source
+   * area (data exfiltration in catalog installs; broken-link landmines in
+   * promote) and `fs.cpSync({dereference:false})` would preserve them as-is
+   * into the canonical platform. Caller must materialize the tree without
+   * symlinks before retrying.
+   */
+  | 'source_has_symlink'
+  /**
+   * Target platform dir already contains an entry whose name differs only
+   * in case (e.g. `MySkill` exists, planning `myskill`). macOS APFS is
+   * case-preserving but case-insensitive by default, so a naive symlink-
+   * create would case-fold onto the existing inode and clobber it without
+   * a backup. We refuse the plan instead.
+   */
+  | 'case_collision';
 
 export type SyncSkipReason = 'already_linked' | 'same_hash';
 

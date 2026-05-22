@@ -326,7 +326,7 @@ function loadSkillsForPrompt(ids: string[]): SkillForPrompt[] {
 }
 
 function readLlmConfig(): LlmConfig {
-  const provider = (readSetting('llm.provider') ?? 'openai') as LlmProvider;
+  const provider = (readSetting('llm.provider') ?? 'deepseek') as LlmProvider;
   const model = readSetting('llm.model') ?? '';
   const baseUrl = readSetting('llm.baseUrl') ?? '';
   return {

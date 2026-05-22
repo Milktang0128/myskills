@@ -7,6 +7,7 @@ import {
   Check,
   Copy as CopyIcon,
   Replace,
+  Undo2,
 } from 'lucide-react';
 import type {
   PlatformId,
@@ -127,6 +128,15 @@ export function SyncConfirm({
         {error && (
           <p className="text-xs text-destructive">{error}</p>
         )}
+
+        {/* Rollback assurance — telegraphs the safety net so users feel
+            free to confirm without overthinking. Specifically points at the
+            existing entry (sidebar bottom → 同步历史) to teach the
+            recovery path in context. */}
+        <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Undo2 className="h-3 w-3 shrink-0" />
+          {t('syncConfirm.rollbackHint')}
+        </p>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
@@ -271,6 +281,12 @@ function reasonExplain(reason: string, t: ReturnType<typeof useT>): string {
       return t('syncConfirm.reason.source_outside_roots');
     case 'source_changed_since_plan':
       return t('syncConfirm.reason.source_changed_since_plan');
+    case 'unreadable':
+      return t('syncConfirm.reason.unreadable');
+    case 'source_has_symlink':
+      return t('syncConfirm.reason.source_has_symlink');
+    case 'case_collision':
+      return t('syncConfirm.reason.case_collision');
     default:
       return reason;
   }

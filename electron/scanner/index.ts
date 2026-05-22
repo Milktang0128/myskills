@@ -214,6 +214,26 @@ function scanDir(
   }
 
   for (const entry of entries) {
+    // iCloud eviction: when iCloud Drive offloads a file/dir to free disk,
+    // it leaves a `.{original-name}.icloud` placeholder. The original name
+    // is no longer in the listing — only the placeholder. Without explicit
+    // handling, scanDir silently skipped these (dot-prefixed), and users
+    // saw their skill "disappear" from the matrix with no error. Worse, a
+    // later promote from another platform could clobber the evicted
+    // original when iCloud re-downloads.
+    //
+    // Detect the placeholder by name pattern and surface as a scan error
+    // so the user sees something actionable ("download this in Finder").
+    const evictedMatch = /^\.(.+)\.icloud$/.exec(entry.name);
+    if (evictedMatch) {
+      const originalName = evictedMatch[1];
+      errors.push({
+        path: path.join(dir, originalName ?? entry.name),
+        kind: 'icloud_evicted',
+        message: 'iCloud has evicted this skill — download it in Finder, then rescan',
+      });
+      continue;
+    }
     if (entry.name.startsWith('.') && !isDisabledContainerScope) {
       if (entry.name === '.disabled') continue;
       continue;

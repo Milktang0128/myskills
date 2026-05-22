@@ -9,7 +9,16 @@ export const ScrollArea = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
 >(({ className, children, ...props }, ref) => (
   <ScrollAreaPrimitive.Root ref={ref} className={cn('relative overflow-hidden', className)} {...props}>
-    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">{children}</ScrollAreaPrimitive.Viewport>
+    {/* Radix's Viewport wraps children in an inner div with `display: table`
+        + `min-width: 100%`, which lets content extend past the viewport's
+        visible width whenever there's a long unbroken token (long URLs,
+        long descriptions, etc.). The result is text that visibly clips at
+        the right edge instead of wrapping. Forcing the inner div to `block`
+        via Tailwind's `!` important modifier restores normal flow behavior
+        for all ScrollArea callers. */}
+    <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit] [&>div]:!block">
+      {children}
+    </ScrollAreaPrimitive.Viewport>
     <ScrollBar />
     <ScrollAreaPrimitive.Corner />
   </ScrollAreaPrimitive.Root>

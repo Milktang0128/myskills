@@ -52,8 +52,11 @@ const DEFAULT_SETTINGS: Array<[string, string]> = [
   // remote skill content) must refuse. See electron/secrets/network-gate.ts.
   ['allow_external_network', '1'],
   // LLM defaults. Provider/model/baseUrl live here; API key lives in safeStorage.
-  ['llm.provider', 'openai'],
-  ['llm.model', ''],
+  // DeepSeek is the recommended starting point — cheap, fast, OpenAI-compatible.
+  // These are seeded on first DB init only; existing installs keep whatever
+  // they already had.
+  ['llm.provider', 'deepseek'],
+  ['llm.model', 'deepseek-v4-flash'],
   ['llm.baseUrl', ''],
   ['llm.feature.search', '0'],
   ['llm.feature.autoCategorize', '0'],

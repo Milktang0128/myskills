@@ -26,6 +26,14 @@ export const IPC = {
     removeSkill: 'scenarios:removeSkill',
     export: 'scenarios:export',
     import: 'scenarios:import',
+    /**
+     * AI Lens's sole write entry. Atomic: scenario insert (or merge into
+     * existing if slug-key collides) + skill links happen in one txn.
+     * The renderer never composes scenarios:create + scenarios:addSkill
+     * for this — partial failure between the two would leave the user
+     * with an empty named scenario, which is the worst outcome.
+     */
+    createFromCluster: 'scenarios:createFromCluster',
   },
   scan: {
     run: 'scan:run',
@@ -56,6 +64,8 @@ export const IPC = {
     get: 'settings:get',
     set: 'settings:set',
     stats: 'settings:stats',
+    /** Run the backup retention sweep on demand. */
+    cleanupBackups: 'settings:cleanupBackups',
   },
   llm: {
     getConfig: 'llm:getConfig',
