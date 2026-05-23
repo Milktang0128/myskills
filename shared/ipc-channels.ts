@@ -16,6 +16,8 @@ export const IPC = {
   skills: {
     list: 'skills:list',
     get: 'skills:get',
+    openLocation: 'skills:openLocation',
+    copyLocationPath: 'skills:copyLocationPath',
   },
   scenarios: {
     list: 'scenarios:list',
