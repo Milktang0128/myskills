@@ -45,7 +45,8 @@ export async function generateLibraryBriefing(language: string): Promise<Library
   const platforms = listPlatforms();
   const stats = readPlatformStats();
   const skillCount = readTotalSkillCount();
-  const prompt = buildPrompt({ platforms, stats, skillCount, language });
+  const canonicalPlatformId = readSetting('canonical_platform') ?? 'shared';
+  const prompt = buildPrompt({ platforms, stats, skillCount, canonicalPlatformId, language });
 
   const apiKey = readSecret(API_KEY_NAME);
   const client = createProvider(config, apiKey);
@@ -75,17 +76,19 @@ function buildPrompt(input: {
   platforms: Platform[];
   stats: PlatformStats[];
   skillCount: number;
+  canonicalPlatformId: string;
   language: string;
 }): { system: string; user: string } {
   const outputLanguage =
     input.language === 'zh'
       ? 'Write the final briefing in Chinese.'
       : 'Write the final briefing in English.';
-  const shared = input.platforms.find((p) => p.id === 'shared');
+  const core = input.platforms.find((p) => p.id === input.canonicalPlatformId);
   const facts = {
     totalSkills: input.skillCount,
-    coreLibrary: shared
-      ? { id: shared.id, label: shared.label, skillsDir: shared.skillsDir, enabled: shared.enabled }
+    canonicalPlatformId: input.canonicalPlatformId,
+    coreLibrary: core
+      ? { id: core.id, label: core.label, skillsDir: core.skillsDir, enabled: core.enabled }
       : null,
     platforms: input.platforms.map((p) => ({
       id: p.id,

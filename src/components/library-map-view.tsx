@@ -204,8 +204,10 @@ export function LibraryMapView({
     return (
       <EmptyState
         generating={generating}
+        generatingBriefing={generatingBriefing}
         error={error}
         onGenerate={generate}
+        onCopyBriefing={copyAgentBriefing}
       />
     );
   }
@@ -431,12 +433,16 @@ function StaleBanner({
 
 function EmptyState({
   generating,
+  generatingBriefing,
   error,
   onGenerate,
+  onCopyBriefing,
 }: {
   generating: boolean;
+  generatingBriefing: boolean;
   error: string | null;
   onGenerate: () => void;
+  onCopyBriefing: () => void;
 }) {
   const t = useT();
   return (
@@ -445,24 +451,45 @@ function EmptyState({
         <MapIcon className="mx-auto h-10 w-10 text-violet-500" aria-hidden="true" />
         <h2 className="mt-3 text-base font-semibold">{t('map.empty.title')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">{t('map.empty.body')}</p>
-        <Button
-          size="sm"
-          onClick={onGenerate}
-          disabled={generating}
-          className="mt-4 bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
-        >
-          {generating ? (
-            <>
-              <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              {t('map.empty.generating')}
-            </>
-          ) : (
-            <>
-              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-              {t('map.empty.generate')}
-            </>
-          )}
-        </Button>
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <Button
+            size="sm"
+            onClick={onGenerate}
+            disabled={generating}
+            className="bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
+          >
+            {generating ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                {t('map.empty.generating')}
+              </>
+            ) : (
+              <>
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                {t('map.empty.generate')}
+              </>
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onCopyBriefing}
+            disabled={generatingBriefing}
+            title={t('map.briefing.copy.title')}
+          >
+            {generatingBriefing ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                {t('map.briefing.generating')}
+              </>
+            ) : (
+              <>
+                <Copy className="mr-1.5 h-3.5 w-3.5" />
+                {t('map.briefing.copy')}
+              </>
+            )}
+          </Button>
+        </div>
         {error && (
           <p className="mt-3 inline-flex items-center gap-1 text-xs text-destructive">
             <AlertCircle className="h-3.5 w-3.5" /> {error}
