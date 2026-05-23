@@ -774,6 +774,11 @@ export const en = {
   'map.regenerate': 'Regenerate',
   'map.regenerate.title': 'Last generated {{when}} with {{model}}. Click to re-run AI.',
   'map.regenerating': 'Generating…',
+  'map.briefing.copy': 'My skill library note',
+  'map.briefing.copy.title': 'Ask AI to generate and copy a note for a new agent based on the current skill library',
+  'map.briefing.generating': 'Generating…',
+  'map.briefing.copied': 'Generated and copied skill library note',
+  'map.briefing.failed': 'Generation failed: {{message}}',
   'map.cluster.count': '{{count}} skills',
   // "AI uncategorized" — distinct from Kanban's "Untagged" column. This bucket
   // means "the AI failed to fit these into any cluster"; the Kanban column

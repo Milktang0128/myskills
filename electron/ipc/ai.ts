@@ -10,6 +10,7 @@ import type { AiScenarioSuggestion, BulkCategorizePlan } from '../../shared/type
 import { getQueueLength, isSchedulerRunning } from '../ai/categorize';
 import { applyBulkPlan, buildBulkPlan } from '../ai/bulk-categorize';
 import { generateOverview, getCachedOverview } from '../ai/library-overview';
+import { generateLibraryBriefing } from '../ai/library-briefing';
 
 interface SuggestionRow {
   id: number;
@@ -156,6 +157,19 @@ export function registerAiHandlers(): void {
     const language = normalizeLanguage(p.language);
     try {
       return await generateOverview(language);
+    } catch (err) {
+      if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
+        throw err;
+      }
+      throw makeError('AI_ERROR', err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  registerHandler(IPC.ai.libraryBriefingGenerate, async (_e, payload) => {
+    const p = (payload ?? {}) as { language?: string };
+    const language = normalizeLanguage(p.language);
+    try {
+      return await generateLibraryBriefing(language);
     } catch (err) {
       if (err && typeof err === 'object' && 'code' in err && 'message' in err) {
         throw err;

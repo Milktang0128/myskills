@@ -98,6 +98,11 @@ export const IPC = {
      * writes the single-row cache, returns the fresh overview.
      */
     libraryOverviewGenerate: 'ai:libraryOverview:generate',
+    /**
+     * Generate a lightweight paste-ready note that tells another agent how
+     * this machine's local skill library is distributed and should be used.
+     */
+    libraryBriefingGenerate: 'ai:libraryBriefing:generate',
   },
   events: {
     scanStarted: 'event:scanStarted',
