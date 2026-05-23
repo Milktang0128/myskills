@@ -762,6 +762,11 @@ export const zh: Dict = {
   'map.regenerate': '重新生成',
   'map.regenerate.title': '上次于 {{when}} 用 {{model}} 生成。点击重新调用 AI。',
   'map.regenerating': '生成中…',
+  'map.briefing.copy': '我的技能库说明',
+  'map.briefing.copy.title': '让 AI 根据当前技能库生成一段给新 Agent 的使用说明并复制',
+  'map.briefing.generating': '生成中…',
+  'map.briefing.copied': '已生成并复制技能库说明',
+  'map.briefing.failed': '生成失败：{{message}}',
   'map.cluster.count': '{{count}} 个技能',
   // "AI 未归类" 与场景看板的 "未分类" 列刻意区分：前者是"AI 没把这些技能塞进
   // 任何聚簇"，后者是"用户还没给这些技能贴上场景标签"。两个概念不同所有者，

@@ -26,6 +26,7 @@ import {
   Loader2,
   Map as MapIcon,
   Plus,
+  Copy,
 } from 'lucide-react';
 import type {
   LibraryOverview,
@@ -73,10 +74,13 @@ export function LibraryMapView({
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bridgeReady, setBridgeReady] = useState(false);
+  const [generatingBriefing, setGeneratingBriefing] = useState(false);
   // Per-cluster in-flight state. Keyed by cluster.key (slug). Don't track
   // "already converted" — regenerating the Map invalidates that boolean,
   // and merging into an existing scenario is idempotent anyway.
   const [converting, setConverting] = useState<Set<string>>(() => new Set());
+  const overview = snapshot?.overview ?? null;
+  const stale = snapshot?.stale ?? false;
 
   const convertCluster = useCallback(
     async (cluster: LibraryOverviewCluster) => {
@@ -116,6 +120,19 @@ export function LibraryMapView({
     },
     [onScenariosChanged, onToast, t],
   );
+
+  const copyAgentBriefing = useCallback(async () => {
+    setGeneratingBriefing(true);
+    try {
+      const result = await api.ai.libraryBriefingGenerate(lang);
+      await copyText(result.text);
+      onToast(t('map.briefing.copied'));
+    } catch (err) {
+      onToast(t('map.briefing.failed', { message: messageOf(err) }));
+    } finally {
+      setGeneratingBriefing(false);
+    }
+  }, [lang, onToast, t]);
 
   // Bridge readiness — same pattern as other views.
   useEffect(() => {
@@ -183,9 +200,6 @@ export function LibraryMapView({
     return <LlmGate />;
   }
 
-  const overview = snapshot?.overview ?? null;
-  const stale = snapshot?.stale ?? false;
-
   if (!overview) {
     return (
       <EmptyState
@@ -217,35 +231,56 @@ export function LibraryMapView({
               it's visible without scrolling but doesn't compete with the
               stale banner. */}
           <header className="space-y-2">
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="flex items-center gap-2">
                 <MapIcon className="h-5 w-5 text-violet-500" aria-hidden="true" />
                 <h1 className="text-lg font-semibold">
                   {t('map.heading', { count: overview.totalSkills })}
                 </h1>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={generate}
-                disabled={generating}
-                title={t('map.regenerate.title', {
-                  when: formatRelative(overview.generatedAt),
-                  model: overview.model,
-                })}
-              >
-                {generating ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    {t('map.regenerating')}
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                    {t('map.regenerate')}
-                  </>
-                )}
-              </Button>
+              <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={copyAgentBriefing}
+                  disabled={generatingBriefing}
+                  title={t('map.briefing.copy.title')}
+                >
+                  {generatingBriefing ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      {t('map.briefing.generating')}
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="mr-1.5 h-3.5 w-3.5" />
+                      {t('map.briefing.copy')}
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={generate}
+                  disabled={generating}
+                  title={t('map.regenerate.title', {
+                    when: formatRelative(overview.generatedAt),
+                    model: overview.model,
+                  })}
+                >
+                  {generating ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      {t('map.regenerating')}
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                      {t('map.regenerate')}
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
             {overview.intro && (
               <p className="text-sm text-muted-foreground">{overview.intro}</p>
@@ -461,6 +496,24 @@ function messageOf(err: unknown): string {
     if (e.code) return e.code;
   }
   return err instanceof Error ? err.message : String(err);
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error('clipboard copy failed');
 }
 
 // Re-export the prop typing helper so workspace can know the Skill shape if
