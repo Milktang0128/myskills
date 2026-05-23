@@ -107,10 +107,10 @@ export const api = {
   skills: {
     list: (filter: SkillFilter = {}) => bridge().invoke(IPC.skills.list, filter) as Promise<Skill[]>,
     get: (id: string) => bridge().invoke(IPC.skills.get, { id }) as Promise<Skill>,
-    openLocation: (locationId: number) =>
-      bridge().invoke(IPC.skills.openLocation, { locationId }) as Promise<{ ok: true; path: string }>,
-    copyLocationPath: (locationId: number) =>
-      bridge().invoke(IPC.skills.copyLocationPath, { locationId }) as Promise<{ ok: true; path: string }>,
+    openLocation: (locationId: number, kind: 'install' | 'target' = 'install') =>
+      bridge().invoke(IPC.skills.openLocation, { locationId, kind }) as Promise<{ ok: true; path: string }>,
+    copyLocationPath: (locationId: number, kind: 'install' | 'target' = 'install') =>
+      bridge().invoke(IPC.skills.copyLocationPath, { locationId, kind }) as Promise<{ ok: true; path: string }>,
   },
   scenarios: {
     list: () => bridge().invoke(IPC.scenarios.list) as Promise<Scenario[]>,
