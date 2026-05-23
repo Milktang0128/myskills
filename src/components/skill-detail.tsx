@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload, Sparkles, X } from 'lucide-react';
+import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
   Scenario,
@@ -364,6 +364,36 @@ function LocationRow({
   busy: boolean;
 }) {
   const t = useT();
+  const [actionBusy, setActionBusy] = useState<'open' | 'copy' | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function handleOpenLocation() {
+    setActionBusy('open');
+    setActionError(null);
+    try {
+      await api.skills.openLocation(loc.id);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleCopyPath() {
+    setActionBusy('copy');
+    setActionError(null);
+    try {
+      await api.skills.copyLocationPath(loc.id);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   // Decide what status to show + whether Adopt makes sense.
   let statusIcon: React.ReactNode = null;
   let statusLabel = '';
@@ -419,6 +449,28 @@ function LocationRow({
               {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
             </span>
           )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={handleOpenLocation}
+            disabled={actionBusy !== null}
+            title={t('detail.loc.openFolderTitle')}
+          >
+            <FolderOpen className="mr-1 h-3 w-3" />
+            {t('detail.loc.openFolder')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={handleCopyPath}
+            disabled={actionBusy !== null}
+            title={t('detail.loc.copyPathTitle')}
+          >
+            <CopyIcon className="mr-1 h-3 w-3" />
+            {copied ? t('detail.loc.copiedPath') : t('detail.loc.copyPath')}
+          </Button>
           {canAdopt && (
             <Button
               size="sm"
@@ -438,6 +490,7 @@ function LocationRow({
         <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
         {loc.isSymlink && <div className="break-all">→ {loc.realPath}</div>}
         {loc.contentHash && <div>{t('detail.loc.hashPrefix')} {loc.contentHash.slice(0, 12)}…</div>}
+        {actionError && <div className="text-destructive">{actionError}</div>}
       </div>
     </div>
   );
