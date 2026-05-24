@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LayoutList, Columns3, Search, Sparkles } from 'lucide-react';
-import type { AppStats, Platform, Scenario, Skill, SkillFilter } from '@shared/types';
+import type { AppStats, Platform, Scenario, Skill, SkillFilter, SkillSort } from '@shared/types';
 import { api } from '@/lib/api';
 import { Sidebar, type SidebarView } from '@/components/sidebar';
 import { SkillList } from '@/components/skill-list';
@@ -48,6 +48,10 @@ export default function Workspace() {
   const [libraryView, setLibraryView] = useState<LibraryView>('list');
   const [filter, setFilter] = useState<SkillFilter>({ scope: 'all' });
   const [search, setSearch] = useState('');
+  // Sort lives at the page level (not inside SkillList) so it survives view
+  // switches and filter changes — switching from kanban back to list keeps
+  // your sort choice.
+  const [sort, setSort] = useState<SkillSort>('name');
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -99,8 +103,8 @@ export default function Workspace() {
     unscenarizedCount / skills.length >= UNSCENARIZED_GUIDANCE_THRESHOLD;
 
   const effectiveFilter = useMemo<SkillFilter>(
-    () => ({ ...filter, search: search.trim() || undefined }),
-    [filter, search],
+    () => ({ ...filter, search: search.trim() || undefined, sort }),
+    [filter, search, sort],
   );
 
   // Skills fetch covers both list and kanban (both consume the flat list and
@@ -444,6 +448,8 @@ export default function Workspace() {
                   onSelect={setSelectedId}
                   search={search}
                   onSearchChange={setSearch}
+                  sort={sort}
+                  onSortChange={setSort}
                   title={titleForListFilter(filter, platforms, scenarios, t)}
                   subtitle={t('list.subtitle.count', { count: skills.length })}
                   hideOwnHeader
