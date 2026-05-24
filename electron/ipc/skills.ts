@@ -109,7 +109,24 @@ function listSkills(filter: SkillFilter): Skill[] {
   }
 
   const whereSql = where.length > 0 ? 'WHERE ' + where.join(' AND ') : '';
-  const sql = `SELECT s.* FROM skills s ${whereSql} ORDER BY s.name COLLATE NOCASE`;
+  // Sort dispatch. Every non-name sort still falls back to `name COLLATE
+  // NOCASE` as a tiebreaker so the order is stable across identical
+  // timestamps (which DO happen on a fresh scan). For mtime we coalesce
+  // null → 0 to keep skills without locations at the bottom on DESC.
+  const orderSql = (() => {
+    switch (filter.sort) {
+      case 'updated':
+        return 'ORDER BY s.updated_at DESC, s.name COLLATE NOCASE';
+      case 'created':
+        return 'ORDER BY s.created_at DESC, s.name COLLATE NOCASE';
+      case 'mtime':
+        return 'ORDER BY COALESCE((SELECT MAX(mtime) FROM skill_locations WHERE skill_id = s.id), 0) DESC, s.name COLLATE NOCASE';
+      case 'name':
+      default:
+        return 'ORDER BY s.name COLLATE NOCASE';
+    }
+  })();
+  const sql = `SELECT s.* FROM skills s ${whereSql} ${orderSql}`;
   const rows = db.prepare(sql).all(...params) as SkillRow[];
   return loadSkillsByIds(rows.map((r) => r.id), rows);
 }

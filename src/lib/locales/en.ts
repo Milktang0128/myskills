@@ -139,6 +139,12 @@ export const en = {
 
   // ── Skill list / card ───────────────────────────────────────────────────
   'list.subtitle.count': '{{count}} skills',
+  'list.sort.label': 'Sort by',
+  'list.sort.tooltip': 'Added = first time MySkills saw this skill. Updated = SKILL.md content changed. mtime = filesystem timestamp.',
+  'list.sort.name': 'Name A→Z',
+  'list.sort.updated': 'Recently updated',
+  'list.sort.created': 'Recently added',
+  'list.sort.mtime': 'File mtime',
   'list.empty.loading': 'Loading…',
   'list.empty.title': 'No skills match this view',
   'list.empty.description': 'Try clearing search or filters, or run a rescan.',

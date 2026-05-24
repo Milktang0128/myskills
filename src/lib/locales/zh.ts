@@ -138,6 +138,12 @@ export const zh: Dict = {
 
   // ── 技能列表 / 卡片 ─────────────────────────────────────────────────────
   'list.subtitle.count': '{{count}} 项技能',
+  'list.sort.label': '排序方式',
+  'list.sort.tooltip': '新增 = 第一次进入 MySkills 的时间。修改 = SKILL.md 内容被改动的时间。mtime = 文件系统时间戳。',
+  'list.sort.name': '名字 A→Z',
+  'list.sort.updated': '最近修改',
+  'list.sort.created': '最近新增',
+  'list.sort.mtime': '文件 mtime',
   'list.empty.loading': '加载中…',
   'list.empty.title': '当前视图没有匹配的技能',
   'list.empty.description': '试试清除搜索或筛选条件，或者重新扫描。',

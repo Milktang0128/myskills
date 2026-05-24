@@ -73,7 +73,18 @@ export interface SkillFilter {
   platforms?: PlatformId[];
   scenarioId?: number;
   scope?: SkillScope;
+  /** Sort order for the returned list. Omitted → default ('name' asc). */
+  sort?: SkillSort;
 }
+
+/**
+ * Sort options for the skill list.
+ *   name    — alphabetical by skill name (default; stable, predictable)
+ *   updated — most-recently-changed first (SKILL.md content hash bumped)
+ *   created — most-recently-added first (first time MySkills saw this skill)
+ *   mtime   — most-recent filesystem mtime (closest to "user edited it")
+ */
+export type SkillSort = 'name' | 'updated' | 'created' | 'mtime';
 
 export type SkillScope =
   | 'all'
