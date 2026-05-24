@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { Sparkles } from 'lucide-react';
 import type { Scenario } from '@shared/types';
 import { slugify } from '@shared/slug';
 import {
@@ -24,9 +25,16 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   scenario?: Scenario | null;
   onSaved: () => void;
+  /**
+   * Optional shortcut to AI Lens. When provided (caller decides — e.g. only
+   * when the user has zero scenarios), renders a left-aligned secondary
+   * button in the footer that closes this dialog and opens AI Lens instead.
+   * Edit mode hides it regardless.
+   */
+  onOpenAiLens?: () => void;
 }
 
-export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
+export function ScenarioForm({ open, onOpenChange, scenario, onSaved, onOpenAiLens }: Props) {
   const t = useT();
   const editing = !!scenario;
   const [name, setName] = useState('');
@@ -128,13 +136,31 @@ export function ScenarioForm({ open, onOpenChange, scenario, onSaved }: Props) {
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
-            {t('common.cancel')}
-          </Button>
-          <Button onClick={submit} disabled={submitting || !name.trim()}>
-            {submitting ? t('scenarioForm.saving') : editing ? t('common.save') : t('scenarioForm.create')}
-          </Button>
+        <DialogFooter className={onOpenAiLens && !editing ? 'sm:justify-between' : undefined}>
+          {onOpenAiLens && !editing && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                onOpenChange(false);
+                onOpenAiLens();
+              }}
+              disabled={submitting}
+              title={t('scenarioForm.aiLens.hint')}
+              className="gap-1.5"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+              {t('scenarioForm.aiLens.cta')}
+            </Button>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={submit} disabled={submitting || !name.trim()}>
+              {submitting ? t('scenarioForm.saving') : editing ? t('common.save') : t('scenarioForm.create')}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

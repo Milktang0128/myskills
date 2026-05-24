@@ -139,20 +139,51 @@ export async function generateOverview(language: string): Promise<LibraryOvervie
   console.log(
     `[ai/overview] skills=${truncated.length} inputChars=${inputChars} (~${Math.round(inputChars / 3)} tokens) lang=${language}`,
   );
-  const res = await client.chat({
-    messages: [
-      { role: 'system', content: prompt.system },
-      { role: 'user', content: prompt.user },
-    ],
-    temperature: 0.3,
-    jsonMode: true,
-    // Output is bounded: intro + N cluster descriptions + N briefs. For 100
-    // skills that's ~3K tokens; reasoning models hide another ~10K. 8K
-    // visible cap keeps headroom.
-    maxTokens: 8192,
-  });
 
-  const overview = postProcess(parseResponse(res.text), truncated, language, config.model);
+  // Flash/small models occasionally return only the `intro` and drop the
+  // `clusters` array — even at temperature 0. One retry catches this without
+  // forming an open loop. (If a model is reliably bad, no amount of retries
+  // helps; the user should pick a stronger one.)
+  let parsed: RawResponse = { intro: '', clusters: [] };
+  let rawText = '';
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await client.chat({
+      messages: [
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: prompt.user },
+      ],
+      // Determinism over diversity for a structured-output task. 0.3 was
+      // adding nothing but variance in compliance.
+      temperature: 0,
+      jsonMode: true,
+      // OpenAI-compatible APIs count max_tokens against reasoning + visible
+      // output combined. Reasoning models can burn 10K+ on hidden thinking
+      // before emitting anything — an 8K cap left them empty-handed. 32K
+      // covers ~25K reasoning + ~7K visible output (intro + cluster
+      // descriptions + per-skill briefs for the 100-skill cap).
+      maxTokens: 32768,
+    });
+    rawText = res.text;
+    parsed = parseResponse(rawText);
+    console.log(
+      `[ai/overview] attempt=${attempt} response chars=${rawText.length} parsed clusters=${parsed.clusters.length}` +
+        ` raw cluster sizes=[${parsed.clusters.map((c) => c.skills.length).join(',')}]`,
+    );
+    if (parsed.clusters.length > 0) break;
+    if (rawText.length > 0) {
+      console.log('[ai/overview] empty clusters; raw head:', rawText.slice(0, 800));
+    }
+    if (attempt === 1) console.log('[ai/overview] retrying once...');
+  }
+
+  const overview = postProcess(parsed, truncated, language, config.model);
+  const droppedHallucinations =
+    parsed.clusters.reduce((n, c) => n + c.skills.length, 0) -
+    overview.clusters.reduce((n, c) => n + c.skills.length, 0);
+  console.log(
+    `[ai/overview] post-process clusters=${overview.clusters.length}` +
+      ` uncategorized=${overview.uncategorized.length} droppedHallucinations=${droppedHallucinations}`,
+  );
 
   // Persist single row. INSERT OR REPLACE keeps id=1 invariant.
   const setHash = computeSetHashFromRows(truncated);
@@ -241,6 +272,10 @@ function buildPrompt(skills: SkillRow[], language: string): { system: string; us
     '  - Per-skill briefs are POSITIONS, not summaries. Bad: "Parses PDF forms and fills in fields"; good: "PDF 表单填写" or "Form-fill PDFs".\n' +
     '  - When two skills look like duplicates, give them DIFFERENT briefs so the user can spot the overlap.\n' +
     '  - Never invent skillIds; only use ones from the input.\n' +
+    '\n' +
+    'Worked example (3 skills) — follow this shape exactly:\n' +
+    buildExample(language) +
+    '\n' +
     '  - Output nothing outside the JSON.\n';
 
   const skillsBlock = skills
@@ -254,6 +289,66 @@ function buildPrompt(skills: SkillRow[], language: string): { system: string; us
 
   const user = `Total skills: ${skills.length}\n\nskills:\n${skillsBlock}`;
   return { system, user };
+}
+
+/**
+ * One concrete I/O pair pinned to the user's language. Small models follow
+ * shapes far more reliably when shown an example than when given a schema +
+ * rules alone. The example uses generic placeholder skills so the model
+ * doesn't mistake them for real input.
+ */
+function buildExample(language: string): string {
+  const input =
+    'Input:\n' +
+    '- skillId=docx-parser\n  name=docx-parser\n  description=Extract text and tables from .docx files\n  body=...\n' +
+    '- skillId=pdf-toolkit\n  name=pdf-toolkit\n  description=Read merge split rotate PDFs\n  body=...\n' +
+    '- skillId=meeting-notes\n  name=meeting-notes\n  description=Summarize transcripts into action items\n  body=...';
+
+  const outputZh = `Expected output:
+{
+  "intro": "一个偏向文档处理的小工具箱，从抽取到改写一条龙。",
+  "clusters": [
+    {
+      "name": "文档抽取",
+      "purpose": "从 Office 与 PDF 文件中拿出结构化内容。",
+      "skills": [
+        { "skillId": "docx-parser", "brief": "Word 抽取" },
+        { "skillId": "pdf-toolkit", "brief": "PDF 操作" }
+      ]
+    },
+    {
+      "name": "内容整理",
+      "purpose": "把粗糙输入压缩成可执行决策。",
+      "skills": [
+        { "skillId": "meeting-notes", "brief": "会议纪要" }
+      ]
+    }
+  ]
+}`;
+
+  const outputEn = `Expected output:
+{
+  "intro": "A document-leaning kit, from extraction to distillation.",
+  "clusters": [
+    {
+      "name": "Document extraction",
+      "purpose": "Pull structured content out of Office and PDF files.",
+      "skills": [
+        { "skillId": "docx-parser", "brief": "Word extract" },
+        { "skillId": "pdf-toolkit", "brief": "PDF ops" }
+      ]
+    },
+    {
+      "name": "Content distillation",
+      "purpose": "Compress raw input into actionable decisions.",
+      "skills": [
+        { "skillId": "meeting-notes", "brief": "Meeting notes" }
+      ]
+    }
+  ]
+}`;
+
+  return input + '\n\n' + (language === 'zh' ? outputZh : outputEn);
 }
 
 // ---------------------------------------------------------------------------

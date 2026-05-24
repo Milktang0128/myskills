@@ -342,6 +342,8 @@ export const en = {
   'scenarioForm.color.aria': 'Color {{value}}',
   'scenarioForm.saving': 'Saving…',
   'scenarioForm.create': 'Create',
+  'scenarioForm.aiLens.cta': 'Let AI suggest some',
+  'scenarioForm.aiLens.hint': 'Let AI scan your library and propose several scenarios at once',
   'recs.heading': 'AI suggestions',
   'recs.disabled': 'Enable AI Recommendations in Settings to see suggestions.',
   'recs.loading': 'Asking AI for recommendations…',

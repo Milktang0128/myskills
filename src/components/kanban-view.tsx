@@ -8,25 +8,16 @@
  * N scenarios appears in N columns (the Skill is a tool, scenarios are
  * usage horizons — multi-membership is the intended model).
  *
- * Empty-state behavior: when essentially nothing has been categorized
- * (unscenarized / total > UNSCENARIZED_GUIDANCE_THRESHOLD), the view shows a
- * one-time guidance card at the top pointing the user at the AI Lens — that
- * AI clustering is the bridge from Day-0 emptiness to a meaningful Kanban.
- * The card auto-hides once the user has tagged enough skills.
+ * The Day-0 "go run AI Lens" nudge lives in <LibraryOverviewGuidance> and is
+ * rendered above this view by app/page.tsx, so it appears in the list view
+ * too. We don't render it here.
  */
 import { useMemo } from 'react';
-import { AlertTriangle, EyeOff, Link2, Sparkles } from 'lucide-react';
+import { AlertTriangle, EyeOff, Link2 } from 'lucide-react';
 import type { Scenario, Skill } from '@shared/types';
 import { PlatformBadge } from './platform-badge';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-
-/**
- * "Essentially nothing categorized" threshold. Above this, the guidance card
- * is the most useful thing on screen; below this, Kanban itself has enough
- * signal that the card becomes nag and hides itself.
- */
-const UNSCENARIZED_GUIDANCE_THRESHOLD = 0.8;
 
 interface Props {
   skills: Skill[];
@@ -34,8 +25,6 @@ interface Props {
   loading: boolean;
   selectedId: string | null;
   onSelect: (skillId: string) => void;
-  /** Switches the library sub-view to AI Lens — called from the guidance card. */
-  onOpenAiLens: () => void;
 }
 
 export function KanbanView({
@@ -44,13 +33,12 @@ export function KanbanView({
   loading,
   selectedId,
   onSelect,
-  onOpenAiLens,
 }: Props) {
   const t = useT();
 
   // Group skills into columns. Catch-all "未分类" rendered first as the
   // inbox the user works through, then sorted scenarios (stable order).
-  const { columns, unscenarized, unscenarizedRatio } = useMemo(() => {
+  const { columns, unscenarized } = useMemo(() => {
     const byScenario = new Map<number, Skill[]>();
     const orphans: Skill[] = [];
     for (const sk of skills) {
@@ -71,11 +59,8 @@ export function KanbanView({
       color: sc.color,
       items: byScenario.get(sc.id) ?? [],
     }));
-    const ratio = skills.length === 0 ? 0 : orphans.length / skills.length;
-    return { columns: cols, unscenarized: orphans, unscenarizedRatio: ratio };
+    return { columns: cols, unscenarized: orphans };
   }, [skills, scenarios]);
-
-  const showGuidance = unscenarizedRatio >= UNSCENARIZED_GUIDANCE_THRESHOLD && skills.length > 0;
 
   if (loading) {
     return (
@@ -87,14 +72,6 @@ export function KanbanView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {showGuidance && (
-        <KanbanGuidance
-          total={skills.length}
-          unscenarized={unscenarized.length}
-          onOpenAiLens={onOpenAiLens}
-        />
-      )}
-
       {/* Horizontal scroll across columns. Each column is a fixed width so the
           card grid is consistent across scenarios with varying skill counts. */}
       <div className="flex-1 overflow-x-auto overflow-y-hidden">
@@ -122,47 +99,6 @@ export function KanbanView({
             />
           ))}
         </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Guidance card (zero-categorization Day-0 nudge) ──────────────────────
-
-function KanbanGuidance({
-  total,
-  unscenarized,
-  onOpenAiLens,
-}: {
-  total: number;
-  unscenarized: number;
-  onOpenAiLens: () => void;
-}) {
-  const t = useT();
-  return (
-    <div className="border-b bg-secondary/30 px-6 py-3">
-      <div className="flex items-start gap-3">
-        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />
-        <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-medium text-foreground">
-            {t('kanban.empty.guidance.title')}
-          </p>
-          <p className="mt-1 text-[12px] text-muted-foreground">
-            {t('kanban.empty.guidance.body', { unscenarized, total })}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onOpenAiLens}
-          className={cn(
-            'inline-flex h-7 shrink-0 items-center gap-1.5 px-3 text-[12px] font-medium',
-            'bg-primary text-primary-foreground transition-colors hover:bg-primary/85',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-          )}
-        >
-          <Sparkles className="h-3.5 w-3.5" />
-          {t('kanban.empty.guidance.cta')}
-        </button>
       </div>
     </div>
   );
