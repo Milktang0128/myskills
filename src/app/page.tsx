@@ -12,12 +12,16 @@ import { CoverageView } from '@/components/coverage-view';
 import { DiscoverView, ModeSegmented, type SearchMode } from '@/components/discover-view';
 import { LibraryMapView } from '@/components/library-map-view';
 import { KanbanView } from '@/components/kanban-view';
+import {
+  LibraryOverviewGuidance,
+  UNSCENARIZED_GUIDANCE_THRESHOLD,
+} from '@/components/library-overview-guidance';
 import { OnboardingWizard } from '@/components/onboarding';
 import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { HistoryView } from '@/components/history-view';
 import { ScenariosView } from '@/components/scenarios-view';
 import { Toast } from '@/components/ui/toast';
-import { useT } from '@/lib/i18n';
+import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 /**
@@ -36,6 +40,7 @@ type LibraryView = 'list' | 'kanban' | 'ai-lens';
 
 export default function Workspace() {
   const t = useT();
+  const { locale } = useI18n();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
@@ -60,6 +65,9 @@ export default function Workspace() {
   const [bulkCatOpen, setBulkCatOpen] = useState(false);
   const [discoverMode, setDiscoverMode] = useState<SearchMode>('keyword');
   const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
+  // True once a cached library overview exists. Drives the one-shot Day-0
+  // guidance card: visible until first AI Lens generation, then silenced.
+  const [hasOverviewRun, setHasOverviewRun] = useState(false);
 
   const reqIdRef = useRef(0);
 
@@ -77,6 +85,18 @@ export default function Workspace() {
   // What the library currently renders. Falls back to list when filter is
   // narrowed, regardless of what the user previously picked in the toolbar.
   const effectiveLibraryView: LibraryView = isFilterDefault ? libraryView : 'list';
+
+  // Day-0 nudge above kanban + list. Hides once the user has run AI Lens
+  // once (cached overview present), or once enough skills have been tagged.
+  const unscenarizedCount = useMemo(
+    () => skills.reduce((n, s) => n + (s.scenarios.length === 0 ? 1 : 0), 0),
+    [skills],
+  );
+  const showOverviewGuidance =
+    isFilterDefault &&
+    !hasOverviewRun &&
+    skills.length > 0 &&
+    unscenarizedCount / skills.length >= UNSCENARIZED_GUIDANCE_THRESHOLD;
 
   const effectiveFilter = useMemo<SkillFilter>(
     () => ({ ...filter, search: search.trim() || undefined }),
@@ -140,6 +160,27 @@ export default function Workspace() {
     if (!bridgeReady) return;
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
+
+  // Refresh hasOverviewRun whenever the user lands on the library shell in a
+  // non-ai-lens sub-view. Covers initial mount AND navigating back from
+  // ai-lens (user may have just generated a fresh overview there).
+  useEffect(() => {
+    if (!bridgeReady) return;
+    if (sidebarView !== 'library') return;
+    if (effectiveLibraryView === 'ai-lens') return;
+    let cancelled = false;
+    api.ai
+      .libraryOverviewGet(locale)
+      .then((snap) => {
+        if (!cancelled) setHasOverviewRun(snap.overview !== null);
+      })
+      .catch(() => {
+        // Non-fatal: leaves the guidance card showing.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady, sidebarView, effectiveLibraryView, locale]);
 
   useEffect(() => {
     if (!bridgeReady) return;
@@ -366,39 +407,49 @@ export default function Workspace() {
             onScenariosChanged={refreshMeta}
             onToast={showToast}
           />
-        ) : effectiveLibraryView === 'kanban' ? (
-          <KanbanView
-            skills={skills}
-            scenarios={scenarios}
-            loading={skillsLoading}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onOpenAiLens={() => setLibraryView('ai-lens')}
-          />
         ) : (
           <>
-            {/* Bulk-categorize CTA — only shows on the 未分类 view, when
-                LLM is configured, and when there's at least one skill to
-                categorize. */}
-            {filter.scope === 'unscenarized' && (
-              <BulkCatBanner
-                count={skills.length}
-                llmConfigured={llmConfigured}
-                onClick={() => setBulkCatOpen(true)}
-                t={t}
+            {showOverviewGuidance && (
+              <LibraryOverviewGuidance
+                total={skills.length}
+                unscenarized={unscenarizedCount}
+                onOpenAiLens={() => setLibraryView('ai-lens')}
               />
             )}
-            <SkillList
-              skills={skills}
-              loading={skillsLoading}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              search={search}
-              onSearchChange={setSearch}
-              title={titleForListFilter(filter, platforms, scenarios, t)}
-              subtitle={t('list.subtitle.count', { count: skills.length })}
-              hideOwnHeader
-            />
+            {effectiveLibraryView === 'kanban' ? (
+              <KanbanView
+                skills={skills}
+                scenarios={scenarios}
+                loading={skillsLoading}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+            ) : (
+              <>
+                {/* Bulk-categorize CTA — only shows on the 未分类 view, when
+                    LLM is configured, and when there's at least one skill to
+                    categorize. */}
+                {filter.scope === 'unscenarized' && (
+                  <BulkCatBanner
+                    count={skills.length}
+                    llmConfigured={llmConfigured}
+                    onClick={() => setBulkCatOpen(true)}
+                    t={t}
+                  />
+                )}
+                <SkillList
+                  skills={skills}
+                  loading={skillsLoading}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  search={search}
+                  onSearchChange={setSearch}
+                  title={titleForListFilter(filter, platforms, scenarios, t)}
+                  subtitle={t('list.subtitle.count', { count: skills.length })}
+                  hideOwnHeader
+                />
+              </>
+            )}
           </>
         )}
       </div>
@@ -419,6 +470,15 @@ export default function Workspace() {
         open={scenarioFormOpen}
         onOpenChange={setScenarioFormOpen}
         onSaved={refreshMeta}
+        onOpenAiLens={
+          scenarios.length === 0
+            ? () => {
+                setSidebarView('library');
+                setFilter({ scope: 'all' });
+                setLibraryView('ai-lens');
+              }
+            : undefined
+        }
       />
 
       {toast && (

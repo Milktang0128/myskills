@@ -9,6 +9,7 @@ import {
   Folder,
   Settings as SettingsIcon,
   Plus,
+  Pencil,
   RefreshCw,
   History as HistoryIcon,
   Grid3x3,
@@ -219,13 +220,40 @@ export function Sidebar({
         <Section
           title={t('sidebar.section.scenarios')}
           action={
-            <button
-              onClick={onCreateScenario}
-              className="p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              aria-label={t('sidebar.newScenario')}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
+            // Two affordances paired with the section header: create new (+)
+            // and manage existing (pencil). Management is rare-enough that
+            // it shouldn't take a top-level row, but discoverable enough
+            // that hiding it in a menu would be too far.
+            <div className="flex items-center gap-0.5">
+              <button
+                onClick={onCreateScenario}
+                className="p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                aria-label={t('sidebar.newScenario')}
+                title={t('sidebar.newScenario')}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={(e) => {
+                  // Release mouse-induced focus so the button doesn't keep
+                  // an active-looking outline once we navigate away from
+                  // the scenarios view. Keyboard focus is unaffected.
+                  e.currentTarget.blur();
+                  onSelectScenarios();
+                }}
+                aria-pressed={view === 'scenarios'}
+                aria-label={t('sidebar.manageScenarios')}
+                title={t('sidebar.manageScenarios')}
+                className={cn(
+                  'p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                  view === 'scenarios'
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+                )}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            </div>
           }
         >
           {scenarios.length === 0 ? (
@@ -252,28 +280,16 @@ export function Sidebar({
       </ScrollArea>
 
       {/* Bottom utility row.
-          - Manage Scenarios + Sync History are peer workspace views: they
-            highlight active state like the top-level Library/Matrix/Discover
-            rows do.
+          - Sync History is a peer workspace view that highlights active
+            state like the top-level Library/Matrix/Discover rows do.
           - Settings keeps its own route — Settings is big enough that
             inlining it into the workspace shell would crowd everything else;
-            full-page is the right home for it. */}
+            full-page is the right home for it.
+          - Scenario management moved up next to the section header (pencil
+            icon paired with the + button) — it's rare enough to not earn a
+            full row, but the pencil keeps it visually adjacent to the
+            scenarios it acts on. */}
       <div className="space-y-px border-t p-2">
-        <button
-          type="button"
-          onClick={onSelectScenarios}
-          aria-pressed={view === 'scenarios'}
-          className={cn(
-            'flex w-full items-center gap-2 px-2 py-1.5 text-sm',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-            view === 'scenarios'
-              ? 'bg-accent text-accent-foreground'
-              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-          )}
-        >
-          <Layers className="h-4 w-4" />
-          {t('sidebar.manageScenarios')}
-        </button>
         <button
           type="button"
           onClick={onSelectHistory}

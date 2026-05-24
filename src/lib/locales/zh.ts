@@ -351,6 +351,8 @@ export const zh: Dict = {
   'scenarioForm.color.aria': '颜色 {{value}}',
   'scenarioForm.saving': '保存中…',
   'scenarioForm.create': '创建',
+  'scenarioForm.aiLens.cta': '用 AI 帮我建',
+  'scenarioForm.aiLens.hint': '让 AI 看一遍你的工具箱，一次给出多个场景建议',
   'recs.heading': 'AI 建议',
   'recs.disabled': '在「设置」中启用 AI 推荐后可以看到建议。',
   'recs.loading': '正在请求 AI 推荐…',
