@@ -77,7 +77,12 @@ export const zh: Dict = {
   'matrix.filter.all': '全部',
   'matrix.filter.gaps': '有缺口',
   'matrix.filter.orphans': '孤立项',
-  'matrix.filter.drift': '版本不一致',
+  'matrix.filter.drift': '不一致',
+  'matrix.sort.label': '排序方式',
+  'matrix.sort.tooltip': '"不一致优先" 把需要处理的行排在最上面。"最近修改" 取该行所有 cell 里最新的 mtime。',
+  'matrix.sort.unsynced': '不一致优先',
+  'matrix.sort.updated': '最近修改',
+  'matrix.sort.name': '名字 A→Z',
   'matrix.filter.broken': '失效',
   'matrix.filter.all.hint': '当前筛选下的所有技能',
   'matrix.filter.gaps.hint': '某个非核心平台缺少此技能',
@@ -391,6 +396,7 @@ export const zh: Dict = {
   // 抽象描述："同步历史"——左侧栏底部那个标签——这样比"操作可撤销"更有
   // 操作性。
   'syncConfirm.rollbackHint': '操作完成后可随时在左下角「同步历史」中撤销。',
+  'syncConfirm.replaceWarning': '本批含 {{count}} 项覆盖：目标平台原有的真实文件会被替换成指向 canonical 的符号链接。原文件已自动备份——若你在那里手动改过 SKILL.md 但未提升为 canonical，改动还能从备份找回，只是不再出现在工作目录里。',
   'syncConfirm.nothingToApply': '没有可应用的项',
   'syncConfirm.applyN.one': '应用 {{count}} 项写入',
   'syncConfirm.applyN.many': '应用 {{count}} 项写入',

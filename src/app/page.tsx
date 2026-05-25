@@ -51,7 +51,11 @@ export default function Workspace() {
   // Sort lives at the page level (not inside SkillList) so it survives view
   // switches and filter changes — switching from kanban back to list keeps
   // your sort choice.
-  const [sort, setSort] = useState<SkillSort>('name');
+  //
+  // Default is `created` (most-recently-added first): the answer to "what
+  // did I just add?" is the question users care about on open. Alphabetical
+  // is useful for hunting a known name; that's what search is for.
+  const [sort, setSort] = useState<SkillSort>('created');
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);

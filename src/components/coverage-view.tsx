@@ -49,6 +49,9 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
   const t = useT();
   const [matrix, setMatrix] = useState<CoverageMatrix | null>(null);
   const [filter, setFilter] = useState<CoverageFilter>('all');
+  // Default "unsynced first" because the matrix exists to surface rows
+  // needing attention. Pure alphabetical for 70+ rows defeats the point.
+  const [sort, setSort] = useState<CoverageSort>('unsynced');
   const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -148,10 +151,13 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     return () => { cancelled = true; };
   }, [bridgeReady, outerFilter.scenarioId]);
 
-  const visibleRows = useMemo(
-    () => (scenarioSkillIds ? filteredRows.filter((r) => scenarioSkillIds.has(r.skillId)) : filteredRows),
-    [filteredRows, scenarioSkillIds],
-  );
+  const visibleRows = useMemo(() => {
+    const filtered = scenarioSkillIds
+      ? filteredRows.filter((r) => scenarioSkillIds.has(r.skillId))
+      : filteredRows;
+    if (!matrix) return filtered;
+    return sortRows(filtered, sort, matrix);
+  }, [filteredRows, scenarioSkillIds, sort, matrix]);
 
   // "Syncable" = missing + stale on a non-canonical platform, for any row that
   // has a canonical source.
@@ -294,6 +300,17 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
           )}
         </div>
         <div className="flex items-center gap-2">
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as CoverageSort)}
+            aria-label={t('matrix.sort.label')}
+            title={t('matrix.sort.tooltip')}
+            className="rounded border border-input bg-background px-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          >
+            <option value="unsynced">{t('matrix.sort.unsynced')}</option>
+            <option value="updated">{t('matrix.sort.updated')}</option>
+            <option value="name">{t('matrix.sort.name')}</option>
+          </select>
           {orphanTotal > 0 && (
             <Button
               size="sm"
@@ -684,4 +701,70 @@ function EmptyCoverageGuidance() {
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Row sorting
+// ---------------------------------------------------------------------------
+
+type CoverageSort = 'unsynced' | 'updated' | 'name';
+
+/**
+ * "Concern score" for a row — higher means more attention needed. Used by
+ * the "out of sync first" sort to bubble actionable rows to the top.
+ *
+ * Weights are deliberately loose — they only need to give a stable ordering
+ * within the actionable set, not be a precise risk metric. Anything with
+ * score > 0 ranks above clean rows.
+ */
+function concernScore(row: CoverageRow, matrix: CoverageMatrix): number {
+  let score = 0;
+  score += row.missingOn.length * 2;
+  if (!row.hasCanonicalSource) score += 5;
+  for (const p of matrix.platforms) {
+    const cell = row.cells[p];
+    if (!cell) continue;
+    if (cell.drift === 'stale') score += 2;
+    if (cell.state === 'broken') score += 3;
+  }
+  return score;
+}
+
+function maxRowMtime(row: CoverageRow, matrix: CoverageMatrix): number {
+  let max = 0;
+  for (const p of matrix.platforms) {
+    const mtime = row.cells[p]?.mtime;
+    if (mtime != null && mtime > max) max = mtime;
+  }
+  return max;
+}
+
+function sortRows(
+  rows: CoverageRow[],
+  sort: CoverageSort,
+  matrix: CoverageMatrix,
+): CoverageRow[] {
+  const sorted = [...rows];
+  const byName = (a: CoverageRow, b: CoverageRow) =>
+    a.skillName.localeCompare(b.skillName, undefined, { sensitivity: 'base' });
+  switch (sort) {
+    case 'unsynced':
+      sorted.sort((a, b) => {
+        const sa = concernScore(a, matrix);
+        const sb = concernScore(b, matrix);
+        return sa !== sb ? sb - sa : byName(a, b);
+      });
+      break;
+    case 'updated':
+      sorted.sort((a, b) => {
+        const ma = maxRowMtime(a, matrix);
+        const mb = maxRowMtime(b, matrix);
+        return ma !== mb ? mb - ma : byName(a, b);
+      });
+      break;
+    case 'name':
+    default:
+      sorted.sort(byName);
+  }
+  return sorted;
 }
