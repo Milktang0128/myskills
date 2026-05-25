@@ -61,6 +61,11 @@ export function SyncConfirm({
   );
   const skipItems = plan.items.filter((i) => i.action === 'skip');
   const conflictItems = plan.items.filter((i) => i.action === 'conflict');
+  // The only action class that can lose user-edited content from the working
+  // tree: it backs up the existing target dir, then writes a symlink pointing
+  // to canonical. The edits survive in backup but they're no longer where the
+  // user expects them. Worth a heads-up when this is in the plan.
+  const replaceCount = plan.items.filter((i) => i.action === 'symlink_replace').length;
 
   const title =
     plan.operation === 'promote_to_canonical'
@@ -114,6 +119,13 @@ export function SyncConfirm({
             </span>
           </DialogDescription>
         </DialogHeader>
+
+        {replaceCount > 0 && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-200">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{t('syncConfirm.replaceWarning', { count: replaceCount })}</span>
+          </div>
+        )}
 
         <ScrollArea className="max-h-[420px] -mx-2 px-2">
           <ul className="space-y-3 py-1">

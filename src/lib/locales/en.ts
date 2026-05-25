@@ -77,7 +77,12 @@ export const en = {
   'matrix.filter.all': 'All',
   'matrix.filter.gaps': 'Has gaps',
   'matrix.filter.orphans': 'Orphans',
-  'matrix.filter.drift': 'Drift',
+  'matrix.filter.drift': 'Out of sync',
+  'matrix.sort.label': 'Sort by',
+  'matrix.sort.tooltip': 'Out of sync first surfaces rows needing attention. Updated uses the most-recent mtime across the row\'s cells.',
+  'matrix.sort.unsynced': 'Out of sync first',
+  'matrix.sort.updated': 'Recently updated',
+  'matrix.sort.name': 'Name A→Z',
   'matrix.filter.broken': 'Broken',
   'matrix.filter.all.hint': 'every skill in the filter set',
   'matrix.filter.gaps.hint': 'a non-canonical platform is missing this skill',
@@ -402,6 +407,7 @@ export const en = {
   // points at the specific entry (sidebar → Sync history) so the recovery
   // path is concrete, not abstract.
   'syncConfirm.rollbackHint': 'You can roll this back anytime from Sync history in the sidebar.',
+  'syncConfirm.replaceWarning': '{{count}} operation(s) will overwrite existing files on the target platform. If you have local edits there that weren\'t promoted to canonical, the file moves to backup — recoverable, but no longer in the working tree.',
   'syncConfirm.nothingToApply': 'Nothing to apply',
   'syncConfirm.applyN.one': 'Apply {{count}} write',
   'syncConfirm.applyN.many': 'Apply {{count}} writes',
