@@ -54,6 +54,7 @@ export const zh: Dict = {
   // 同步历史 / 场景管理 现在是工作区视图（和覆盖矩阵同级），不再是抽屉或独立路由。
   'header.history': '同步历史',
   'header.scenarios': '管理场景',
+  'header.settings': '设置',
   // 资源库子工具栏（内容区上方的三选一切换器）
   'libraryView.list': '列表',
   'libraryView.kanban': '场景看板',

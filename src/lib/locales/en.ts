@@ -54,6 +54,7 @@ export const en = {
   // Coverage matrix), not drawers or separate routes.
   'header.history': 'Sync history',
   'header.scenarios': 'Manage scenarios',
+  'header.settings': 'Settings',
   // Library sub-toolbar (3-way switcher above the content area).
   'libraryView.list': 'List',
   'libraryView.kanban': 'Scenarios',

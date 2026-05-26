@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import {
   Check,
   Link2,
@@ -43,9 +42,11 @@ interface Props {
   selectedSkillId: string | null;
   /** Notify workspace to refetch any shared state after a write. */
   onMutated?: () => void;
+  /** Workspace navigation: empty-state guidance links into Settings. */
+  onOpenSettings: () => void;
 }
 
-export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated }: Props) {
+export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated, onOpenSettings }: Props) {
   const t = useT();
   const [matrix, setMatrix] = useState<CoverageMatrix | null>(null);
   const [filter, setFilter] = useState<CoverageFilter>('all');
@@ -353,6 +354,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             onPromoteRow={handlePromoteRow}
             onSelectRow={onSelectSkill}
             busy={busy}
+            onOpenSettings={onOpenSettings}
           />
           {matrix && visibleRows.length > 0 && <Legend />}
         </div>
@@ -377,6 +379,7 @@ function Table({
   onPromoteRow,
   onSelectRow,
   busy,
+  onOpenSettings,
 }: {
   matrix: CoverageMatrix | null;
   rows: CoverageRow[];
@@ -385,6 +388,7 @@ function Table({
   onPromoteRow: (r: CoverageRow) => void;
   onSelectRow: (id: string) => void;
   busy: boolean;
+  onOpenSettings: () => void;
 }) {
   const t = useT();
   if (!matrix) {
@@ -395,7 +399,7 @@ function Table({
     // next steps), vs the active filter has no matches (just a hint).
     const noSkillsAnywhere = matrix.rows.length === 0;
     if (noSkillsAnywhere) {
-      return <EmptyCoverageGuidance />;
+      return <EmptyCoverageGuidance onOpenSettings={onOpenSettings} />;
     }
     return (
       <div className="p-6 text-sm text-muted-foreground">{t('matrix.empty')}</div>
@@ -649,7 +653,7 @@ function Legend() {
  * not when the active filter happens to be empty. Gives the user three
  * concrete next steps instead of a flat "No skills" line.
  */
-function EmptyCoverageGuidance() {
+function EmptyCoverageGuidance({ onOpenSettings }: { onOpenSettings: () => void }) {
   const t = useT();
   return (
     <div className="mx-auto mt-8 max-w-md px-6">
@@ -674,12 +678,13 @@ function EmptyCoverageGuidance() {
             <SettingsIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">
-                <Link
-                  href="/settings"
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
                   className="hover:underline focus-visible:outline-none focus-visible:underline"
                 >
                   {t('matrix.empty.guidance.settings.title')}
-                </Link>
+                </button>
               </div>
               <div className="text-xs text-muted-foreground">
                 {t('matrix.empty.guidance.settings.body')}
