@@ -20,6 +20,7 @@ import { OnboardingWizard } from '@/components/onboarding';
 import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { HistoryView } from '@/components/history-view';
 import { ScenariosView } from '@/components/scenarios-view';
+import { SettingsView } from '@/components/settings-view';
 import { Toast } from '@/components/ui/toast';
 import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -263,6 +264,7 @@ export default function Workspace() {
     if (sidebarView === 'discover') return t('header.discover');
     if (sidebarView === 'history') return t('header.history');
     if (sidebarView === 'scenarios') return t('header.scenarios');
+    if (sidebarView === 'settings') return t('header.settings');
     if (effectiveLibraryView === 'ai-lens') return t('header.aiLens');
     if (effectiveLibraryView === 'kanban') return t('header.kanban');
     return titleForListFilter(filter, platforms, scenarios, t);
@@ -320,6 +322,10 @@ export default function Workspace() {
         }}
         onSelectHistory={() => {
           setSidebarView('history');
+          setSelectedId(null);
+        }}
+        onSelectSettings={() => {
+          setSidebarView('settings');
           setSelectedId(null);
         }}
         onRescan={runScan}
@@ -395,6 +401,10 @@ export default function Workspace() {
             onSelectSkill={setSelectedId}
             selectedSkillId={selectedId}
             onMutated={refreshMeta}
+            onOpenSettings={() => {
+              setSidebarView('settings');
+              setSelectedId(null);
+            }}
           />
         ) : sidebarView === 'discover' ? (
           <DiscoverView
@@ -408,6 +418,8 @@ export default function Workspace() {
           <HistoryView />
         ) : sidebarView === 'scenarios' ? (
           <ScenariosView onChanged={refreshMeta} />
+        ) : sidebarView === 'settings' ? (
+          <SettingsView onChanged={refreshMeta} />
         ) : effectiveLibraryView === 'ai-lens' ? (
           <LibraryMapView
             onSelectSkill={setSelectedId}

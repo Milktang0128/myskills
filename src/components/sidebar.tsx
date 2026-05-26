@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo } from 'react';
-import Link from 'next/link';
 import {
   Layers,
   Copy as CopyIcon,
@@ -33,7 +32,7 @@ import { cn } from '@/lib/utils';
  * sub-toggle keeps the navigation concerns clean: this component only
  * decides which page-level surface is showing.
  */
-export type SidebarView = 'library' | 'matrix' | 'discover' | 'history' | 'scenarios';
+export type SidebarView = 'library' | 'matrix' | 'discover' | 'history' | 'scenarios' | 'settings';
 
 interface Props {
   view: SidebarView;
@@ -50,6 +49,8 @@ interface Props {
   onSelectScenarios: () => void;
   /** Switch the workspace to the Sync history view. */
   onSelectHistory: () => void;
+  /** Switch the workspace to the Settings view. */
+  onSelectSettings: () => void;
   onRescan: () => void;
   scanning: boolean;
 }
@@ -75,6 +76,7 @@ export function Sidebar({
   onCreateScenario,
   onSelectScenarios,
   onSelectHistory,
+  onSelectSettings,
   onRescan,
   scanning,
 }: Props) {
@@ -300,13 +302,21 @@ export function Sidebar({
           <HistoryIcon className="h-4 w-4" />
           {t('sidebar.syncHistory')}
         </button>
-        <Link
-          href="/settings"
-          className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        <button
+          type="button"
+          onClick={onSelectSettings}
+          aria-pressed={view === 'settings'}
+          className={cn(
+            'flex w-full items-center gap-2 px-2 py-1.5 text-sm',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            view === 'settings'
+              ? 'bg-accent text-accent-foreground'
+              : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+          )}
         >
           <SettingsIcon className="h-4 w-4" />
           {t('sidebar.settings')}
-        </Link>
+        </button>
         {/* Language toggle lives only in Settings now — keeping it here too
             doubled the affordance for a setting most users flip once. */}
       </div>

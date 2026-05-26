@@ -1,9 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import {
-  ArrowLeft,
   RefreshCw,
   AlertTriangle,
   FileWarning,
@@ -41,7 +39,13 @@ import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { formatRelative } from '@/lib/utils';
 
-export default function SettingsPage() {
+interface Props {
+  /** Called when the user does something that might change sidebar counts
+   * (registering a platform, rescanning, switching canonical). */
+  onChanged?: () => void;
+}
+
+export function SettingsView({ onChanged }: Props) {
   const t = useT();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
@@ -118,7 +122,11 @@ export default function SettingsPage() {
     const probeMap: typeof probeResults = {};
     for (const [id, r] of probes) probeMap[id] = r;
     setProbeResults(probeMap);
-  }, []);
+    // Anything that triggers a settings refresh — initial mount, scan, add/
+    // remove platform, change canonical — also invalidates the parent's
+    // cached sidebar counts. Cheap to over-notify; expensive to under-notify.
+    onChanged?.();
+  }, [onChanged]);
 
   async function saveCanonical(value: string) {
     setSavingCanonical(true);
@@ -340,22 +348,15 @@ export default function SettingsPage() {
   }
 
   return (
-    <main className="flex h-screen w-screen flex-col overflow-hidden">
-      <header className="titlebar-drag flex h-12 shrink-0 items-center justify-between border-b pl-[88px] pr-4">
-        <div className="titlebar-no-drag flex items-center gap-2">
-          <Link
-            href="/"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-accent"
-            aria-label={t('settings.back')}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Link>
-          <h1 className="text-sm font-semibold">{t('settings.title')}</h1>
-        </div>
-        <div className="titlebar-no-drag">
-          <LangToggle />
-        </div>
-      </header>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Thin header bar that matches the other workspace views (matrix,
+          scenarios, history). The sidebar handles back-navigation by view
+          state; no per-view back arrow needed. Language toggle stays here
+          because settings is the one place users actually flip it. */}
+      <div className="flex items-center justify-between border-b px-4 py-2 text-xs">
+        <h2 className="font-medium">{t('settings.title')}</h2>
+        <LangToggle />
+      </div>
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="mx-auto w-full max-w-3xl space-y-8 p-6">
@@ -843,7 +844,7 @@ export default function SettingsPage() {
           </section>
         </div>
       </ScrollArea>
-    </main>
+    </div>
   );
 }
 
