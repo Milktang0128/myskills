@@ -103,10 +103,16 @@ async function createWindow(): Promise<void> {
 
 function installCsp(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, cb) => {
-    // Dev: Next.js HMR + RSC requires inline scripts and eval. Production stays strict.
+    // Dev: Next.js HMR + RSC requires inline scripts and eval. Production
+    // also needs 'unsafe-inline' for scripts — Next.js 15 static export
+    // injects inline <script> tags into out/index.html for hydration
+    // bootstrap and the chunk loader. Without it the renderer never boots
+    // → users see a white window. Acceptable here because the renderer
+    // loads from file://, sandbox + contextIsolation are on,
+    // nodeIntegration is off, and there's no remote script vector.
     const csp = isDev
       ? "default-src 'self' http://localhost:4477; script-src 'self' 'unsafe-eval' 'unsafe-inline' http://localhost:4477; style-src 'self' 'unsafe-inline' http://localhost:4477; img-src 'self' data: blob: http://localhost:4477; font-src 'self' data: http://localhost:4477; connect-src 'self' ws://localhost:4477 http://localhost:4477"
-      : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'";
+      : "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'";
     cb({
       responseHeaders: {
         ...details.responseHeaders,
