@@ -67,6 +67,12 @@
       "package.json"
     ],
     "afterSign": "scripts/notarize.cjs",
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en",
+      "zh_CN"
+    ],
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
@@ -77,6 +83,9 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "format": "ULFO"
     }
   }
 }
