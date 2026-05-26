@@ -64,7 +64,21 @@
     "files": [
       "dist-electron/**",
       "out/**",
-      "package.json"
+      "package.json",
+      "!node_modules/@next/**",
+      "!node_modules/@img/**",
+      "!node_modules/next/**",
+      "!node_modules/react/**",
+      "!node_modules/react-dom/**",
+      "!node_modules/@radix-ui/**",
+      "!node_modules/lucide-react/**",
+      "!node_modules/tailwindcss/**",
+      "!node_modules/typescript/**",
+      "!node_modules/esbuild/**",
+      "!node_modules/electron/**",
+      "!node_modules/electron-builder/**",
+      "!node_modules/@electron/**",
+      "!node_modules/.cache/**"
     ],
     "afterSign": "scripts/notarize.cjs",
     "asar": true,
