@@ -1,6 +1,6 @@
 'use client';
 
-import { Search } from 'lucide-react';
+import { Search, ArrowUpDown, FolderOpen } from 'lucide-react';
 import type { Skill, SkillSort } from '@shared/types';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -22,6 +22,9 @@ interface Props {
   subtitle?: string;
   /** When true, omit the title bar + search input — assumes the parent owns them. */
   hideOwnHeader?: boolean;
+  /** Optional: when the title represents an openable directory (e.g. a single
+   * platform filter), render an Open-in-Finder button next to it. */
+  onOpenDir?: () => void;
 }
 
 export function SkillList({
@@ -36,6 +39,7 @@ export function SkillList({
   title,
   subtitle,
   hideOwnHeader = false,
+  onOpenDir,
 }: Props) {
   const t = useT();
   const headerTitle = title ?? t('sidebar.allSkills');
@@ -68,7 +72,20 @@ export function SkillList({
 
       {hideOwnHeader && (
         <div className="flex items-center justify-between border-b px-4 py-2 text-xs">
-          <h2 className="font-medium">{headerTitle}</h2>
+          <div className="flex items-center gap-1.5">
+            <h2 className="font-medium">{headerTitle}</h2>
+            {onOpenDir && (
+              <button
+                type="button"
+                onClick={onOpenDir}
+                title={t('header.platform.openDir')}
+                aria-label={t('header.platform.openDir')}
+                className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <FolderOpen className="h-3 w-3" />
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-3">
             {sortSelect}
             <span className="text-muted-foreground">{headerSubtitle}</span>
@@ -115,17 +132,20 @@ function SortSelect({
 }) {
   const t = useT();
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as SkillSort)}
-      aria-label={t('list.sort.label')}
-      title={t('list.sort.tooltip')}
-      className="rounded border border-input bg-background px-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-    >
-      <option value="name">{t('list.sort.name')}</option>
-      <option value="updated">{t('list.sort.updated')}</option>
-      <option value="created">{t('list.sort.created')}</option>
-      <option value="mtime">{t('list.sort.mtime')}</option>
-    </select>
+    <div className="relative inline-flex items-center">
+      <ArrowUpDown className="pointer-events-none absolute left-1.5 h-3 w-3 text-muted-foreground" />
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as SkillSort)}
+        aria-label={t('list.sort.label')}
+        title={t('list.sort.tooltip')}
+        className="rounded border border-input bg-background pl-6 pr-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+      >
+        <option value="name">{t('list.sort.name')}</option>
+        <option value="updated">{t('list.sort.updated')}</option>
+        <option value="created">{t('list.sort.created')}</option>
+        <option value="mtime">{t('list.sort.mtime')}</option>
+      </select>
+    </div>
   );
 }

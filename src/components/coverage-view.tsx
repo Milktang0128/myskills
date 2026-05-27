@@ -10,6 +10,7 @@ import {
   Zap,
   Crown,
   Upload,
+  ArrowUpDown,
   HelpCircle,
   Globe,
   Settings as SettingsIcon,
@@ -301,17 +302,20 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
           )}
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as CoverageSort)}
-            aria-label={t('matrix.sort.label')}
-            title={t('matrix.sort.tooltip')}
-            className="rounded border border-input bg-background px-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-          >
-            <option value="unsynced">{t('matrix.sort.unsynced')}</option>
-            <option value="updated">{t('matrix.sort.updated')}</option>
-            <option value="name">{t('matrix.sort.name')}</option>
-          </select>
+          <div className="relative inline-flex items-center">
+            <ArrowUpDown className="pointer-events-none absolute left-1.5 h-3 w-3 text-muted-foreground" />
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as CoverageSort)}
+              aria-label={t('matrix.sort.label')}
+              title={t('matrix.sort.tooltip')}
+              className="rounded border border-input bg-background pl-6 pr-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            >
+              <option value="unsynced">{t('matrix.sort.unsynced')}</option>
+              <option value="updated">{t('matrix.sort.updated')}</option>
+              <option value="name">{t('matrix.sort.name')}</option>
+            </select>
+          </div>
           {orphanTotal > 0 && (
             <Button
               size="sm"
