@@ -27,6 +27,10 @@
 
 `SKILL.md` 是带 YAML frontmatter 的 Markdown 文件，Claude Code / Codex 这类工具会把它加载为可复用能力（提示词、工具配置、agent 指令）。同时用着多个这样的工具之后，副本就开始在各处漂移。MySkills 把这场混乱整理清楚，且**不动你任何一个原文件**。
 
+<p align="center">
+  <img src="docs/screenshots/coverage-matrix.zh.png" width="900" alt="覆盖矩阵——一行一个技能，一列一个平台；单元格颜色直接告诉你哪些副本已同步、哪些不一致" />
+</p>
+
 ## 安装
 
 从最新版本下载已签名、已公证的 DMG：
@@ -65,6 +69,10 @@ MySkills 写入的位置：
 - **一键回滚**，在「同步历史」里
 - 写入是原子的 —— 临时目录 + `rename`，不会留下半成品状态
 
+<p align="center">
+  <img src="docs/screenshots/sync-confirm.zh.png" width="800" alt="同步确认对话框——把具体改动列在你面前；任何会覆盖已有副本的项还会有琥珀色警告" />
+</p>
+
 ### 从 skills.sh 发现并安装
 
 - 内置搜索对接 [skills.sh](https://skills.sh) —— 社区贡献的 `SKILL.md` 目录，免账号
@@ -78,6 +86,10 @@ MySkills 写入的位置：
 - **自动分类** 把新技能归到你定义的场景里
 - **AI 搜索** 在 Discover 里按自然语言重排目录结果
 - 每个功能独立开关。Key 通过 Electron `safeStorage` 存进 macOS 钥匙串
+
+<p align="center">
+  <img src="docs/screenshots/ai-lens.zh.png" width="900" alt="AI 透视——把整个库聚成命名好的主题，任何一簇可以一键提升为正式场景" />
+</p>
 
 ## 隐私
 
