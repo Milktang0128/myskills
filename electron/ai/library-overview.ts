@@ -141,19 +141,35 @@ export async function generateOverview(language: string): Promise<LibraryOvervie
   );
 
   // Flash/small models occasionally return only the `intro` and drop the
-  // `clusters` array — even at temperature 0. One retry catches this without
-  // forming an open loop. (If a model is reliably bad, no amount of retries
-  // helps; the user should pick a stronger one.)
+  // `clusters` array — even at temperature 0, even with a worked example
+  // in the prompt. Real-world observation: deepseek-v4-flash on a 75-skill
+  // library failed on 2 of 3 manual retries. So we retry up to 3 times
+  // total, and on retries 2+ prepend a directive that flags the previous
+  // empty response. If all 3 fail, throw a clear actionable error rather
+  // than silently filing every skill as "uncategorized" — that disguises
+  // a model-side failure as a successful run, which confuses the user.
+  const MAX_ATTEMPTS = 3;
+  const retryDirective =
+    language === 'zh'
+      ? '前一次尝试只返回了 intro 而没有任何 cluster。本次必须把所有技能聚成 3-8 个 cluster，clusters 数组不能为空。严格按上方 JSON 形状输出。'
+      : 'Previous attempt returned only `intro` with no clusters. You MUST group all skills into 3-8 thematic clusters this time. The `clusters` array must NOT be empty. Output JSON in the exact shape above.';
+
+  // Success criterion is "post-processed has ≥1 cluster", not "parsed has
+  // ≥1 cluster" — earlier version broke too early on cases where the model
+  // returned 8 clusters but every skillId was hallucinated, leaving the
+  // post-processed overview empty.
   let parsed: RawResponse = { intro: '', clusters: [] };
   let rawText = '';
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  let overview: LibraryOverview | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const userContent =
+      attempt === 1 ? prompt.user : `${retryDirective}\n\n${prompt.user}`;
     const res = await client.chat({
       messages: [
         { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'user', content: userContent },
       ],
-      // Determinism over diversity for a structured-output task. 0.3 was
-      // adding nothing but variance in compliance.
+      // Determinism over diversity for a structured-output task.
       temperature: 0,
       jsonMode: true,
       // OpenAI-compatible APIs count max_tokens against reasoning + visible
@@ -165,25 +181,37 @@ export async function generateOverview(language: string): Promise<LibraryOvervie
     });
     rawText = res.text;
     parsed = parseResponse(rawText);
+    const attemptOverview = postProcess(parsed, truncated, language, config.model);
+    const droppedHallucinations =
+      parsed.clusters.reduce((n, c) => n + c.skills.length, 0) -
+      attemptOverview.clusters.reduce((n, c) => n + c.skills.length, 0);
     console.log(
-      `[ai/overview] attempt=${attempt} response chars=${rawText.length} parsed clusters=${parsed.clusters.length}` +
-        ` raw cluster sizes=[${parsed.clusters.map((c) => c.skills.length).join(',')}]`,
+      `[ai/overview] attempt=${attempt}/${MAX_ATTEMPTS} response chars=${rawText.length}` +
+        ` parsed clusters=${parsed.clusters.length} raw cluster sizes=[${parsed.clusters.map((c) => c.skills.length).join(',')}]` +
+        ` post-process clusters=${attemptOverview.clusters.length} uncategorized=${attemptOverview.uncategorized.length} droppedHallucinations=${droppedHallucinations}`,
     );
-    if (parsed.clusters.length > 0) break;
-    if (rawText.length > 0) {
-      console.log('[ai/overview] empty clusters; raw head:', rawText.slice(0, 800));
+    if (attemptOverview.clusters.length > 0) {
+      overview = attemptOverview;
+      break;
     }
-    if (attempt === 1) console.log('[ai/overview] retrying once...');
+    if (rawText.length > 0) {
+      console.log('[ai/overview] no usable clusters; raw head:', rawText.slice(0, 800));
+    }
+    if (attempt < MAX_ATTEMPTS) console.log(`[ai/overview] retrying (attempt ${attempt + 1})...`);
   }
 
-  const overview = postProcess(parsed, truncated, language, config.model);
-  const droppedHallucinations =
-    parsed.clusters.reduce((n, c) => n + c.skills.length, 0) -
-    overview.clusters.reduce((n, c) => n + c.skills.length, 0);
-  console.log(
-    `[ai/overview] post-process clusters=${overview.clusters.length}` +
-      ` uncategorized=${overview.uncategorized.length} droppedHallucinations=${droppedHallucinations}`,
-  );
+  if (!overview) {
+    // All attempts ended with zero usable clusters — either the model never
+    // produced any, or every skillId was hallucinated past both id-match
+    // and name-match in postProcess. Surface a clean error with a concrete
+    // next step rather than disguising failure as a 100%-uncategorized run.
+    throw makeErr(
+      'LLM_NO_CLUSTERS',
+      language === 'zh'
+        ? 'AI 没能整理出聚簇（重试 3 次都没有可用结果）。这通常意味着模型对结构化输出能力不够——试试在设置 → AI 切换到非 flash 模型（如 deepseek-v4 / claude / gpt-4o），或稍后再试。'
+        : 'The model produced no usable clusters across 3 attempts. This usually means the model is too weak for structured output — try switching to a non-flash model in Settings → AI (e.g. deepseek-v4, claude, gpt-4o), or retry later.',
+    );
+  }
 
   // Persist single row. INSERT OR REPLACE keeps id=1 invariant.
   const setHash = computeSetHashFromRows(truncated);
@@ -417,6 +445,12 @@ function postProcess(
   model: string,
 ): LibraryOverview {
   const inputById = new Map(inputSkills.map((s) => [s.id, s]));
+  // Models frequently echo `skillId` as the name string instead of the
+  // literal id — even with explicit "echo id verbatim" prompting and a
+  // worked example. Live test on deepseek-v4-flash showed 75/75 skills
+  // dropped because of this. Lenient case-insensitive name match as a
+  // fallback rescues those runs without changing the prompt contract.
+  const inputByName = new Map(inputSkills.map((s) => [s.name.toLowerCase(), s]));
   const seenSkillIds = new Set<string>();
 
   // Build clusters, dropping hallucinated skill ids + dedup within a cluster.
@@ -425,12 +459,13 @@ function postProcess(
   for (const rc of raw.clusters) {
     const skills: LibraryOverviewSkillEntry[] = [];
     for (const s of rc.skills) {
-      const input = inputById.get(s.skillId);
-      if (!input) continue; // hallucination
-      if (seenSkillIds.has(s.skillId)) continue; // dup across clusters → first wins
-      seenSkillIds.add(s.skillId);
+      let input = inputById.get(s.skillId);
+      if (!input) input = inputByName.get((s.skillId ?? '').toLowerCase());
+      if (!input) continue; // truly hallucinated
+      if (seenSkillIds.has(input.id)) continue; // dup across clusters → first wins
+      seenSkillIds.add(input.id);
       skills.push({
-        skillId: s.skillId,
+        skillId: input.id,
         name: input.name,
         brief: trimBrief(s.brief, input.name),
       });
