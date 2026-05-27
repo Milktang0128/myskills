@@ -182,8 +182,8 @@ export function BulkCategorizeDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !applying && onOpenChange(o)}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-4">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-violet-500" />
             {t('bulkCat.dialog.title')}
@@ -191,6 +191,11 @@ export function BulkCategorizeDialog({
           <DialogDescription>{t('bulkCat.dialog.subtitle')}</DialogDescription>
         </DialogHeader>
 
+        {/* Middle region scrolls when content (especially proposedScenarios
+            with 10+ items) exceeds viewport. DialogContent's max-h-[85vh]
+            keeps the whole dialog within the screen; this wrapper makes
+            sure header and footer stay pinned while the body scrolls. */}
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {loading ? (
           <div className="flex items-center gap-2 py-12 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -271,8 +276,9 @@ export function BulkCategorizeDialog({
             </section>
           </div>
         ) : null}
+        </div>
 
-        <DialogFooter className="flex-row items-center justify-between">
+        <DialogFooter className="shrink-0 flex-row items-center justify-between">
           {plan && !loading && !error ? (
             <div className="text-[11px] text-muted-foreground">
               {summary.create > 0 &&
