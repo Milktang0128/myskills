@@ -58,6 +58,7 @@
   "build": {
     "appId": "com.kanbenzhi.myskills",
     "productName": "MySkills",
+    "copyright": "Copyright © 2026 Milk Tang",
     "directories": {
       "output": "release"
     },

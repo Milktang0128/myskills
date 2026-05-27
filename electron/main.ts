@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, session, shell } from 'electron';
 import * as path from 'node:path';
 import { initPaths } from './paths';
 import { initDb } from './db';
@@ -15,6 +15,7 @@ import { recoverPendingHistory } from './sync/symlink';
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_URL = 'http://localhost:4477';
 const devIconPath = path.join(process.cwd(), 'build', 'icon.png');
+const REPO_URL = 'https://github.com/Milktang0128/myskills';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -122,11 +123,58 @@ function installCsp(): void {
   });
 }
 
+/**
+ * Configure the system About panel + replace the default application menu
+ * so the app menu has a clickable "View on GitHub" entry under About.
+ * macOS's NSHumanReadableCopyright is plain text — embedding a URL there
+ * doesn't make it clickable. The menu item is how we offer the project
+ * link without users having to copy-paste from the About panel.
+ */
+function installAppMenuAndAbout(): void {
+  if (process.platform !== 'darwin') return;
+  const zh = app.getLocale().startsWith('zh');
+  const viewOnGitHubLabel = zh ? '在 GitHub 上查看' : 'View on GitHub';
+
+  app.setAboutPanelOptions({
+    applicationName: 'MySkills',
+    copyright: 'Copyright © 2026 Milk Tang',
+    website: REPO_URL,
+  });
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        {
+          label: viewOnGitHubLabel,
+          click: () => {
+            shell.openExternal(REPO_URL);
+          },
+        },
+        { type: 'separator' },
+        { role: 'services' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(async () => {
   installCsp();
   if (isDev && process.platform === 'darwin') {
     app.dock?.setIcon(devIconPath);
   }
+  installAppMenuAndAbout();
   // Single point where the Electron-owned userData path enters the system.
   // Everything else (db, backups, staging) goes through electron/paths.ts.
   initPaths({ userDataDir: app.getPath('userData') });
