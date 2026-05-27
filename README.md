@@ -27,6 +27,10 @@
 
 A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Code and Codex load as reusable capabilities — prompts, tooling profiles, agent instructions. Once you use more than one of those tools, copies start to drift across folders. MySkills makes that mess legible without modifying any of your files.
 
+<p align="center">
+  <img src="docs/screenshots/coverage-matrix.en.png" width="900" alt="Coverage matrix view — one row per unique skill, one column per platform; cell colour shows which copies are in sync vs. out of sync" />
+</p>
+
 ## Install
 
 Download the signed, notarized DMG:
@@ -65,6 +69,10 @@ What MySkills puts where:
 - **One-click rollback** from Sync History
 - Writes are atomic — temp directory + `rename`, no half-applied state
 
+<p align="center">
+  <img src="docs/screenshots/sync-confirm.en.png" width="800" alt="Sync confirm dialog showing the exact plan + an amber overwrite warning for any item that would replace an existing copy" />
+</p>
+
 ### Discover and install from skills.sh
 
 - Built-in search against [skills.sh](https://skills.sh) — a community catalog of `SKILL.md` skills; no account needed
@@ -78,6 +86,10 @@ What MySkills puts where:
 - **Auto-categorize** new skills into scenarios you've defined
 - **AI search** in Discover re-ranks catalog results against a natural-language need
 - Each feature has its own toggle. Keys live in the macOS Keychain via Electron `safeStorage`
+
+<p align="center">
+  <img src="docs/screenshots/ai-lens.en.png" width="900" alt="AI Lens — clusters the whole library into named themes; each cluster can be promoted into a real scenario" />
+</p>
 
 ## Privacy
 
