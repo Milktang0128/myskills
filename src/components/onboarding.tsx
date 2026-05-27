@@ -24,7 +24,7 @@
  *   intentional: skipping is recoverable; completing is one-shot.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Loader2, Sparkles, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Loader2, X } from 'lucide-react';
 import type { LlmProvider, Platform, PlatformId } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -86,7 +86,7 @@ export function OnboardingWizard({ onDone }: Props) {
         {/* Header: brand + step indicator + skip */}
         <header className="flex shrink-0 items-center justify-between border-b px-5 py-3">
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-violet-500" />
+            <img src="./app-logo.png" alt="" aria-hidden="true" className="h-5 w-5 shrink-0" />
             <span className="text-sm font-semibold">{t('onboarding.welcome.brand')}</span>
             <span className="ml-2 text-[11px] text-muted-foreground">
               {t('onboarding.stepN', { n: stepIdx + 1, total: TOTAL_STEPS })}

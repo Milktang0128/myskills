@@ -207,6 +207,15 @@ export const en = {
   'detail.loc.modified': 'modified {{when}}',
   'detail.loc.adoptTitle': 'Move this version into the core library (with backup); other tools sync automatically',
   'detail.loc.adoptBtn': 'Move to core library',
+  'detail.loc.openInstall': 'Open location',
+  'detail.loc.openInstallTitle': 'Open this skill location on this platform',
+  'detail.loc.copyInstall': 'Copy location',
+  'detail.loc.copyInstallTitle': 'Copy this platform install path',
+  'detail.loc.openTarget': 'Open target',
+  'detail.loc.openTargetTitle': 'Open the real directory the synced copy points to',
+  'detail.loc.copyTarget': 'Copy target',
+  'detail.loc.copyTargetTitle': 'Copy the real directory path the synced copy points to',
+  'detail.loc.copiedPath': 'Copied',
   'detail.loc.broken': 'Broken',
   'detail.loc.disabled': 'Disabled',
   'detail.loc.canonical': 'Core library',
@@ -215,6 +224,7 @@ export const en = {
   'detail.loc.stale': 'Outdated — behind the core library',
   'detail.loc.onlyVersion': 'Orphan version — not yet in the core library',
   'detail.loc.installPrefix': 'install:',
+  'detail.loc.targetPrefix': 'target:',
   'detail.loc.hashPrefix': 'hash:',
 
   // ── Discover view ───────────────────────────────────────────────────────

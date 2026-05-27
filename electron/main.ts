@@ -14,6 +14,7 @@ import { recoverPendingHistory } from './sync/symlink';
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_URL = 'http://localhost:4477';
+const devIconPath = path.join(process.cwd(), 'build', 'icon.png');
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -45,6 +46,7 @@ async function createWindow(): Promise<void> {
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a0a',
+    icon: isDev ? devIconPath : undefined,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -122,6 +124,9 @@ function installCsp(): void {
 
 app.whenReady().then(async () => {
   installCsp();
+  if (isDev && process.platform === 'darwin') {
+    app.dock?.setIcon(devIconPath);
+  }
   // Single point where the Electron-owned userData path enters the system.
   // Everything else (db, backups, staging) goes through electron/paths.ts.
   initPaths({ userDataDir: app.getPath('userData') });

@@ -1,3 +1,4 @@
+import { clipboard, shell } from 'electron';
 import { getDb } from '../db';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
@@ -55,6 +56,21 @@ export function registerSkillHandlers(): void {
     const skill = skills[0]!;
     const fullBody = loadBody(skill);
     return { ...skill, bodyExcerpt: fullBody ?? skill.bodyExcerpt };
+  });
+
+  registerHandler(IPC.skills.openLocation, async (_e, payload) => {
+    const loc = loadLocationFromPayload(payload);
+    const targetPath = pathForLocationAction(loc, payload);
+    const error = await shell.openPath(targetPath);
+    if (error) throw makeError('OPEN_PATH_FAILED', error, { path: targetPath });
+    return { ok: true, path: targetPath };
+  });
+
+  registerHandler(IPC.skills.copyLocationPath, (_e, payload) => {
+    const loc = loadLocationFromPayload(payload);
+    const targetPath = pathForLocationAction(loc, payload);
+    clipboard.writeText(targetPath);
+    return { ok: true, path: targetPath };
   });
 }
 
@@ -176,6 +192,32 @@ function loadSkillsByIds(ids: string[], preloaded?: SkillRow[]): Skill[] {
   }
 
   return rows.map((r) => rowToSkill(r, locByIdMap.get(r.id) ?? [], scByIdMap.get(r.id) ?? []));
+}
+
+function loadLocationFromPayload(payload: unknown): LocationRow {
+  const p = payload as { locationId?: unknown };
+  if (!Number.isInteger(p?.locationId)) {
+    throw makeError('INVALID_INPUT', 'locationId required');
+  }
+  const row = getDb()
+    .prepare('SELECT * FROM skill_locations WHERE id = ?')
+    .get(p.locationId as number) as LocationRow | undefined;
+  if (!row) throw makeError('NOT_FOUND', `location ${p.locationId}`);
+  return row;
+}
+
+function pathForLocationAction(loc: LocationRow, payload: unknown): string {
+  const kind = (payload as { kind?: unknown } | null)?.kind;
+  if (kind === 'target') {
+    if (!loc.is_symlink || loc.is_broken_link || !loc.real_path) {
+      throw makeError('INVALID_INPUT', 'location has no available symlink target');
+    }
+    return loc.real_path;
+  }
+  if (kind != null && kind !== 'install') {
+    throw makeError('INVALID_INPUT', 'kind must be "install" or "target"');
+  }
+  return loc.install_path;
 }
 
 function rowToSkill(r: SkillRow, locations: SkillLocation[], scenarios: ScenarioRef[]): Skill {

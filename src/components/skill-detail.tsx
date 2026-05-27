@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload, Sparkles, X } from 'lucide-react';
+import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
   Scenario,
@@ -364,6 +364,37 @@ function LocationRow({
   busy: boolean;
 }) {
   const t = useT();
+  const [actionBusy, setActionBusy] = useState<'open-install' | 'copy-install' | 'open-target' | 'copy-target' | null>(null);
+  const [copied, setCopied] = useState<'install' | 'target' | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const hasTarget = loc.isSymlink && !loc.isBrokenSymlink && Boolean(loc.realPath);
+
+  async function handleOpenLocation(kind: 'install' | 'target') {
+    setActionBusy(kind === 'install' ? 'open-install' : 'open-target');
+    setActionError(null);
+    try {
+      await api.skills.openLocation(loc.id, kind);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleCopyPath(kind: 'install' | 'target') {
+    setActionBusy(kind === 'install' ? 'copy-install' : 'copy-target');
+    setActionError(null);
+    try {
+      await api.skills.copyLocationPath(loc.id, kind);
+      setCopied(kind);
+      window.setTimeout(() => setCopied((current) => (current === kind ? null : current)), 1400);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   // Decide what status to show + whether Adopt makes sense.
   let statusIcon: React.ReactNode = null;
   let statusLabel = '';
@@ -419,6 +450,54 @@ function LocationRow({
               {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
             </span>
           )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => handleOpenLocation('install')}
+            disabled={actionBusy !== null}
+            title={t('detail.loc.openInstallTitle')}
+          >
+            <FolderOpen className="mr-1 h-3 w-3" />
+            {t('detail.loc.openInstall')}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => handleCopyPath('install')}
+            disabled={actionBusy !== null}
+            title={t('detail.loc.copyInstallTitle')}
+          >
+            <CopyIcon className="mr-1 h-3 w-3" />
+            {copied === 'install' ? t('detail.loc.copiedPath') : t('detail.loc.copyInstall')}
+          </Button>
+          {hasTarget && (
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => handleOpenLocation('target')}
+                disabled={actionBusy !== null}
+                title={t('detail.loc.openTargetTitle')}
+              >
+                <FolderOpen className="mr-1 h-3 w-3" />
+                {t('detail.loc.openTarget')}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => handleCopyPath('target')}
+                disabled={actionBusy !== null}
+                title={t('detail.loc.copyTargetTitle')}
+              >
+                <CopyIcon className="mr-1 h-3 w-3" />
+                {copied === 'target' ? t('detail.loc.copiedPath') : t('detail.loc.copyTarget')}
+              </Button>
+            </>
+          )}
           {canAdopt && (
             <Button
               size="sm"
@@ -436,8 +515,9 @@ function LocationRow({
       </div>
       <div className="mt-2 space-y-0.5 font-mono text-[10px] text-muted-foreground">
         <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
-        {loc.isSymlink && <div className="break-all">→ {loc.realPath}</div>}
+        {loc.isSymlink && <div className="break-all">{t('detail.loc.targetPrefix')} {loc.realPath}</div>}
         {loc.contentHash && <div>{t('detail.loc.hashPrefix')} {loc.contentHash.slice(0, 12)}…</div>}
+        {actionError && <div className="text-destructive">{actionError}</div>}
       </div>
     </div>
   );

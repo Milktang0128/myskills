@@ -210,6 +210,15 @@ export const zh: Dict = {
   'detail.loc.modified': '修改于 {{when}}',
   'detail.loc.adoptTitle': '把这个版本放入核心库（先备份），其他工具自动同步',
   'detail.loc.adoptBtn': '放入核心库',
+  'detail.loc.openInstall': '打开位置',
+  'detail.loc.openInstallTitle': '打开这个平台里的 skill 位置',
+  'detail.loc.copyInstall': '复制位置',
+  'detail.loc.copyInstallTitle': '复制这个平台里的安装路径',
+  'detail.loc.openTarget': '打开目标',
+  'detail.loc.openTargetTitle': '打开同步副本指向的真实目录',
+  'detail.loc.copyTarget': '复制目标',
+  'detail.loc.copyTargetTitle': '复制同步副本指向的真实路径',
+  'detail.loc.copiedPath': '已复制',
   'detail.loc.broken': '失效',
   'detail.loc.disabled': '已禁用',
   'detail.loc.canonical': '核心库',
@@ -218,6 +227,7 @@ export const zh: Dict = {
   'detail.loc.stale': '旧版本 — 比核心库落后',
   'detail.loc.onlyVersion': '孤立版本 — 核心库还没收录',
   'detail.loc.installPrefix': '安装位置：',
+  'detail.loc.targetPrefix': '真实目标：',
   'detail.loc.hashPrefix': '哈希：',
 
   // ── 发现视图 ────────────────────────────────────────────────────────────
