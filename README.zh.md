@@ -23,7 +23,7 @@
 
 ---
 
-**MySkills 是一个本地 Mac 应用，扫描 `~/.claude/skills`、`~/.codex/skills`、`~/.agents/skills` 三个目录，按 name + source 去重，给你一个统一的视图。**
+**MySkills 是一个本地 Mac 应用，扫描你登记的技能目录，按 name + source 去重，给你一个统一的视图。默认登记的是 `~/.claude/skills`、`~/.codex/skills`、`~/.agents/skills` 三个目录；可以在「设置」里增删平台或改路径。**
 
 `SKILL.md` 是带 YAML frontmatter 的 Markdown 文件，Claude Code / Codex 这类工具会把它加载为可复用能力（提示词、工具配置、agent 指令）。同时用着多个这样的工具之后，副本就开始在各处漂移。MySkills 把这场混乱整理清楚，且**不动你任何一个原文件**。
 
