@@ -23,76 +23,68 @@
 
 ---
 
-If you run multiple AI coding agents — Claude Code on one project, Codex on another, a custom shell agent on top — your skills sprawl. The same `pdf-toolkit` shows up in three places. A new install from [skills.sh](https://skills.sh) lands somewhere you forget. The shape of your toolbox blurs.
+**MySkills is a local Mac app that scans `~/.claude/skills`, `~/.codex/skills`, and `~/.agents/skills`, deduplicates by name + source, and gives you one coherent view of every AI agent skill you have.**
 
-**MySkills is a local Mac app that scans those folders, deduplicates by `(name, source)`, and shows one coherent view of what you actually have.**
-
-> Screenshots — drop them in `docs/screenshots/` and update these:
->
-> ![Coverage matrix](docs/screenshots/coverage.png)
-> ![AI Lens](docs/screenshots/ai-lens.png)
+A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Code and Codex load as reusable capabilities — prompts, tooling profiles, agent instructions. Once you use more than one of those tools, copies start to drift across folders. MySkills makes that mess legible without modifying any of your files.
 
 ## Install
 
-Download the signed, notarized DMG from the latest release:
+Download the signed, notarized DMG:
 
 **[→ Releases page](https://github.com/Milktang0128/myskills/releases/latest)**
 
-Apple Silicon only for v0.1.0. macOS 13 (Ventura) or later.
+- **Apple Silicon Macs only** (M1, M2, M3, M4) — Intel build is on the roadmap
+- **macOS 13 (Ventura) or later**
+- DMG is ~116 MB; the installed app is ~280 MB
+- Signed with a Developer ID certificate and stapled with Apple's notary ticket — open with a normal double-click, no Terminal workaround
 
-The DMG is signed with a Developer ID certificate and stapled with Apple's notary ticket — no `xattr -d com.apple.quarantine` ritual needed.
+## On your Mac
+
+What MySkills puts where:
+
+- `~/Library/Application Support/MySkills/myskills.db` — the SQLite database (scenarios, tags, scan results)
+- `~/Library/Application Support/MySkills/backups/` — automatic backups before every sync write; retention is configurable in Settings
+- macOS Keychain — your AI provider API keys, if you enable AI features
+
+**Your `SKILL.md` files are never modified by MySkills.** Tags and scenarios live only in the database above.
+
+> **iCloud caveat:** Don't put `~/.agents/` (your core library directory) inside iCloud Drive. iCloud can "evict" files and leave `.icloud` placeholders that show up as broken copies — keep the core library on a local path.
 
 ## What it does
 
-Three jobs that AI-skill power users do by hand today:
-
 ### See your library in one place
 
-- **List**, **Kanban** (by scenario), or **Coverage matrix** (rows = unique skills, columns = platforms — cell colour signals drift).
-- Per-skill detail drawer with `mtime`, content hash, and resolved location on disk.
-- **Adopt as canonical** promotes one platform's copy as the source of truth and symlinks the rest.
+- **List**, **Kanban** (by scenario), and **Coverage matrix** views. The matrix has one row per unique skill and one column per platform; cell colour shows which copies are in sync vs. out of sync
+- Per-skill detail drawer with last-modified time, content hash, and resolved path on disk
+- **Move to core library** to promote one platform's copy as the master; other platforms get a linked copy that stays in sync
 
-### Sync safely — never the wrong way
+### Sync writes are reviewable
 
-- **Plan → Confirm → Execute** for every write. You see the diff and pick the action.
-- All destructive operations back up to `~/Library/Application Support/MySkills/backups/` first.
-- **One-click rollback** from Sync History.
-- Atomic via temp-dir + `rename`; TOCTOU-defended via inode pinning.
+- Every disk write goes through **Plan → Confirm → Execute**. A dialog shows you exactly what will change before anything happens
+- Destructive operations write to `~/Library/Application Support/MySkills/backups/` first
+- **One-click rollback** from Sync History
+- Writes are atomic — temp directory + `rename`, no half-applied state
 
 ### Discover and install from skills.sh
 
-- Built-in search against [skills.sh](https://skills.sh) — 395k+ community SKILL.md skills, no account needed.
-- Preview the SKILL.md from GitHub raw before installing.
-- Install to any combination of platforms via the same plan-confirm-execute pipeline.
+- Built-in search against [skills.sh](https://skills.sh) — a community catalog of `SKILL.md` skills; no account needed
+- Preview the `SKILL.md` from GitHub raw before installing
+- Install to any combination of platforms via the same plan-confirm-execute pipeline
 
-### AI assist (optional, BYOK)
+### AI assist (optional, bring your own API key)
 
-- Bring your own OpenAI / Anthropic / OpenRouter / DeepSeek / Ollama / custom-baseURL key.
-- **AI Lens** generates a clustered map of your library, lifts AI-named clusters into real scenarios.
-- **Auto-categorize** new skills into scenarios you've defined.
-- **AI search** in Discover re-ranks catalog results against a natural-language need.
-- Each feature has its own toggle in Settings. Keys are stored in the macOS Keychain via Electron `safeStorage`.
-
-## How it works
-
-**Skill identity is the pair `(name, source_key)`.** `source_key` is `local` for now and will be a repo/marketplace slug for future imports. Content is fingerprinted by SHA-256 of `SKILL.md` — updating a skill bumps its `content_hash`, not its identity. Scenarios, tags, and any user state survive edits in place.
-
-**MySkills never writes inside skill directories.** All MySkills-only state lives in `~/Library/Application Support/MySkills/myskills.db` (SQLite). `SKILL.md` files stay untouched.
-
-**Writes go through plan → confirm → execute:**
-
-1. **Plan** is pure read: it walks the sources, classifies each (`in_sync` / `stale` / `only_here` / `missing`), computes diff hashes, and pre-allocates backup paths. Output is a typed `SyncPlan`.
-2. **Confirm** shows you the plan, line by line.
-3. **Execute** backs up first, writes to a temp dir, then atomically `rename`s into place.
-
-Every successful write records `before_hash`, `after_hash`, `backup_path`, and the original `dry_run_plan` in `sync_history` — and is rollback-able.
+- Supports OpenAI / Anthropic / OpenRouter / DeepSeek / Ollama / any OpenAI-compatible endpoint
+- **AI Lens** clusters your library into themes; you can promote any cluster into a real scenario in one click
+- **Auto-categorize** new skills into scenarios you've defined
+- **AI search** in Discover re-ranks catalog results against a natural-language need
+- Each feature has its own toggle. Keys live in the macOS Keychain via Electron `safeStorage`
 
 ## Privacy
 
-- **100% local.** No telemetry. No analytics. No background phone-home.
-- **Scanner only walks the folders you configure** (default: `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`).
-- **AI features are opt-in.** Calls go from your machine directly to your chosen provider — never via us.
-- **"Allow external network" master toggle** in Settings turns off all outbound calls, including the skills.sh catalog.
+- **All processing happens on your machine.** No telemetry, no analytics, no background phone-home
+- The scanner only walks the folders you configure (default: `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`)
+- Network calls are limited to: skills.sh catalog search, and your chosen AI provider. Both are opt-in; both ship from your machine directly to the service — never via us
+- Settings has a master **"Allow external network"** switch — turn it off and MySkills runs fully offline
 
 ## Build from source
 
@@ -102,9 +94,9 @@ npm run rebuild     # rebuild better-sqlite3 against Electron's ABI
 npm run dev         # Next.js dev (:4477) + Electron concurrently
 ```
 
-`npm run package` produces a signed DMG. Requires an Apple Developer ID certificate and a `xcrun notarytool` keychain profile (`myskills-notary` by default — see `scripts/notarize.cjs`).
+`npm run package` produces a signed DMG. Requires an Apple Developer ID certificate and an `xcrun notarytool` keychain profile (`myskills-notary` by default — see `scripts/notarize.cjs`).
 
-**Requirements:** Node 22+, npm 10+, macOS 13+.
+**Requirements:** Node 22+, npm 10+, macOS 13+, Xcode Command Line Tools (for `better-sqlite3` native compilation).
 
 ## Architecture
 
@@ -118,32 +110,51 @@ Two TypeScript projects in one repo:
 
 The renderer runs sandboxed: `nodeIntegration: false`, `contextIsolation: true`, strict CSP, IPC sender validation. All filesystem and database work lives in the main process.
 
-For deeper architecture see [**CLAUDE.md**](./CLAUDE.md). For the full product spec see [**SPEC.md**](./SPEC.md) (Chinese).
+For deeper architecture see [**CLAUDE.md**](./CLAUDE.md) — the file is framed as an LLM coding-assistant brief, but the content is plain architecture notes worth reading. The full product spec is in [**SPEC.md**](./SPEC.md) (Chinese).
+
+<details>
+<summary><strong>How it works (internals)</strong></summary>
+
+**Skill identity is the pair `(name, source_key)`.** `source_key` is `local` for now and will be a repo/marketplace slug for future imports. Content is fingerprinted by SHA-256 of `SKILL.md` — updating a skill bumps its `content_hash`, not its identity. Scenarios, tags, and any user state survive edits in place.
+
+**Writes go through plan → confirm → execute:**
+
+1. **Plan** is pure read: it walks the sources, classifies each cell (`in_sync` / `stale` / `only_here` / `missing`), computes diff hashes, and pre-allocates backup paths. Output is a typed `SyncPlan`.
+2. **Confirm** shows you the plan, line by line.
+3. **Execute** backs up first, writes to a temp dir, then atomically `rename`s into place.
+
+Every successful write records `before_hash`, `after_hash`, `backup_path`, and the original `dry_run_plan` in `sync_history` — and is rollback-able.
+
+</details>
 
 ## Roadmap
 
 | Version | Theme | Status |
 |---|---|---|
-| **v0.1** | MVP-A — read-only inventory, scenarios, Discover, BYOK AI | shipping |
-| v0.2 | MVP-B — sync writes (symlink/copy), enable/disable per location | partial (engine landed, UI gating) |
+| **v0.1** | MVP-A — read-only inventory, scenarios, Discover, optional AI | shipping |
+| v0.2 | MVP-B — sync writes (link / copy modes), enable/disable per location | partial (engine landed, UI gating) |
 | v0.3+ | Project/plugin-level skill scanning, multi-machine awareness, Intel DMG | planned |
 
 **Not planned:**
-- In-app skill editor — use VS Code on the realpath.
-- Cloud sync service — local-first is a feature, not an absence.
-- Windows / Linux ports — outside MVP scope.
+- In-app skill editor — use your usual editor on the realpath
+- Cloud sync — MySkills stays local-only by design
+- Windows / Linux ports — outside MVP scope
+
+## Status
+
+Solo personal project at v0.1.0. No automated test suite yet — verify changes by running the app. If you depend on MySkills for production work, pin to a release tag and watch the repo for updates.
 
 ## Contributing
 
-Issues and PRs welcome. Two things to know first:
+Issues and PRs welcome. Before you open one:
 
-1. **For non-trivial PRs, file an issue first.** MVP scope is intentionally tight, and the architecture has invariants — skill identity, plan→confirm→execute, the IPC boundary — that are easy to violate accidentally. See [CLAUDE.md](./CLAUDE.md) for the short list.
-
-2. **No tests are wired up yet.** Don't claim "tests pass" without first wiring a runner. Verify by running the app.
+1. **For non-trivial PRs, file an issue first.** MVP scope is intentionally tight, and the architecture has invariants — skill identity, plan→confirm→execute, the IPC boundary — that are easy to violate accidentally. The short list lives in [CLAUDE.md](./CLAUDE.md).
+2. **Conventional commit style** (`feat:`, `fix:`, `ux:`, `docs:`, `chore:`). Match the existing log.
+3. **No automated tests yet.** Don't claim "tests pass" — describe what you exercised manually in the PR description.
 
 ## Credits
 
-- [skills.sh](https://skills.sh) — the catalog this app searches against, and the community of SKILL.md authors who made aggregation possible in the first place.
+- [skills.sh](https://skills.sh) — the catalog this app searches against, and the community of `SKILL.md` authors who made aggregation possible in the first place.
 - Built with [Electron](https://electronjs.org/), [Next.js](https://nextjs.org/), [shadcn/ui](https://ui.shadcn.com/), and [Lucide](https://lucide.dev/).
 
 ## License
