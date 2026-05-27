@@ -1,3 +1,4 @@
+import { shell } from 'electron';
 import { registerHandler, makeError } from './dispatcher';
 import { IPC } from '../../shared/ipc-channels';
 import {
@@ -11,6 +12,16 @@ import { KNOWN_PLATFORMS } from '../../shared/known-platforms';
 
 export function registerPlatformHandlers(): void {
   registerHandler(IPC.platforms.list, () => listPlatforms());
+
+  registerHandler(IPC.platforms.openDir, async (_e, payload) => {
+    const p = payload as { id?: string };
+    if (!p?.id) throw makeError('INVALID_INPUT', 'id required');
+    const platform = listPlatforms().find((x) => x.id === p.id);
+    if (!platform) throw makeError('NOT_FOUND', `platform ${p.id}`);
+    const error = await shell.openPath(platform.skillsDir);
+    if (error) throw makeError('OPEN_PATH_FAILED', error, { path: platform.skillsDir });
+    return { ok: true, path: platform.skillsDir };
+  });
 
   registerHandler(IPC.platforms.update, (_e, payload) => {
     const p = payload as { id?: string; skillsDir?: string };

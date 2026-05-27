@@ -68,6 +68,7 @@ export const en = {
   'header.discover': 'Discover',
   'header.scenario': 'Scenario',
   'header.platform': 'Platform',
+  'header.platform.openDir': 'Reveal this folder in Finder',
   'header.scope.broken': 'Broken copies',
   'header.scope.duplicate': 'Duplicates',
   'header.scope.unscenarized': 'Unscenarized Skills',

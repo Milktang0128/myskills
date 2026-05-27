@@ -6,10 +6,10 @@ import {
   Copy as CopyIcon,
   HelpCircle,
   Folder,
+  Crown,
   Settings as SettingsIcon,
   Plus,
   Pencil,
-  RefreshCw,
   History as HistoryIcon,
   Grid3x3,
   Globe,
@@ -42,6 +42,8 @@ interface Props {
   filter: SkillFilter;
   onFilterChange: (f: SkillFilter) => void;
   platforms: Platform[];
+  /** Canonical platform id, drives sidebar ordering + crown badge. */
+  canonicalPlatform: string;
   scenarios: Scenario[];
   stats: AppStats | null;
   onCreateScenario: () => void;
@@ -51,8 +53,6 @@ interface Props {
   onSelectHistory: () => void;
   /** Switch the workspace to the Settings view. */
   onSelectSettings: () => void;
-  onRescan: () => void;
-  scanning: boolean;
 }
 
 interface ScopeItem {
@@ -71,14 +71,13 @@ export function Sidebar({
   filter,
   onFilterChange,
   platforms,
+  canonicalPlatform,
   scenarios,
   stats,
   onCreateScenario,
   onSelectScenarios,
   onSelectHistory,
   onSelectSettings,
-  onRescan,
-  scanning,
 }: Props) {
   const t = useT();
   const scopes = useMemo<ScopeItem[]>(
@@ -121,40 +120,10 @@ export function Sidebar({
       {/* Top region — pure drag bar, same height as main header (h-12, 48px)
           so the border-b lines up across the entire window. macOS traffic
           lights live here; we deliberately keep this region empty so they
-          have visual breathing room. Status info lives below. */}
+          have visual breathing room. Scan status used to live below this
+          bar but moved up to the main header in PR #_ — it took a sidebar
+          row that the active-state highlight already conveyed. */}
       <div className="titlebar-drag h-12 shrink-0 border-b" />
-
-      {/* Scan status row — lives below the top bar, in the sidebar's regular
-          content flow. Ambient info (dot + count) on its own line; the small
-          refresh icon is the only interactive element. */}
-      <div className="flex items-center gap-2 px-3 py-2.5">
-        <span
-          className={cn(
-            'h-1.5 w-1.5 shrink-0 rounded-full',
-            scanning ? 'animate-pulse bg-amber-500' : 'bg-emerald-500',
-          )}
-        />
-        <span className="whitespace-nowrap text-[11.5px] text-muted-foreground">
-          {scanning ? t('sidebar.scanBanner.scanning') : t('sidebar.scanBanner.scanned')}
-        </span>
-        <span className="ml-auto whitespace-nowrap text-[11.5px] tabular-nums text-muted-foreground">
-          {t('sidebar.scanBanner.count', { count: stats?.totalSkills ?? 0 })}
-        </span>
-        <button
-          type="button"
-          onClick={onRescan}
-          disabled={scanning}
-          title={t('sidebar.scanBanner.action')}
-          aria-label={t('sidebar.scanBanner.action')}
-          className={cn(
-            'inline-flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground transition-colors',
-            'hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          )}
-        >
-          <RefreshCw className={cn('h-3 w-3', scanning && 'animate-spin')} />
-        </button>
-      </div>
 
       <ScrollArea className="flex-1 px-2 scrollbar-thin">
         <Section title={t('sidebar.section.library')}>
@@ -201,17 +170,35 @@ export function Sidebar({
         </Section>
 
         <Section title={t('sidebar.section.platforms')}>
-          {platforms.map((p) => (
-            <SidebarRow
-              key={p.id}
-              active={isPlatformActive(p.id)}
-              onClick={() => onFilterChange({ scope: 'all', platforms: [p.id] })}
-              icon={<Folder className="h-4 w-4" />}
-              count={stats?.byPlatform?.[p.id]}
-            >
-              {p.label}
-            </SidebarRow>
-          ))}
+          {/* Canonical platform leads — it's the core library that the
+              other platforms point to. Crown icon mirrors the coverage
+              matrix's column marker so users learn one symbol once. */}
+          {[...platforms]
+            .sort((a, b) => {
+              if (a.id === canonicalPlatform) return -1;
+              if (b.id === canonicalPlatform) return 1;
+              return a.sortOrder - b.sortOrder;
+            })
+            .map((p) => {
+              const isCanonical = p.id === canonicalPlatform;
+              return (
+                <SidebarRow
+                  key={p.id}
+                  active={isPlatformActive(p.id)}
+                  onClick={() => onFilterChange({ scope: 'all', platforms: [p.id] })}
+                  icon={
+                    isCanonical ? (
+                      <Crown className="h-4 w-4 text-amber-500" />
+                    ) : (
+                      <Folder className="h-4 w-4" />
+                    )
+                  }
+                  count={stats?.byPlatform?.[p.id]}
+                >
+                  {p.label}
+                </SidebarRow>
+              );
+            })}
         </Section>
 
         <Section

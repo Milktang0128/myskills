@@ -72,6 +72,7 @@ export const zh: Dict = {
   'header.discover': '发现',
   'header.scenario': '场景',
   'header.platform': '平台',
+  'header.platform.openDir': '在 Finder 中打开此目录',
   'header.scope.broken': '副本失效',
   'header.scope.duplicate': '重复项',
   'header.scope.unscenarized': '未分类的技能',

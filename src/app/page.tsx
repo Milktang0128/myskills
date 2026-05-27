@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutList, Columns3, Search, Sparkles } from 'lucide-react';
+import { LayoutList, Columns3, Search, Sparkles, RefreshCw } from 'lucide-react';
 import type { AppStats, Platform, Scenario, Skill, SkillFilter, SkillSort } from '@shared/types';
 import { api } from '@/lib/api';
 import { Sidebar, type SidebarView } from '@/components/sidebar';
@@ -45,6 +45,10 @@ export default function Workspace() {
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
+  // The platform that hosts the core library. Drives sidebar ordering +
+  // the crown icon. Sourced from the canonical_platform setting on each
+  // refreshMeta; defaults to 'shared'.
+  const [canonicalPlatform, setCanonicalPlatform] = useState<string>('shared');
   const [sidebarView, setSidebarView] = useState<SidebarView>('matrix');
   const [libraryView, setLibraryView] = useState<LibraryView>('list');
   const [filter, setFilter] = useState<SkillFilter>({ scope: 'all' });
@@ -137,14 +141,16 @@ export default function Workspace() {
   const refreshMeta = useCallback(async () => {
     if (!bridgeReady) return;
     try {
-      const [pls, scs, st] = await Promise.all([
+      const [pls, scs, st, canonical] = await Promise.all([
         api.platforms.list(),
         api.scenarios.list(),
         api.settings.stats(),
+        api.settings.get('canonical_platform'),
       ]);
       setPlatforms(pls);
       setScenarios(scs);
       setStats(st);
+      setCanonicalPlatform(canonical ?? 'shared');
     } catch (e) {
       console.error('meta refresh failed', e);
     }
@@ -256,20 +262,6 @@ export default function Workspace() {
     setToast(msg);
   }
 
-  // Header title resolves through (sidebarView, libraryView) rather than the
-  // old flat WorkspaceView. AI Lens replaces the old 'map' title; the i18n
-  // key was already renamed.
-  const headerTitle = (() => {
-    if (sidebarView === 'matrix') return t('header.coverage');
-    if (sidebarView === 'discover') return t('header.discover');
-    if (sidebarView === 'history') return t('header.history');
-    if (sidebarView === 'scenarios') return t('header.scenarios');
-    if (sidebarView === 'settings') return t('header.settings');
-    if (effectiveLibraryView === 'ai-lens') return t('header.aiLens');
-    if (effectiveLibraryView === 'kanban') return t('header.kanban');
-    return titleForListFilter(filter, platforms, scenarios, t);
-  })();
-
   const searchPlaceholder =
     sidebarView === 'matrix'
       ? t('app.search.matrix.placeholder')
@@ -313,6 +305,7 @@ export default function Workspace() {
           setSelectedId(null);
         }}
         platforms={platforms}
+        canonicalPlatform={canonicalPlatform}
         scenarios={scenarios}
         stats={stats}
         onCreateScenario={() => setScenarioFormOpen(true)}
@@ -328,8 +321,6 @@ export default function Workspace() {
           setSidebarView('settings');
           setSelectedId(null);
         }}
-        onRescan={runScan}
-        scanning={scanning}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -339,10 +330,43 @@ export default function Workspace() {
             OUT via `titlebar-no-drag`. The earlier version wrapped the entire
             inner row in no-drag, leaving only the 68px traffic-light spacer
             draggable, which produced the "sometimes works" feeling. */}
-        <header className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b pr-3">
-          {/* Reserve room for macOS traffic lights */}
-          <div className="w-[68px]" />
-          <h1 className="text-sm font-semibold">{headerTitle}</h1>
+        <header className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b px-3">
+          {/* No traffic-light spacer here — traffic lights live above the
+              sidebar's drag region (see Sidebar's top div). The previous
+              68px spacer pushed everything in the main header inward for
+              no reason. Status now hugs the left edge. */}
+          {/* Scan status — moved here from the sidebar. The old h1 page
+              title was redundant with the sidebar highlight + the
+              sub-toolbar count + each view's inner header; deleting it
+              freed the spot for ambient state that's globally useful. */}
+          <div className="titlebar-no-drag flex items-center gap-2">
+            <span
+              className={cn(
+                'h-1.5 w-1.5 shrink-0 rounded-full',
+                scanning ? 'animate-pulse bg-amber-500' : 'bg-emerald-500',
+              )}
+            />
+            <span className="whitespace-nowrap text-xs text-muted-foreground">
+              {scanning ? t('sidebar.scanBanner.scanning') : t('sidebar.scanBanner.scanned')}
+            </span>
+            <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
+              · {t('sidebar.scanBanner.count', { count: stats?.totalSkills ?? 0 })}
+            </span>
+            <button
+              type="button"
+              onClick={runScan}
+              disabled={scanning}
+              title={t('sidebar.scanBanner.action')}
+              aria-label={t('sidebar.scanBanner.action')}
+              className={cn(
+                'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors',
+                'hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              )}
+            >
+              <RefreshCw className={cn('h-3 w-3', scanning && 'animate-spin')} />
+            </button>
+          </div>
           <div className="titlebar-no-drag ml-auto flex items-center gap-2">
             {sidebarView === 'discover' && (
               <ModeSegmented
@@ -469,6 +493,17 @@ export default function Workspace() {
                   title={titleForListFilter(filter, platforms, scenarios, t)}
                   subtitle={t('list.subtitle.count', { count: skills.length })}
                   hideOwnHeader
+                  onOpenDir={
+                    filter.platforms?.length === 1
+                      ? async () => {
+                          try {
+                            await api.platforms.openDir(filter.platforms![0]!);
+                          } catch (err) {
+                            showToast(err instanceof Error ? err.message : String(err));
+                          }
+                        }
+                      : undefined
+                  }
                 />
               </>
             )}

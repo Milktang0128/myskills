@@ -103,6 +103,8 @@ export const api = {
       bridge().invoke(IPC.platforms.knownCandidates) as Promise<
         Array<{ id: string; label: string; defaultDir: string; description: string }>
       >,
+    openDir: (id: string) =>
+      bridge().invoke(IPC.platforms.openDir, { id }) as Promise<{ ok: true; path: string }>,
   },
   skills: {
     list: (filter: SkillFilter = {}) => bridge().invoke(IPC.skills.list, filter) as Promise<Skill[]>,

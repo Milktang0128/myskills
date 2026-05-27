@@ -12,6 +12,7 @@ export const IPC = {
     delete: 'platforms:delete',
     probe: 'platforms:probe',
     knownCandidates: 'platforms:knownCandidates',
+    openDir: 'platforms:openDir',
   },
   skills: {
     list: 'skills:list',
