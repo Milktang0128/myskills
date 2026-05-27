@@ -23,7 +23,7 @@
 
 ---
 
-**MySkills is a local Mac app that scans `~/.claude/skills`, `~/.codex/skills`, and `~/.agents/skills`, deduplicates by name + source, and gives you one coherent view of every AI agent skill you have.**
+**MySkills is a local Mac app that scans the skill directories you've registered, deduplicates by name + source, and gives you one coherent view of every AI agent skill you have. The default registry is `~/.claude/skills`, `~/.codex/skills`, and `~/.agents/skills`; you can add, remove, or repath platforms in Settings.**
 
 A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Code and Codex load as reusable capabilities — prompts, tooling profiles, agent instructions. Once you use more than one of those tools, copies start to drift across folders. MySkills makes that mess legible without modifying any of your files.
 
