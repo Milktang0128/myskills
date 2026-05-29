@@ -52,7 +52,7 @@ What MySkills puts where:
 
 **Your `SKILL.md` files are never modified by MySkills.** Tags and scenarios live only in the database above.
 
-> **iCloud caveat:** Don't put `~/.agents/` (your core library directory) inside iCloud Drive. iCloud can "evict" files and leave `.icloud` placeholders that show up as broken copies — keep the core library on a local path.
+> **iCloud caveat:** Don't put `~/.agents/` (your main source directory) inside iCloud Drive. iCloud can "evict" files and leave `.icloud` placeholders that show up as broken copies — keep the main source on a local path.
 
 ## What it does
 
@@ -60,7 +60,7 @@ What MySkills puts where:
 
 - **List**, **Kanban** (by scenario), and **Coverage matrix** views. The matrix has one row per unique skill and one column per platform; cell colour shows which copies are in sync vs. out of sync
 - Per-skill detail drawer with last-modified time, content hash, and resolved path on disk
-- **Move to core library** to promote one platform's copy as the master; other platforms get a linked copy that stays in sync
+- **Move to main source** to promote one platform's copy as the master; other platforms get a linked copy that stays in sync
 
 ### Sync writes are reviewable
 

@@ -64,22 +64,26 @@ export function deletePlatform(id: string): void {
     | undefined;
   if (!row) throw new Error(`platform "${id}" not found`);
   if (row.is_builtin) throw new Error(`cannot delete built-in platform "${id}"`);
-  // Forbid deletion if there are still skill_locations referencing it — otherwise the FK fails.
-  const usage = getDb().prepare('SELECT COUNT(*) AS c FROM skill_locations WHERE platform_id = ?').get(id) as
-    | { c: number }
-    | undefined;
-  if ((usage?.c ?? 0) > 0) {
-    throw new Error(
-      `platform "${id}" still has ${usage?.c} skill location(s) — disable it or remove the skills first`,
-    );
-  }
-  getDb().prepare('DELETE FROM platforms WHERE id = ?').run(id);
+  // "Remove" means stop tracking this platform in MySkills' DB. The user's
+  // SKILL.md files on disk are NOT touched — they stay exactly where they
+  // are. Drop the metadata rows (skill_locations, then any skill that no
+  // longer has any location anywhere, then the platform row) in a single
+  // transaction so a partial failure can't leave a dangling FK.
+  const db = getDb();
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM skill_locations WHERE platform_id = ?').run(id);
+    db.prepare(
+      'DELETE FROM skills WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_locations)',
+    ).run();
+    db.prepare('DELETE FROM platforms WHERE id = ?').run(id);
+  });
+  tx();
   // If the canonical was set to this platform, fall back to 'shared' (or whatever first builtin).
-  const cano = getDb().prepare("SELECT value FROM settings WHERE key = 'canonical_platform'").get() as
+  const cano = db.prepare("SELECT value FROM settings WHERE key = 'canonical_platform'").get() as
     | { value: string }
     | undefined;
   if (cano?.value === id) {
-    getDb().prepare("UPDATE settings SET value = 'shared' WHERE key = 'canonical_platform'").run();
+    db.prepare("UPDATE settings SET value = 'shared' WHERE key = 'canonical_platform'").run();
   }
 }
 

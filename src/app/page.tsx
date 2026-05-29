@@ -45,7 +45,7 @@ export default function Workspace() {
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
-  // The platform that hosts the core library. Drives sidebar ordering +
+  // The platform that hosts the main source. Drives sidebar ordering +
   // the crown icon. Sourced from the canonical_platform setting on each
   // refreshMeta; defaults to 'shared'.
   const [canonicalPlatform, setCanonicalPlatform] = useState<string>('shared');

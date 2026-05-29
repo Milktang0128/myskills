@@ -11,13 +11,13 @@ import {
   FileX2,
   Plus,
   Trash2,
-  Search,
   Check,
   X,
   Wifi,
   Sparkles,
   KeyRound,
   ShieldCheck,
+  Boxes,
 } from 'lucide-react';
 import type {
   AppStats,
@@ -71,6 +71,8 @@ export function SettingsView({ onChanged }: Props) {
   });
   const [customError, setCustomError] = useState<string | null>(null);
   const [savingCustom, setSavingCustom] = useState(false);
+  // Custom-platform form is collapsed by default — most users just add presets.
+  const [showCustomForm, setShowCustomForm] = useState(false);
   // External-network master toggle.
   const [networkAllowed, setNetworkAllowed] = useState(true);
   const [savingNetwork, setSavingNetwork] = useState(false);
@@ -235,7 +237,7 @@ export function SettingsView({ onChanged }: Props) {
     }
   }
 
-  async function submitCustom() {
+  async function submitCustom(): Promise<boolean> {
     setCustomError(null);
     setSavingCustom(true);
     try {
@@ -246,8 +248,10 @@ export function SettingsView({ onChanged }: Props) {
       });
       setCustomForm({ id: '', label: '', skillsDir: '' });
       await refresh();
+      return true;
     } catch (err) {
       setCustomError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setSavingCustom(false);
     }
@@ -360,37 +364,272 @@ export function SettingsView({ onChanged }: Props) {
 
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="mx-auto w-full max-w-3xl space-y-8 p-6">
+          {/* Unified Platforms section — merges what used to be three
+              separate blocks (canonical chooser at top + Discover list +
+              Platform Directories list + Add Custom form). One mental
+              model: this is the complete list of SKILL.md sources, with
+              every per-row action exposed in context (set as core, edit
+              path, remove, or add a not-yet-enabled preset). */}
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
-              <Crown className="h-4 w-4 text-amber-500" />
-              {t('settings.canonical.header')}
+              <Boxes className="h-4 w-4" />
+              {t('settings.platforms.unified.header')}
             </h2>
             <p className="text-xs text-muted-foreground">
-              {t('settings.canonical.help')}
+              {t('settings.platforms.unified.help')}
             </p>
-            <div className="flex flex-wrap items-center gap-2">
-              {platforms.map((p) => {
-                const active = p.id === canonical;
-                return (
-                  <button
-                    key={p.id}
-                    onClick={() => saveCanonical(p.id)}
-                    disabled={savingCanonical}
-                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                      active
-                        ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30'
-                        : 'hover:bg-accent'
-                    }`}
-                  >
-                    {active && <Crown className="h-3.5 w-3.5 text-amber-500" />}
-                    <PlatformBadge platformId={p.id} />
-                    <span>{p.label}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      ({stats?.byPlatform?.[p.id] ?? 0})
-                    </span>
-                  </button>
+
+            <div className="space-y-3">
+              {/* Registered platforms — canonical pinned to the top so the
+                  crown is the first thing the eye lands on. */}
+              {[...platforms]
+                .sort((a, b) => {
+                  if (a.id === canonical) return -1;
+                  if (b.id === canonical) return 1;
+                  return a.sortOrder - b.sortOrder;
+                })
+                .map((p) => {
+                  const isCanonical = p.id === canonical;
+                  const editVal = edits[p.id] ?? p.skillsDir;
+                  const dirty = editVal.trim() !== p.skillsDir && editVal.trim().length > 0;
+                  return (
+                    <div key={p.id} className="space-y-2 rounded-md border bg-card p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <PlatformBadge platformId={p.id} />
+                          <span className="text-sm font-medium">{p.label}</span>
+                          <span className="rounded bg-secondary px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+                            {p.isBuiltin
+                              ? t('settings.platforms.builtinBadge')
+                              : t('settings.platforms.customBadge')}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {t('settings.platforms.skillsSuffix', {
+                              count: stats?.byPlatform?.[p.id] ?? 0,
+                            })}
+                          </span>
+                        </div>
+                        {isCanonical ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
+                            <Crown className="h-3 w-3" />
+                            {t('settings.platforms.canonical.badge')}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => saveCanonical(p.id)}
+                            disabled={savingCanonical}
+                            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
+                          >
+                            <Crown className="h-3 w-3" />
+                            {t('settings.platforms.canonical.setAs')}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          id={`dir-${p.id}`}
+                          value={editVal}
+                          onChange={(e) =>
+                            setEdits((prev) => ({ ...prev, [p.id]: e.target.value }))
+                          }
+                          className="font-mono text-xs"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => saveDir(p)}
+                          disabled={savingId === p.id || !dirty}
+                        >
+                          {savingId === p.id
+                            ? t('settings.platforms.savingBtn')
+                            : t('settings.platforms.saveBtn')}
+                        </Button>
+                        {!p.isBuiltin && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => deletePlatform(p)}
+                            disabled={deletingId === p.id}
+                            title={t('settings.platforms.removeTitle')}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+              {/* Unregistered preset candidates — only render the section if
+                  there's actually something to add. Otherwise the divider
+                  reads as "you can also add… nothing", which is noise. */}
+              {(() => {
+                const unregistered = candidates.filter(
+                  (c) => !probeResults[c.id]?.alreadyRegistered,
                 );
-              })}
+                if (unregistered.length === 0) return null;
+                return (
+                  <div className="space-y-3 pt-1">
+                    <div className="flex items-center gap-3 text-[10px] uppercase tracking-wider text-muted-foreground">
+                      <span className="h-px flex-1 bg-border" />
+                      <span>{t('settings.platforms.discoverSeparator')}</span>
+                      <span className="h-px flex-1 bg-border" />
+                    </div>
+                    {unregistered.map((cand) => {
+                      const probe = probeResults[cand.id];
+                      const exists = probe?.exists ?? false;
+                      const skillsLine =
+                        probe && probe.exists && probe.readable
+                          ? ` · ${
+                              probe.skillCount === 1
+                                ? t('settings.discover.skillsDetected', { count: probe.skillCount })
+                                : t('settings.discover.skillsDetectedMany', {
+                                    count: probe.skillCount,
+                                  })
+                            }`
+                          : probe && !probe.exists
+                          ? ` · ${t('settings.discover.pathNotFound')}`
+                          : '';
+                      return (
+                        <div
+                          key={cand.id}
+                          className="flex items-start gap-3 rounded-md border border-dashed bg-card/50 p-3"
+                        >
+                          <span className="mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full">
+                            {exists ? (
+                              <Check className="h-3.5 w-3.5 text-blue-600" />
+                            ) : (
+                              <X className="h-3.5 w-3.5 text-muted-foreground/40" />
+                            )}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-medium">{cand.label}</span>
+                              <span className="rounded bg-secondary px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+                                {t('settings.platforms.presetBadge')}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-muted-foreground">
+                              {t('settings.platforms.recommendedPath')}{' '}
+                              <span
+                                className="font-mono break-all"
+                                title={probe?.resolvedPath ?? cand.defaultDir}
+                              >
+                                {probe?.resolvedPath ?? cand.defaultDir}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-muted-foreground">
+                              {cand.description}
+                              {skillsLine}
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => enableCandidate(cand)}
+                            disabled={addingCandidate === cand.id}
+                          >
+                            <Plus className="mr-1 h-3.5 w-3.5" />
+                            {addingCandidate === cand.id
+                              ? t('settings.discover.adding')
+                              : t('settings.discover.add')}
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              {/* Custom-platform form: collapsed by default. Only the
+                  "Add custom" power user needs this; the form takes up
+                  enough vertical space that always-on costs everyone. */}
+              <div className="pt-1">
+                {!showCustomForm ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowCustomForm(true)}
+                  >
+                    <Plus className="mr-1.5 h-3.5 w-3.5" />
+                    {t('settings.platforms.addCustomToggle')}
+                  </Button>
+                ) : (
+                  <div className="space-y-3 rounded-md border bg-card p-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-sm font-medium">{t('settings.custom.header')}</h3>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowCustomForm(false);
+                          setCustomError(null);
+                        }}
+                        className="inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                        aria-label={t('settings.platforms.addCustomClose')}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t('settings.custom.help')}
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:items-center">
+                      <Label htmlFor="cp-id">{t('settings.custom.id')}</Label>
+                      <Input
+                        id="cp-id"
+                        placeholder={t('settings.custom.idPlaceholder')}
+                        value={customForm.id}
+                        onChange={(e) =>
+                          setCustomForm({ ...customForm, id: e.target.value })
+                        }
+                        className="font-mono text-xs"
+                      />
+                      <Label htmlFor="cp-label">{t('settings.custom.labelField')}</Label>
+                      <Input
+                        id="cp-label"
+                        placeholder={t('settings.custom.labelPlaceholder')}
+                        value={customForm.label}
+                        onChange={(e) =>
+                          setCustomForm({ ...customForm, label: e.target.value })
+                        }
+                      />
+                      <Label htmlFor="cp-dir">{t('settings.custom.dir')}</Label>
+                      <Input
+                        id="cp-dir"
+                        placeholder={t('settings.custom.dirPlaceholder')}
+                        value={customForm.skillsDir}
+                        onChange={(e) =>
+                          setCustomForm({ ...customForm, skillsDir: e.target.value })
+                        }
+                        className="font-mono text-xs"
+                      />
+                    </div>
+                    {customError && (
+                      <p className="text-xs text-destructive">{customError}</p>
+                    )}
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        onClick={async () => {
+                          const ok = await submitCustom();
+                          if (ok) setShowCustomForm(false);
+                        }}
+                        disabled={
+                          savingCustom ||
+                          !customForm.id.trim() ||
+                          !customForm.label.trim() ||
+                          !customForm.skillsDir.trim()
+                        }
+                      >
+                        {savingCustom
+                          ? t('settings.custom.adding')
+                          : t('settings.custom.addBtn')}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </section>
 
@@ -631,172 +870,6 @@ export function SettingsView({ onChanged }: Props) {
               ))}
             </section>
           )}
-
-          <Separator />
-
-          <section className="space-y-3">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
-              <Search className="h-4 w-4" />
-              {t('settings.discover.header')}
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              {t('settings.discover.help')}
-            </p>
-            <div className="space-y-2">
-              {candidates.map((cand) => {
-                const probe = probeResults[cand.id];
-                const isRegistered = !!probe?.alreadyRegistered;
-                const exists = probe?.exists ?? false;
-                const skillsLine =
-                  probe && probe.exists && probe.readable
-                    ? ` · ${probe.skillCount === 1 ? t('settings.discover.skillsDetected', { count: probe.skillCount }) : t('settings.discover.skillsDetectedMany', { count: probe.skillCount })}`
-                    : probe && !probe.exists
-                    ? ` · ${t('settings.discover.pathNotFound')}`
-                    : '';
-                return (
-                  <div
-                    key={cand.id}
-                    className="flex items-center gap-3 rounded-md border bg-card px-3 py-2"
-                  >
-                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full">
-                      {isRegistered ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-600" />
-                      ) : exists ? (
-                        <Check className="h-3.5 w-3.5 text-blue-600" />
-                      ) : (
-                        <X className="h-3.5 w-3.5 text-muted-foreground/40" />
-                      )}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">{cand.label}</div>
-                      <div
-                        className="font-mono text-[10px] text-muted-foreground truncate"
-                        title={probe?.resolvedPath ?? cand.defaultDir}
-                      >
-                        {probe?.resolvedPath ?? cand.defaultDir}
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        {cand.description}{skillsLine}
-                      </div>
-                    </div>
-                    {isRegistered ? (
-                      <span className="text-[11px] text-muted-foreground">{t('settings.discover.enabled')}</span>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => enableCandidate(cand)}
-                        disabled={addingCandidate === cand.id}
-                      >
-                        {addingCandidate === cand.id ? t('settings.discover.adding') : t('settings.discover.add')}
-                      </Button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="space-y-3">
-            <h2 className="text-base font-semibold">{t('settings.platforms.header')}</h2>
-            <p className="text-xs text-muted-foreground">
-              {t('settings.platforms.helpEdit')}
-            </p>
-            <div className="space-y-3">
-              {platforms.map((p) => (
-                <div key={p.id} className="space-y-1.5">
-                  <Label htmlFor={`dir-${p.id}`} className="flex items-center gap-2">
-                    {p.label}
-                    {!p.isBuiltin && (
-                      <span className="rounded bg-secondary px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
-                        {t('settings.platforms.customBadge')}
-                      </span>
-                    )}
-                    <span className="text-[10px] font-normal text-muted-foreground">
-                      {t('settings.platforms.skillsSuffix', { count: stats?.byPlatform?.[p.id] ?? 0 })}
-                    </span>
-                  </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id={`dir-${p.id}`}
-                      value={edits[p.id] ?? p.skillsDir}
-                      onChange={(e) => setEdits((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                      className="font-mono text-xs"
-                    />
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => saveDir(p)}
-                      disabled={savingId === p.id || !edits[p.id] || edits[p.id] === p.skillsDir}
-                    >
-                      {savingId === p.id ? t('settings.platforms.savingBtn') : t('settings.platforms.saveBtn')}
-                    </Button>
-                    {!p.isBuiltin && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => deletePlatform(p)}
-                        disabled={deletingId === p.id}
-                        title={t('settings.platforms.removeTitle')}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section className="space-y-3">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
-              <Plus className="h-4 w-4" />
-              {t('settings.custom.header')}
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              {t('settings.custom.help')}
-            </p>
-            <div className="grid gap-2 sm:grid-cols-[140px_1fr] sm:grid-rows-[auto_auto_auto] sm:items-center">
-              <Label htmlFor="cp-id">{t('settings.custom.id')}</Label>
-              <Input
-                id="cp-id"
-                placeholder={t('settings.custom.idPlaceholder')}
-                value={customForm.id}
-                onChange={(e) => setCustomForm({ ...customForm, id: e.target.value })}
-                className="font-mono text-xs"
-              />
-              <Label htmlFor="cp-label">{t('settings.custom.labelField')}</Label>
-              <Input
-                id="cp-label"
-                placeholder={t('settings.custom.labelPlaceholder')}
-                value={customForm.label}
-                onChange={(e) => setCustomForm({ ...customForm, label: e.target.value })}
-              />
-              <Label htmlFor="cp-dir">{t('settings.custom.dir')}</Label>
-              <Input
-                id="cp-dir"
-                placeholder={t('settings.custom.dirPlaceholder')}
-                value={customForm.skillsDir}
-                onChange={(e) => setCustomForm({ ...customForm, skillsDir: e.target.value })}
-                className="font-mono text-xs"
-              />
-            </div>
-            {customError && <p className="text-xs text-destructive">{customError}</p>}
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                onClick={submitCustom}
-                disabled={
-                  savingCustom ||
-                  !customForm.id.trim() ||
-                  !customForm.label.trim() ||
-                  !customForm.skillsDir.trim()
-                }
-              >
-                {savingCustom ? t('settings.custom.adding') : t('settings.custom.addBtn')}
-              </Button>
-            </div>
-          </section>
 
           <Separator />
 
