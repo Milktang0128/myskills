@@ -51,13 +51,24 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
   const t = useT();
   const [matrix, setMatrix] = useState<CoverageMatrix | null>(null);
   const [filter, setFilter] = useState<CoverageFilter>('all');
-  // Default "unsynced first" because the matrix exists to surface rows
-  // needing attention. Pure alphabetical for 70+ rows defeats the point.
-  const [sort, setSort] = useState<CoverageSort>('unsynced');
+  // Default "recently updated" — most user sessions start with "what did I
+  // just touch?". Out-of-sync first looks tidy on paper but on a healthy
+  // library many rows are already in sync, so users hit the matrix to look
+  // for recent activity more often than to triage drift. Triage is still
+  // one click away in the sort dropdown.
+  const [sort, setSort] = useState<CoverageSort>('updated');
   const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
+  // Snapshot of rows captured the moment they were acted on. While a row's
+  // skillId is in this Map, sortRows uses the snapshot's state to compute
+  // sort keys — so the row visually stays where the user clicked, even
+  // though the underlying data now says "in sync". Clears on sort/filter
+  // change (deliberate user reset) and on view re-mount (next visit).
+  const [pinnedRows, setPinnedRows] = useState<Map<string, CoverageRow>>(
+    () => new Map(),
+  );
 
   const MATRIX_FILTERS: { value: CoverageFilter; label: string; hint: string }[] = useMemo(
     () => [
@@ -158,8 +169,16 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
       ? filteredRows.filter((r) => scenarioSkillIds.has(r.skillId))
       : filteredRows;
     if (!matrix) return filtered;
-    return sortRows(filtered, sort, matrix);
-  }, [filteredRows, scenarioSkillIds, sort, matrix]);
+    return sortRows(filtered, sort, matrix, pinnedRows);
+  }, [filteredRows, scenarioSkillIds, sort, matrix, pinnedRows]);
+
+  // Clear pinned positions when the user takes a deliberate "re-orient"
+  // action — switching sort or changing the upstream filter. Anything else
+  // (refresh from scan completion, mutations on other rows) leaves pins
+  // intact so the row the user just acted on stays put.
+  useEffect(() => {
+    setPinnedRows(new Map());
+  }, [sort, outerFilter.search, outerFilter.scenarioId, outerFilter.scope, outerFilter.platforms, filter]);
 
   // "Syncable" = missing + stale on a non-canonical platform, for any row that
   // has a canonical source.
@@ -267,6 +286,22 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
           skipped: result.skipped.length,
         }),
       );
+    }
+    // Pin the just-acted-on rows to their CURRENT state before refresh() pulls
+    // in the new (in-sync) data. sortRows will keep using these snapshots as
+    // the sort key, so the rows stay where the user clicked. Don't overwrite
+    // a row that's already pinned — preserve the original anchor.
+    const affected = new Set(result.applied.map((i) => i.skillId));
+    if (matrix && affected.size > 0) {
+      setPinnedRows((prev) => {
+        const next = new Map(prev);
+        for (const id of affected) {
+          if (next.has(id)) continue;
+          const row = matrix.rows.find((r) => r.skillId === id);
+          if (row) next.set(id, row);
+        }
+        return next;
+      });
     }
     refresh();
     onMutated?.();
@@ -752,22 +787,29 @@ function sortRows(
   rows: CoverageRow[],
   sort: CoverageSort,
   matrix: CoverageMatrix,
+  pinnedRows?: Map<string, CoverageRow>,
 ): CoverageRow[] {
   const sorted = [...rows];
+  // For pinned rows, compute the sort key from their snapshot at the moment
+  // they were acted on — not the current state. This keeps a row visually in
+  // place after sync completes; the user's mental "I clicked there" anchor
+  // doesn't get yanked. Snapshots clear when the user changes sort/filter or
+  // re-enters the view, at which point natural sort takes over.
+  const keyRow = (r: CoverageRow): CoverageRow => pinnedRows?.get(r.skillId) ?? r;
   const byName = (a: CoverageRow, b: CoverageRow) =>
     a.skillName.localeCompare(b.skillName, undefined, { sensitivity: 'base' });
   switch (sort) {
     case 'unsynced':
       sorted.sort((a, b) => {
-        const sa = concernScore(a, matrix);
-        const sb = concernScore(b, matrix);
+        const sa = concernScore(keyRow(a), matrix);
+        const sb = concernScore(keyRow(b), matrix);
         return sa !== sb ? sb - sa : byName(a, b);
       });
       break;
     case 'updated':
       sorted.sort((a, b) => {
-        const ma = maxRowMtime(a, matrix);
-        const mb = maxRowMtime(b, matrix);
+        const ma = maxRowMtime(keyRow(a), matrix);
+        const mb = maxRowMtime(keyRow(b), matrix);
         return ma !== mb ? mb - ma : byName(a, b);
       });
       break;

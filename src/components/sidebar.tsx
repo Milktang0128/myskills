@@ -170,7 +170,7 @@ export function Sidebar({
         </Section>
 
         <Section title={t('sidebar.section.platforms')}>
-          {/* Canonical platform leads — it's the core library that the
+          {/* Canonical platform leads — it's the main source that the
               other platforms point to. Crown icon mirrors the coverage
               matrix's column marker so users learn one symbol once. */}
           {[...platforms]
