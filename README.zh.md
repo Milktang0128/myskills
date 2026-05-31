@@ -114,6 +114,7 @@ npm run dev         # Tauri dev shell + Next.js dev (:4477)
 npm run check:tauri # command bridge 审计 + Rust fmt/clippy/tests + 前端 build
 npm run validate:tauri # check:tauri + Tauri 桌面 bundle
 npm run smoke:tauri:launch # 启动已打包 app，验证隔离 preview DB 初始化
+npm run smoke:tauri:fixtures # 创建临时技能样本目录，用于桌面 parity smoke
 npm run build       # Next.js 静态导出
 npm run build:tauri # Tauri 桌面 bundle
 ```

@@ -115,6 +115,7 @@ npm run dev         # Tauri dev shell + Next.js dev (:4477)
 npm run check:tauri # command bridge audit + Rust fmt/clippy/tests + frontend build
 npm run validate:tauri # check:tauri + Tauri desktop bundle
 npm run smoke:tauri:launch # launch bundled app and verify isolated preview DB init
+npm run smoke:tauri:fixtures # create temporary skill fixtures for desktop parity smoke
 npm run build       # Next.js static export
 npm run build:tauri # Tauri desktop bundle
 ```

@@ -72,24 +72,28 @@ write-path testing.
 1. Install or launch the unsigned macOS preview package.
 2. Confirm the app id is `com.kanbenzhi.myskills.tauri-preview`.
 3. Open Settings and confirm the DB path contains `myskills-tauri-preview`.
-4. Add three temporary platform directories containing small `SKILL.md`
-   fixtures: one in-sync copy, one stale copy, one missing copy, one broken
-   symlink, and one disabled folder.
-5. Run Scan and confirm Library, Kanban, and Coverage render the expected
+4. Create a repeatable fixture set with `npm run smoke:tauri:fixtures`; it
+   prints temporary `shared`, `claude`, and `codex` platform directories plus a
+   `manifest.json`.
+5. Point the Settings platform paths at the generated fixture directories:
+   `shared` -> User Agents Folder, `claude` -> Claude Code, `codex` -> Codex.
+6. The fixture set contains one in-sync copy, one stale copy, one orphan copy,
+   one broken symlink, one disabled folder, and one parser-error skill.
+7. Run Scan and confirm Library, Kanban, and Coverage render the expected
    skill count and state labels.
-6. Create a scenario, add/remove a skill, export JSON, delete the scenario, and
+8. Create a scenario, add/remove a skill, export JSON, delete the scenario, and
    import the JSON back.
-7. Create a sync plan from the fixture set and confirm the dialog lists writes,
+9. Create a sync plan from the fixture set and confirm the dialog lists writes,
    skips, and conflicts without executing automatically.
-8. Execute one safe copy/symlink plan, confirm history is written, then roll it
+10. Execute one safe copy/symlink plan, confirm history is written, then roll it
    back and rescan.
-9. Disable external network and confirm Discover, LLM, and AI actions fail
+11. Disable external network and confirm Discover, LLM, and AI actions fail
    closed with visible errors instead of silent success.
-10. Re-enable network only for catalog smoke, run a keyword search, preview one
+12. Re-enable network only for catalog smoke, run a keyword search, preview one
     result, and create an install plan into a temporary platform directory.
-11. Configure a fake LLM key, confirm the key is never displayed back in the
+13. Configure a fake LLM key, confirm the key is never displayed back in the
     renderer, then delete it.
-12. Repeat the launch smoke from the DMG-installed app, not only the build
+14. Repeat the launch smoke from the DMG-installed app, not only the build
     output bundle.
 
 ## Release Decision
