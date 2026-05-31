@@ -430,7 +430,7 @@ export interface CatalogPreview {
  *
  * The renderer never sees the API key — it only knows whether one is stored
  * (LlmConfig.hasApiKey). Keys are written via llm.setApiKey({ key }) and
- * stored in macOS Keychain via Electron's safeStorage.
+ * stored in the host OS credential store.
  *
  * All outbound network calls (including LLM requests) must check
  * isExternalNetworkAllowed() first; when the master toggle is off, providers
@@ -463,7 +463,7 @@ export interface LlmConfig {
   model: string;
   /** For custom / ollama (or override). Optional for the four built-in providers. */
   baseUrl?: string;
-  /** Whether a key is stored in safeStorage. The key itself is never returned. */
+  /** Whether a key is stored in the OS credential store. The key itself is never returned. */
   hasApiKey: boolean;
 }
 

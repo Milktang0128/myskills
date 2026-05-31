@@ -17,6 +17,8 @@ arboard = "3"
 base64 = "0.22"
 dirs = "5"
 hex = "0.4"
+keyring = "4.0.1"
+keyring-core = "1.0.0"
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

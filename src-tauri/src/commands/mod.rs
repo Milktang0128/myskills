@@ -2691,6 +2691,8 @@ const CATALOG_GH_RAW: &str = "https://raw.githubusercontent.com";
 const CATALOG_CACHE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const CATALOG_MAX_BATCH_SIZE: usize = 30;
 const CATALOG_EXCERPT_CHARS: usize = 500;
+const SECRET_SERVICE: &str = "com.kanbenzhi.myskills.tauri-preview";
+const LLM_API_KEY_NAME: &str = "llm.apiKey";
 
 #[tauri::command]
 pub fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
@@ -3457,7 +3459,7 @@ pub fn llm_get_config(payload: Option<Value>, state: State<'_, AppState>) -> App
     let provider = get_setting(&db, "llm.provider")?.unwrap_or_else(|| "deepseek".to_string());
     let model = get_setting(&db, "llm.model")?.unwrap_or_else(|| "deepseek-v4-flash".to_string());
     let base_url = get_setting(&db, "llm.baseUrl")?.unwrap_or_default();
-    let has_api_key = get_setting(&db, "secret:llm.apiKey")?.is_some();
+    let has_api_key = llm_has_api_key(&db)?;
     Ok(
         json!({ "provider": provider, "model": model, "baseUrl": base_url, "hasApiKey": has_api_key }),
     )
@@ -3488,13 +3490,9 @@ pub fn llm_set_config(payload: Option<Value>, state: State<'_, AppState>) -> App
 #[tauri::command]
 pub fn llm_set_api_key(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let key = required_str(&payload, "key")?;
-    // Preview implementation: stores an encoded placeholder in the Tauri preview DB.
-    // Platform secret-store backends are a later parity task.
-    let encoded = STANDARD.encode(key);
-    conn(&state)?.execute(
-        "INSERT INTO settings (key, value) VALUES ('secret:llm.apiKey', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![encoded],
-    )?;
+    let db = conn(&state)?;
+    secret_store_write(LLM_API_KEY_NAME, key)?;
+    db.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
     maybe_start_ai_worker(&state);
     Ok(json!({ "ok": true, "hasApiKey": true }))
 }
@@ -3502,7 +3500,9 @@ pub fn llm_set_api_key(payload: Option<Value>, state: State<'_, AppState>) -> Ap
 #[tauri::command]
 pub fn llm_delete_api_key(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
-    conn(&state)?.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
+    let db = conn(&state)?;
+    secret_store_delete(LLM_API_KEY_NAME)?;
+    db.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
     Ok(json!({ "ok": true, "hasApiKey": false }))
 }
 
@@ -3610,15 +3610,69 @@ fn llm_read_config(db: &Connection) -> AppResult<LlmRuntimeConfig> {
 }
 
 fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
-    let Some(encoded) = get_setting(db, "secret:llm.apiKey")? else {
+    if let Some(value) = secret_store_read(LLM_API_KEY_NAME)? {
+        return Ok(Some(value));
+    }
+    let Some(legacy) = get_setting(db, "secret:llm.apiKey")? else {
         return Ok(None);
     };
-    let bytes = STANDARD
-        .decode(encoded)
-        .map_err(|err| AppError::new("SECRET_DECODE_FAILED", err.to_string()))?;
-    Ok(Some(String::from_utf8(bytes).map_err(|err| {
-        AppError::new("SECRET_DECODE_FAILED", err.to_string())
-    })?))
+    let migrated = STANDARD
+        .decode(legacy.as_bytes())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or(legacy);
+    secret_store_write(LLM_API_KEY_NAME, &migrated)?;
+    db.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
+    Ok(Some(migrated))
+}
+
+fn llm_has_api_key(db: &Connection) -> AppResult<bool> {
+    Ok(secret_store_exists(LLM_API_KEY_NAME).unwrap_or(false)
+        || get_setting(db, "secret:llm.apiKey")?.is_some())
+}
+
+fn secret_store_entry(name: &str) -> AppResult<keyring_core::Entry> {
+    #[cfg(target_os = "linux")]
+    keyring::use_named_store("secret-service").map_err(secret_store_error)?;
+    #[cfg(not(target_os = "linux"))]
+    keyring::use_native_store(false).map_err(secret_store_error)?;
+    keyring_core::Entry::new(SECRET_SERVICE, name).map_err(secret_store_error)
+}
+
+fn secret_store_write(name: &str, value: &str) -> AppResult<()> {
+    secret_store_entry(name)?
+        .set_password(value)
+        .map_err(secret_store_error)
+}
+
+fn secret_store_read(name: &str) -> AppResult<Option<String>> {
+    match secret_store_entry(name)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring_core::Error::NoEntry) => Ok(None),
+        Err(err) => Err(secret_store_error(err)),
+    }
+}
+
+fn secret_store_exists(name: &str) -> AppResult<bool> {
+    match secret_store_entry(name)?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring_core::Error::NoEntry) => Ok(false),
+        Err(err) => Err(secret_store_error(err)),
+    }
+}
+
+fn secret_store_delete(name: &str) -> AppResult<()> {
+    match secret_store_entry(name)?.delete_credential() {
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(err) => Err(secret_store_error(err)),
+    }
+}
+
+fn secret_store_error(err: keyring_core::Error) -> AppError {
+    AppError::new(
+        "SECRET_STORE_UNAVAILABLE",
+        format!("System credential store is unavailable: {err}"),
+    )
 }
 
 fn llm_chat_with_config(
