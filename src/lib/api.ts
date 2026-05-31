@@ -268,7 +268,6 @@ export const api = {
     run: () => bridge().invoke(IPC.scan.run) as Promise<ScanResult>,
     lastResult: () => bridge().invoke(IPC.scan.lastResult) as Promise<ScanResult | null>,
   },
-  // Result shape mirrors electron/sync/backup-cleanup.ts BackupCleanupResult.
   // Inlined here so the renderer doesn't have to import a backend module type.
   settings: {
     get: (key: string) => bridge().invoke(IPC.settings.get, { key }) as Promise<string | null>,

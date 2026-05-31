@@ -15,7 +15,7 @@
  *
  * Design notes
  * - The shell renders inside the workspace's <main>, so it inherits the
- *   sandbox/Electron environment without needing a separate window.
+ *   desktop WebView environment without needing a separate window.
  * - Each step is a small component that takes a `goNext` callback. The
  *   wizard manages step index + completion side effects (writing setting).
  * - "Skip setup" anywhere closes the wizard without writing
@@ -580,8 +580,8 @@ function LlmStep() {
    * subsequent test or save reads the right values. Called by both runTest
    * and save; centralised here so the two stay in lockstep.
    *
-   * IMPORTANT: this writes to the macOS Keychain when an apiKey is present.
-   * That's intentional — testConnection IPC reads from Keychain, so there's
+   * IMPORTANT: this writes to the OS credential store when an apiKey is present.
+   * That's intentional — testConnection reads from that store, so there's
    * no way to "preview" a key without committing it. The user typed it
    * deliberately; they can clear it from Settings later if they change
    * their mind.

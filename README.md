@@ -13,7 +13,7 @@
   <a href="https://github.com/Milktang0128/myskills/releases/latest">
     <img src="https://img.shields.io/github/v/release/Milktang0128/myskills?label=download&color=111" alt="Latest release" />
   </a>
-  <img src="https://img.shields.io/badge/platform-macOS-111" alt="macOS" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-111" alt="macOS, Windows, Linux" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-111" alt="License: MIT" /></a>
 </p>
 
@@ -23,9 +23,9 @@
 
 ---
 
-**MySkills is a local Mac app that scans the skill directories you've registered, deduplicates by name + source, and gives you one coherent view of every AI agent skill you have. The default registry is `~/.claude/skills`, `~/.codex/skills`, and `~/.agents/skills`; you can add, remove, or repath platforms in Settings.**
+**MySkills is a local desktop app that scans the skill directories you've registered, deduplicates by name + source, and gives you one coherent view of every AI agent skill you have. The default registry is `~/.claude/skills`, `~/.codex/skills`, and `~/.agents/skills`; you can add, remove, or repath platforms in Settings.**
 
-A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Code and Codex load as reusable capabilities — prompts, tooling profiles, agent instructions. Once you use more than one of those tools, copies start to drift across folders. MySkills makes that mess legible without modifying any of your files.
+A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Code and Codex load as reusable capabilities — prompts, tooling profiles, agent instructions. Once you use more than one of those tools, copies start to drift across folders. MySkills makes that mess legible, and any write is explicit, reviewable, backed up, and recorded.
 
 <p align="center">
   <img src="docs/screenshots/coverage-matrix.en.png" width="900" alt="Coverage matrix view — one row per unique skill, one column per platform; cell colour shows which copies are in sync vs. out of sync" />
@@ -38,14 +38,18 @@ The released `v0.1.x` line remains the frozen Electron/macOS line. The active
 app id (`com.kanbenzhi.myskills.tauri-preview`) and a separate app data
 directory until DB migration and rollback parity are verified.
 
-Download the signed, notarized Electron DMG:
+For the frozen Electron release, download the signed, notarized macOS DMG:
 
 **[→ Releases page](https://github.com/Milktang0128/myskills/releases/latest)**
 
-- **Apple Silicon Macs only** (M1, M2, M3, M4) — Intel build is on the roadmap
+- **Apple Silicon Macs only** (M1, M2, M3, M4) — Intel build is on the roadmap for the Electron maintenance line
 - **macOS 13 (Ventura) or later**
 - DMG is ~116 MB; the installed app is ~280 MB
 - Signed with a Developer ID certificate and stapled with Apple's notary ticket — open with a normal double-click, no Terminal workaround
+
+For the Tauri preview branch, build locally with `npm run build:tauri`. Public
+macOS/Windows/Linux preview artifacts are only release candidates after feature
+parity smoke testing is complete.
 
 ## On your desktop
 
@@ -70,9 +74,9 @@ What MySkills puts where:
 ### Sync writes are reviewable
 
 - Every disk write goes through **Plan → Confirm → Execute**. A dialog shows you exactly what will change before anything happens
-- Destructive operations write to `~/Library/Application Support/MySkills/backups/` first
+- Destructive operations write to the app data `backups/` directory first
 - **One-click rollback** from Sync History
-- Writes are atomic — temp directory + `rename`, no half-applied state
+- Writes are staged through a temporary path before replacement, with rollback records for successful writes
 
 <p align="center">
   <img src="docs/screenshots/sync-confirm.en.png" width="800" alt="Sync confirm dialog showing the exact plan + an amber overwrite warning for any item that would replace an existing copy" />
@@ -150,17 +154,20 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 | Version | Theme | Status |
 |---|---|---|
 | **v0.1** | MVP-A — read-only inventory, scenarios, Discover, optional AI | shipping |
-| v0.2 | MVP-B — sync writes (link / copy modes), enable/disable per location | partial (engine landed, UI gating) |
-| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness, Intel DMG | planned |
+| v0.2 | Tauri rewrite — cross-platform shell, Rust backend, feature parity with Electron `v0.1.x` | active preview branch |
+| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness, signed multi-platform release automation | planned |
 
 **Not planned:**
 - In-app skill editor — use your usual editor on the realpath
 - Cloud sync — MySkills stays local-only by design
-- Windows / Linux ports — outside MVP scope
+- Running skills inside MySkills — execution stays with the agent tools
 
 ## Status
 
-Solo personal project at v0.1.0. No automated test suite yet — verify changes by running the app. If you depend on MySkills for production work, pin to a release tag and watch the repo for updates.
+Solo personal project. `v0.1.x` is the frozen Electron/macOS line; `v0.2` is
+the Tauri rewrite branch. The Rust backend has unit coverage for migration and
+scanner invariants, but release readiness still requires desktop smoke testing
+against Library, Coverage, Discover, Sync, History, Settings, and AI flows.
 
 ## Contributing
 
@@ -173,7 +180,7 @@ Issues and PRs welcome. Before you open one:
 ## Credits
 
 - [skills.sh](https://skills.sh) — the catalog this app searches against, and the community of `SKILL.md` authors who made aggregation possible in the first place.
-- Built with [Electron](https://electronjs.org/), [Next.js](https://nextjs.org/), [shadcn/ui](https://ui.shadcn.com/), and [Lucide](https://lucide.dev/).
+- Built with [Tauri](https://tauri.app/), [Next.js](https://nextjs.org/), [shadcn/ui](https://ui.shadcn.com/), and [Lucide](https://lucide.dev/). The frozen `v0.1.x` maintenance line was built with Electron.
 
 ## License
 

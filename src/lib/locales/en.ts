@@ -68,7 +68,7 @@ export const en = {
   'header.discover': 'Discover',
   'header.scenario': 'Scenario',
   'header.platform': 'Platform',
-  'header.platform.openDir': 'Reveal this folder in Finder',
+  'header.platform.openDir': 'Reveal this folder',
   'header.scope.broken': 'Broken copies',
   'header.scope.duplicate': 'Duplicates',
   'header.scope.unscenarized': 'Unscenarized Skills',
@@ -163,7 +163,7 @@ export const en = {
   'detail.close': 'Close',
   'detail.close.title': 'Close (Esc)',
   'detail.region.aria': 'Skill details',
-  'detail.openLocation': 'Reveal in Finder',
+  'detail.openLocation': 'Reveal in file manager',
   'detail.version': 'Version',
   'detail.author': 'Author',
   'detail.license': 'License',
@@ -439,7 +439,7 @@ export const en = {
   'syncConfirm.reason.source_outside_roots': 'Source path is outside the configured skill roots.',
   'syncConfirm.reason.source_changed_since_plan': 'The source changed between plan and execute. Re-run the plan.',
   'syncConfirm.reason.unreadable':
-    'Source path could not be read — it may be evicted from iCloud, or permission was denied. Download/verify the source directory in Finder, then rescan and try again.',
+    'Source path could not be read — it may be evicted from iCloud, or permission was denied. Download/verify the source directory in your file manager, then rescan and try again.',
   'syncConfirm.reason.source_has_symlink':
     'Source contains a linked copy — refused for safety (a hostile link could exfiltrate data outside the skills directory). Flatten the source to plain files before retrying.',
   'syncConfirm.reason.case_collision':
@@ -544,7 +544,7 @@ export const en = {
   'settings.ai.model.placeholder': 'e.g. {{example}}',
   'settings.ai.baseUrl': 'Base URL (optional)',
   'settings.ai.apiKey': 'API key',
-  'settings.ai.apiKey.set': 'Key saved in Keychain',
+  'settings.ai.apiKey.set': 'Key saved in OS credential store',
   'settings.ai.apiKey.unset': 'No key saved',
   'settings.ai.apiKey.placeholder': 'sk-…',
   'settings.ai.apiKey.save': 'Save key',
@@ -773,7 +773,7 @@ export const en = {
   'common.copy': 'Copy',
   'common.copied': 'Copied',
   'common.clear': 'Clear',
-  'common.openInFinder': 'Reveal in Finder',
+  'common.openInFinder': 'Reveal in file manager',
 
   // ── Bulk AI categorize ──────────────────────────────────────────────────
   'bulkCat.cta': 'Let AI categorize all {{count}}',

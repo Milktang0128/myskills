@@ -5,10 +5,10 @@
  * default to **zh** (the primary user is Chinese-speaking; SPEC and chat are
  * in Chinese). User can flip via the EN/中 toggle in the sidebar footer.
  *
- * Static-export caveat: the very first render on `file://` happens before
+ * Static-export caveat: the very first render in the desktop WebView happens before
  * localStorage is read (the provider mounts a client effect to hydrate it),
  * so for one tick the UI shows the SSR-time default. That's fine for a desktop
- * app — the flash is invisible because Electron preloads the window hidden.
+ * app because the window is created around the already-built bundle.
  *
  * Adding a string: add the key to BOTH `en` and `zh` dictionaries below. The
  * `Dict` type is derived from `en`, so TypeScript will scream if zh is missing

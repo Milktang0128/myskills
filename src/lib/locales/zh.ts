@@ -72,7 +72,7 @@ export const zh: Dict = {
   'header.discover': '发现',
   'header.scenario': '场景',
   'header.platform': '平台',
-  'header.platform.openDir': '在 Finder 中打开此目录',
+  'header.platform.openDir': '在文件管理器中打开此目录',
   'header.scope.broken': '副本失效',
   'header.scope.duplicate': '重复项',
   'header.scope.unscenarized': '未分类的技能',
@@ -166,7 +166,7 @@ export const zh: Dict = {
   'detail.close': '关闭',
   'detail.close.title': '关闭 (Esc)',
   'detail.region.aria': '技能详情',
-  'detail.openLocation': '在 Finder 中显示',
+  'detail.openLocation': '在文件管理器中显示',
   'detail.version': '版本',
   'detail.author': '作者',
   'detail.license': '许可证',
@@ -404,7 +404,7 @@ export const zh: Dict = {
   'syncConfirm.apply': '应用 {{count}} 项',
   'syncConfirm.applying': '应用中…',
   'syncConfirm.conflict.adopt': '采纳此版本',
-  'syncConfirm.conflict.reveal': '在 Finder 中显示',
+  'syncConfirm.conflict.reveal': '显示位置',
   'syncConfirm.title.fromCanonical': '从主源同步',
   'syncConfirm.subtitle.fromCanonical': '从 {{platform}} 主源同步。其他工具会获得指向主源的副本。',
   'syncConfirm.title.disable': '禁用技能',
@@ -442,7 +442,7 @@ export const zh: Dict = {
   'syncConfirm.reason.source_outside_roots': '源路径在配置的技能根目录之外。',
   'syncConfirm.reason.source_changed_since_plan': '从计划到执行期间源发生了变化，请重新生成计划。',
   'syncConfirm.reason.unreadable':
-    '源路径无法读取 — 可能在 iCloud 上还未下载，或者文件权限被拒绝。请先在 Finder 中下载/确认源目录，然后重新扫描再试。',
+    '源路径无法读取 — 可能在 iCloud 上还未下载，或者文件权限被拒绝。请先在文件管理器中下载/确认源目录，然后重新扫描再试。',
   'syncConfirm.reason.source_has_symlink':
     '源目录里含有同步副本 — 出于安全考虑（防止数据外泄），MySkills 拒绝拷贝含内部链接的目录。请先整理成纯文件再试。',
   'syncConfirm.reason.case_collision':
@@ -544,7 +544,7 @@ export const zh: Dict = {
   'settings.ai.model.placeholder': '例如：{{example}}',
   'settings.ai.baseUrl': 'Base URL（可选）',
   'settings.ai.apiKey': 'API key',
-  'settings.ai.apiKey.set': '已保存到 Keychain',
+  'settings.ai.apiKey.set': '已保存到系统凭据库',
   'settings.ai.apiKey.unset': '未保存',
   'settings.ai.apiKey.placeholder': 'sk-…',
   'settings.ai.apiKey.save': '保存 Key',
@@ -769,7 +769,7 @@ export const zh: Dict = {
   'common.copy': '复制',
   'common.copied': '已复制',
   'common.clear': '清空',
-  'common.openInFinder': '在 Finder 中显示',
+  'common.openInFinder': '在文件管理器中显示',
 
   // ── 批量 AI 分类 ───────────────────────────────────────────────────────
   'bulkCat.cta': '让 AI 帮我归类这 {{count}} 项',

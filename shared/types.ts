@@ -1,9 +1,9 @@
 /**
- * Shared types between Electron main process and Next.js renderer.
- * Keep this file dependency-free — it is imported by both processes.
+ * Shared types between the desktop backend and Next.js renderer.
+ * Keep this file dependency-free — it is imported by both sides.
  *
- * Mirrors SPEC §6.2 (v0.2). The renderer never sees raw DB rows; main
- * assembles these shapes from joined queries and ships them via IPC.
+ * Mirrors SPEC §6.2 (v0.2). The renderer never sees raw DB rows; the backend
+ * assembles these shapes from joined queries and ships them via commands.
  */
 
 export type BuiltInPlatformId = 'claude' | 'codex' | 'shared';
@@ -442,12 +442,9 @@ export type LlmProvider = 'openai' | 'anthropic' | 'deepseek' | 'openrouter' | '
 /**
  * Single source of truth for "what providers does MySkills accept".
  *
- * Two main-process files validate provider strings before using them: the IPC
- * handler in `electron/ipc/llm.ts` and the auto-categorize service in
- * `electron/ai/categorize.ts`. Previously each kept its own private Set, and
- * a copy fell out of sync when DeepSeek was added — auto-categorize silently
- * downgraded the user's DeepSeek selection to OpenAI. Centralizing here means
- * any drift becomes a TypeScript error instead of a silent wrong-provider call.
+ * Both the renderer and backend validate provider strings before using them.
+ * Centralizing the accepted provider set here keeps UI config, DTOs, and
+ * command payloads from drifting when a provider is added.
  */
 export const VALID_LLM_PROVIDERS: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
   'openai',

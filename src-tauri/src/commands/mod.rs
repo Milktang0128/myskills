@@ -352,7 +352,18 @@ pub fn scan_run(
     let started_at = now_ms();
     let _ = app.emit("event:scanStarted", json!({ "startedAt": started_at }));
     let db = conn(&state)?;
-    let result = scanner::scan_all(&db)?;
+    let result = scanner::scan_all_with_progress(&db, |progress| {
+        let _ = app.emit(
+            "event:scanPlatformDone",
+            json!({
+                "platformId": progress.platform_id,
+                "index": progress.index,
+                "total": progress.total,
+                "found": progress.found,
+                "skipped": progress.skipped,
+            }),
+        );
+    })?;
     if let Ok(mut last) = state.last_scan.lock() {
         *last = Some(result.clone());
     }
@@ -1215,11 +1226,12 @@ pub fn sync_plan_toggle_disabled(
             continue;
         };
         items.push(build_toggle_item(
+            &db,
             &skill,
             &loc,
             &platform.skills_dir,
             disable,
-        ));
+        )?);
     }
     let plan = finalize_sync_plan(operation, items);
     store_plan(&state, &plan)?;
@@ -1464,7 +1476,7 @@ fn rollback_one_row(row: &RollbackRow) -> AppResult<()> {
         "copy_to_canonical" => rollback_copy_row(row),
         action => Err(AppError::new(
             "UNSUPPORTED",
-            format!("rollback for action={action} not implemented"),
+            format!("rollback unsupported for action={action}"),
         )),
     }
 }
@@ -1875,27 +1887,43 @@ fn build_sync_item(args: SyncBuildItemArgs<'_>) -> Value {
     })
 }
 
-fn build_toggle_item(skill: &SyncSkillRow, loc: &LocRow, skills_dir: &str, disable: bool) -> Value {
+fn build_toggle_item(
+    db: &Connection,
+    skill: &SyncSkillRow,
+    loc: &LocRow,
+    skills_dir: &str,
+    disable: bool,
+) -> AppResult<Value> {
     let op_group_id = Uuid::new_v4().to_string();
     if disable && loc.is_disabled {
-        return sync_placeholder(
+        return Ok(sync_placeholder(
             skill,
             &loc.platform_id,
             &loc.platform_id,
             "skip",
             "already_disabled",
             &op_group_id,
-        );
+        ));
     }
     if !disable && !loc.is_disabled {
-        return sync_placeholder(
+        return Ok(sync_placeholder(
             skill,
             &loc.platform_id,
             &loc.platform_id,
             "skip",
             "already_enabled",
             &op_group_id,
-        );
+        ));
+    }
+    if disable && !loc.is_symlink && canonical_has_dependents(db, loc)? {
+        return Ok(sync_placeholder(
+            skill,
+            &loc.platform_id,
+            &loc.platform_id,
+            "conflict",
+            "canonical_has_dependents",
+            &op_group_id,
+        ));
     }
     let basename = Path::new(&loc.install_path)
         .file_name()
@@ -1903,14 +1931,14 @@ fn build_toggle_item(skill: &SyncSkillRow, loc: &LocRow, skills_dir: &str, disab
         .unwrap_or_default()
         .to_string();
     if !is_safe_basename(&basename) {
-        return sync_placeholder(
+        return Ok(sync_placeholder(
             skill,
             &loc.platform_id,
             &loc.platform_id,
             "conflict",
             "unsafe_target_name",
             &op_group_id,
-        );
+        ));
     }
     let target_path = if disable {
         PathBuf::from(skills_dir).join(".disabled").join(&basename)
@@ -1918,7 +1946,7 @@ fn build_toggle_item(skill: &SyncSkillRow, loc: &LocRow, skills_dir: &str, disab
         PathBuf::from(skills_dir).join(&basename)
     };
     if target_path.exists() || is_broken_symlink(&target_path) {
-        return sync_placeholder_with_path(
+        return Ok(sync_placeholder_with_path(
             skill,
             &loc.platform_id,
             &loc.platform_id,
@@ -1926,12 +1954,12 @@ fn build_toggle_item(skill: &SyncSkillRow, loc: &LocRow, skills_dir: &str, disab
             "target_exists_dir",
             &op_group_id,
             &basename,
-        );
+        ));
     }
     let (source_dev, source_ino) = fs::symlink_metadata(&loc.install_path)
         .map(|m| metadata_dev_ino(&m))
         .unwrap_or((0, 0));
-    json!({
+    Ok(json!({
         "skillName": skill.name,
         "skillId": skill.id,
         "opGroupId": op_group_id,
@@ -1947,7 +1975,26 @@ fn build_toggle_item(skill: &SyncSkillRow, loc: &LocRow, skills_dir: &str, disab
         "targetHash": Value::Null,
         "mode": "symlink",
         "action": if disable { "disable" } else { "enable" },
-    })
+    }))
+}
+
+fn canonical_has_dependents(db: &Connection, loc: &LocRow) -> AppResult<bool> {
+    let source_real =
+        fs::canonicalize(&loc.install_path).unwrap_or_else(|_| PathBuf::from(&loc.real_path));
+    let mut stmt = db.prepare(
+        "SELECT real_path FROM skill_locations
+         WHERE skill_id = ?1 AND id != ?2 AND is_disabled = 0 AND is_symlink = 1",
+    )?;
+    let rows = stmt.query_map(params![loc.skill_id, loc.id], |r| r.get::<_, String>(0))?;
+    for row in rows {
+        let real_path = row?;
+        let dependent_real =
+            fs::canonicalize(&real_path).unwrap_or_else(|_| PathBuf::from(&real_path));
+        if dependent_real == source_real {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn sync_placeholder(
@@ -2076,7 +2123,7 @@ fn execute_sync_item(
     {
         "symlink_create" => do_symlink_item(db, backup_root, item, false),
         "symlink_replace" => do_symlink_item(db, backup_root, item, true),
-        "copy_to_canonical" => do_copy_item(backup_root, item),
+        "copy_to_canonical" => do_copy_item(db, backup_root, item),
         "disable" | "enable" => do_move_item(item),
         action => Err(AppError::new(
             "SYNC_EXECUTE_FAILED",
@@ -2214,7 +2261,7 @@ fn do_symlink_item(
     })
 }
 
-fn do_copy_item(backup_root: &Path, item: &Value) -> AppResult<ExecuteOutcome> {
+fn do_copy_item(db: &Connection, backup_root: &Path, item: &Value) -> AppResult<ExecuteOutcome> {
     let source = value_path(item, "sourceRealPath")?;
     let target = value_path(item, "targetPath")?;
     let source_real = fs::canonicalize(&source)?;
@@ -2231,6 +2278,7 @@ fn do_copy_item(backup_root: &Path, item: &Value) -> AppResult<ExecuteOutcome> {
             "source tree contains a symlink",
         ));
     }
+    reassert_target_in_platform(db, item)?;
     let mut backup_path = None;
     let mut before_hash = None;
     if target.exists() || is_broken_symlink(&target) {

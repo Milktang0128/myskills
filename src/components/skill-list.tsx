@@ -23,7 +23,7 @@ interface Props {
   /** When true, omit the title bar + search input — assumes the parent owns them. */
   hideOwnHeader?: boolean;
   /** Optional: when the title represents an openable directory (e.g. a single
-   * platform filter), render an Open-in-Finder button next to it. */
+   * platform filter), render a reveal-in-file-manager button next to it. */
   onOpenDir?: () => void;
 }
 

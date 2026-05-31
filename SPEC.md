@@ -3,8 +3,8 @@
 > **版本：** 0.2 (Draft)
 > **作者：** tangmilk1205@gmail.com
 > **创建日期：** 2026-05-19
-> **最后更新：** 2026-05-19
-> **状态：** 规格已对齐，待开发
+> **最后更新：** 2026-05-31
+> **状态：** `v0.1.x` Electron 线冻结维护；`v0.2` Tauri 重构线开发中
 
 ---
 
@@ -219,18 +219,14 @@ Skill 的宿主。MVP 支持：
 
 ```
 ┌────────────────────────────────────────────────────┐
-│                  Electron App                       │
+│                  Tauri Desktop App                  │
 │                                                     │
-│  ┌─────────────────┐      ┌──────────────────────┐ │
-│  │  Renderer       │ IPC  │  Main Process        │ │
-│  │  (Next.js)      │<────>│  (Node.js)           │ │
-│  │                 │      │                      │ │
-│  │  - React UI     │      │  - SQLite DAL        │ │
-│  │  - Tailwind     │      │  - Skill Scanner     │ │
-│  │  - shadcn/ui    │      │  - File ops (copy,   │ │
-│  │  - State        │      │    symlink, hash)    │ │
-│  │                 │      │  - AI client (P1)    │ │
-│  └─────────────────┘      └──────────────────────┘ │
+│  ┌──────────────────┐ invoke/listen ┌────────────┐ │
+│  │ Renderer         │<──────────────>│ Rust       │ │
+│  │ Next/React UI    │               │ Backend    │ │
+│  │ Tailwind/shadcn  │               │            │ │
+│  │ DTO state only   │               │ DB/FS/AI   │ │
+│  └──────────────────┘               └────────────┘ │
 │                                  │                  │
 │                                  ▼                  │
 │                    ┌─────────────────────────┐     │
@@ -238,21 +234,22 @@ Skill 的宿主。MVP 支持：
 │                    │  ~/.claude/skills/      │     │
 │                    │  ~/.codex/skills/       │     │
 │                    │  ~/.agents/skills/      │     │
-│                    │  ~/Library/.../app.db   │     │
+│                    │  Tauri app data dir     │     │
 │                    └─────────────────────────┘     │
 └────────────────────────────────────────────────────┘
 ```
 
 ### 5.3 关键技术决策
 
-- **D1：** Next.js 用 `output: 'export'` 模式（纯静态），不跑 server。Electron 直接 `loadFile()`。
-- **D2：** IPC 走 `contextBridge` + `ipcMain.handle()`，渲染层禁用 `nodeIntegration`，只暴露白名单 API。
-- **D3：** 文件操作（同步、复制、symlink）**全部在主进程**，渲染进程只读 DB 缓存。
-- **D4：** SQLite DB 存于 `app.getPath('userData')/myskills.db`，独立于 skill 文件本身。
+- **D1：** Next.js 用 `output: 'export'` 模式（纯静态），不跑 server。Tauri 生产包直接加载静态 `out/`。
+- **D2：** Renderer 只通过 MySkills 自定义 Tauri commands / events 通信，不开放宽泛 `fs/sql/http/shell` 权限。
+- **D3：** 文件操作（同步、复制、symlink）**全部在 Rust 后端**，渲染进程只拿 DTO。
+- **D4：** SQLite DB 存于 Tauri app data dir；preview app id 为 `com.kanbenzhi.myskills.tauri-preview`，正式迁移前不复用 Electron 生产 DB 目录。
 - **D5：** Skill 内容哈希（SHA-256 of SKILL.md）用于去重 + 检测漂移。
 - **D6：** **不写入** skill 目录的元数据（不污染原 skill）；所有标签、场景信息只在 DB 里。
+- **D7：** API key 等敏感信息写入系统凭据库；`settings` 表只保留非敏感配置和旧版本迁移标记。
 
-### 5.4 目录结构（计划）
+### 5.4 目录结构（当前）
 
 ```
 Myskills/
@@ -263,27 +260,19 @@ Myskills/
 ├── next.config.mjs
 ├── tailwind.config.ts
 ├── postcss.config.mjs
-├── electron/                # Electron 主进程源码
-│   ├── main.ts              # 入口
-│   ├── preload.ts           # contextBridge
-│   ├── dev.ts               # 开发模式启动器
-│   ├── tsconfig.json
-│   ├── db/
-│   │   ├── index.ts         # SQLite 连接
-│   │   ├── schema.sql       # 表定义
-│   │   └── migrations.ts
-│   ├── scanner/
-│   │   ├── index.ts         # 扫描调度
-│   │   ├── parser.ts        # SKILL.md 解析
-│   │   └── platforms.ts     # 各平台目录配置
-│   ├── sync/
-│   │   ├── copy.ts          # 复制实现
-│   │   └── symlink.ts       # symlink 实现
-│   └── ipc/
-│       ├── index.ts         # 注册所有 handler
-│       ├── skills.ts
-│       ├── scenarios.ts
-│       └── settings.ts
+├── src-tauri/               # Tauri 2 + Rust 后端
+│   ├── tauri.conf.json      # preview app id / bundler
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs           # command registry / setup
+│       ├── main.rs
+│       ├── state.rs         # DB pool, paths, sync lock, plan store
+│       ├── paths.rs         # app data / backups / staging
+│       ├── error.rs         # AppError
+│       ├── commands/        # MySkills command surface
+│       ├── db/              # schema, migrations, seed, recovery
+│       └── scanner/         # parser, hashing, reconcile
+├── electron/                # 冻结 Electron v0.1.x 维护线源码
 ├── shared/                  # 主+渲染共享
 │   └── types.ts             # TypeScript 类型
 ├── src/                     # Next.js 渲染层
@@ -299,13 +288,13 @@ Myskills/
 │   │   ├── sidebar.tsx
 │   │   └── scenario-picker.tsx
 │   ├── lib/
-│   │   ├── api.ts           # IPC 客户端封装
+│   │   ├── api.ts           # Tauri command 客户端封装
 │   │   └── utils.ts
 │   └── styles/
 │       └── globals.css
 ├── dist-electron/           # 编译产物（gitignore）
 ├── out/                     # Next 静态导出（gitignore）
-└── release/                 # 打包产物（gitignore）
+└── src-tauri/target/        # Rust/Tauri 打包产物（gitignore）
 ```
 
 ---
@@ -709,51 +698,36 @@ rollback(history_id):
 
 ## 11. 实施路线图
 
-### Sprint 1 — 骨架（MVP-A 准备，约 1 周）
+### 11.1 已冻结线
 
-- [x] 需求对齐（本文档）
-- [x] 项目脚手架（package.json、Next/Tailwind/TS 配置、shared/types.ts）
-- [ ] Electron 主进程 + preload（contextBridge、禁用 nodeIntegration、CSP）
-- [ ] IPC 白名单 + sender 校验
-- [ ] SQLite schema + migration runner
-- [ ] 默认 platforms / scenarios seed
-- [ ] 基础 UI 骨架（layout、sidebar、空状态、设置页雏形）
+- `release/electron-v0.1.x`：保留 Electron/macOS 可回滚维护线；只接受 hotfix 和签名/公证相关修复。
+- tag 策略：Electron hotfix 使用 `v0.1.x`；Tauri preview 使用 `v0.2.0-tauri.N`。
 
-### Sprint 2 — 只读 Inventory（MVP-A 主体，约 1 周）
+### 11.2 Tauri parity 线
 
-- [ ] Skill 扫描器（Claude + Codex + Shared）
-- [ ] SKILL.md frontmatter 解析（gray-matter + 校验）
-- [ ] 内容 hash、symlink/broken link 检测、去重收敛
-- [ ] 列表 + 搜索 + 平台过滤 + 场景过滤
-- [ ] Skill 详情抽屉（frontmatter、Markdown、locations 列表、文件树）
-- [ ] 异常状态高亮（broken symlink / 重复 hash / 缺 frontmatter）
+- [x] Tauri 2 壳 + Next 静态导出加载
+- [x] Rust SQLite schema / migration / seed / app data 隔离
+- [x] scanner / parser / reconcile / iCloud placeholder 错误归类
+- [x] Library / Skill detail / Scenario CRUD / import-export
+- [x] Coverage matrix / canonical source / drift-gap-orphan-broken-disabled states
+- [x] Sync plan / execute / backup / history / rollback / retention cleanup
+- [x] Catalog search / GitHub raw preview / staged install
+- [x] LLM provider config / network gate / system credential store
+- [x] AI Lens / bulk categorization / passive suggestion queue
+- [ ] 逐项桌面 smoke：Library、Coverage、Discover、Sync、History、Settings、AI
+- [ ] macOS unsigned preview smoke；签名/公证 preview 前不得对外发布
+- [ ] Windows/Linux preview build 验证；缺平台 runner 时不得宣称稳定跨平台 release
 
-### Sprint 3 — 场景化 + MVP-A 发布（约 4–5 天）
+### 11.3 正式 `v0.2.0` gate
 
-- [ ] 场景 CRUD（带 stable `key`）
-- [ ] Skill ↔ 场景 关联
-- [ ] 场景配置导出/导入（F13a）
-- [ ] 扫描错误面板、手动重扫
-- [ ] **MVP-A 发布**：macOS 打包 + 图标 + DMG + README + 截图
-
-> MVP-A 发布前不进入 Sprint 4。先在自己机器上跑一周，验证扫描准确性和日常体验。
-
-### Sprint 4 — 安全写操作（MVP-B，约 1–1.5 周）
-
-- [ ] Dry-run plan 引擎
-- [ ] Backup + rollback 基础设施
-- [ ] 跨平台同步（copy + symlink，含冲突处理）
-- [ ] 启用/禁用（`.disabled/` 子目录，symlink 特例处理）
-- [ ] 同步历史 UI + 回滚操作
-- [ ] **MVP-B 发布**
-
-### Sprint 5+（P1 功能）
-
-- 自定义平台（F18）
-- 从 Git 仓库导入（F9）
-- AI 分类助手（F10）
-- 完整版本快照（F11）
-- 批量操作（F12）
+- `cargo fmt --check`
+- `cargo clippy -- -D warnings`
+- `cargo test`
+- `npm run build`
+- `npm run build:tauri`
+- macOS preview 手动 smoke 通过
+- Windows/Linux 构建和启动 smoke 通过
+- 明确 Electron 生产 DB 到 Tauri 正式 app id 的迁移/回滚策略
 
 ---
 
@@ -763,14 +737,14 @@ rollback(history_id):
 
 | # | 风险 | 缓解 |
 |---|---|---|
-| R1 | **iCloud 路径含空格和特殊字符** (`com~apple~CloudDocs`) | 用 absolute path + 双引号封装；scanner fixtures 覆盖；electron-builder 打包测试 |
-| R2 | **better-sqlite3 是 native module** | `npm run rebuild` 处理；后续加 CI 跑 macOS arm64 + x64 |
+| R1 | **iCloud 路径含空格和特殊字符** (`com~apple~CloudDocs`) | 用 absolute path；scanner fixtures 覆盖；Tauri preview smoke 覆盖真实路径 |
+| R2 | **系统 WebView 差异导致跨平台 UI/下载/打开目录行为不同** | macOS 先 smoke；Windows/Linux 只在本机 runner 通过后发布对应 preview |
 | R3 | **symlink 跨 iCloud 同步不安全** | 在 README 提示用户：共享池放本地 (`~/.agents/`) 而非 iCloud |
 | R4 | **Claude/Codex 升级后路径或格式变化** | 设置页允许用户改路径；schema 兼容 frontmatter 任意字段 |
-| R5 | **Electron 包体积大** | <100MB 列为软目标，不作 MVP hard gate；功能与文件安全优先 |
+| R5 | **Tauri 预览包仍可能因系统凭据库/网络依赖增大** | 体积是软目标；功能与文件安全优先；后续按平台裁剪依赖 |
 | R6 | **写操作破坏真实 skill 目录** | MVP-A 完全只读；MVP-B 强制 dry-run + backup + rollback（§9）|
 | R7 | **身份模型错误导致更新被识别成新 skill** | `skills` 身份 = `name + source_key`，`content_hash` 只是当前版本（§6.1）|
-| R8 | **Electron 安全实现滞后** | 主进程 + preload 是 Sprint 1 第一批代码，不等 UI 完成才补 |
+| R8 | **Tauri command surface 过宽** | 不启用宽泛 fs/sql/http/shell 插件；renderer 只调用 MySkills 自定义 command |
 
 ### 12.2 待决问题
 

@@ -12,22 +12,54 @@ use crate::error::{AppError, AppResult};
 
 use self::parser::parse_skill_dir;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPlatformProgress {
+    pub platform_id: String,
+    pub index: usize,
+    pub total: usize,
+    pub found: usize,
+    pub skipped: bool,
+}
+
 pub fn scan_all(conn: &Connection) -> AppResult<Value> {
+    scan_all_with_progress(conn, |_| {})
+}
+
+pub fn scan_all_with_progress<F>(conn: &Connection, mut on_platform_done: F) -> AppResult<Value>
+where
+    F: FnMut(ScanPlatformProgress),
+{
     let started = now_ms();
     let platforms = list_enabled_platforms(conn)?;
+    let total = platforms.len();
     let mut discovered = Vec::new();
     let mut errors = Vec::new();
 
-    for platform in platforms {
+    for (idx, platform) in platforms.into_iter().enumerate() {
         let root = PathBuf::from(&platform.skills_dir);
         if !root.is_dir() {
+            on_platform_done(ScanPlatformProgress {
+                platform_id: platform.id,
+                index: idx + 1,
+                total,
+                found: 0,
+                skipped: true,
+            });
             continue;
         }
+        let before = discovered.len();
         scan_root(&root, &platform.id, false, &mut discovered, &mut errors);
         let disabled = root.join(".disabled");
         if disabled.is_dir() {
             scan_root(&disabled, &platform.id, true, &mut discovered, &mut errors);
         }
+        on_platform_done(ScanPlatformProgress {
+            platform_id: platform.id,
+            index: idx + 1,
+            total,
+            found: discovered.len() - before,
+            skipped: false,
+        });
     }
 
     let reconcile = reconcile(conn, &discovered, started)?;
@@ -111,7 +143,7 @@ fn scan_root(
             errors.push(json!({
                 "path": root.join(original).to_string_lossy(),
                 "kind": "icloud_evicted",
-                "message": "iCloud has evicted this skill - download it in Finder, then rescan"
+                "message": "iCloud has evicted this skill - download it in the file manager, then rescan"
             }));
             continue;
         }
