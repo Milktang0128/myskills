@@ -19,6 +19,7 @@
     "check:tauri": "npm run check:commands && npm run check:rust:fmt && npm run check:rust:clippy && npm run test:rust && npm run build",
     "validate:tauri": "npm run check:tauri && npm run build:tauri",
     "smoke:tauri:launch": "node scripts/smoke-tauri-launch.mjs",
+    "smoke:tauri:dmg": "node scripts/smoke-tauri-dmg.mjs",
     "smoke:tauri:fixtures": "node scripts/create-tauri-smoke-fixtures.mjs",
     "build:electron:legacy": "next build && npm run build:electron",
     "build:electron": "tsc -p electron/tsconfig.json && node electron/build-preload.mjs",

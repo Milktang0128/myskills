@@ -19,6 +19,9 @@ Automated checks already available:
   Rust fmt, Rust clippy, Rust tests, Next static build, and Tauri build.
 - `npm run smoke:tauri:launch` previously passed: the bundled app launched and
   initialized a `myskills-tauri-preview` DB in an isolated preview directory.
+- `npm run smoke:tauri:dmg` mounts the latest local macOS DMG, verifies the
+  preview bundle id, launches the mounted app binary, and checks isolated DB
+  initialization.
 
 Manual desktop smoke performed on 2026-05-31:
 
@@ -58,7 +61,7 @@ Important caveat:
 | History | Sync history and rollback flow work from packaged app | pending | Depends on sync execute smoke. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
-| macOS unsigned preview | DMG installs, app launches, basic workflows pass | partial | DMG exists and app launches from bundle; DMG mount/install smoke pending. |
+| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | partial | Automated DMG mount/launch smoke exists; full UI workflow smoke from DMG still pending. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | pending | Required before claiming Windows support. |
 | Linux preview | Build and launch smoke on Linux runner | pending | Required before claiming Linux support. |
@@ -95,6 +98,14 @@ write-path testing.
     renderer, then delete it.
 14. Repeat the launch smoke from the DMG-installed app, not only the build
     output bundle.
+
+Useful commands:
+
+```bash
+npm run smoke:tauri:fixtures
+npm run smoke:tauri:launch
+npm run smoke:tauri:dmg
+```
 
 ## Release Decision
 
