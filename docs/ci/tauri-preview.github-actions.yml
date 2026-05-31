@@ -75,6 +75,9 @@ jobs:
       - name: Rust tests
         run: npm run test:rust
 
+      - name: Workbench UI smoke
+        run: npm run smoke:ui:workbench
+
       - name: Tauri build
         run: npm run build:tauri
 
