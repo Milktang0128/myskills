@@ -55,7 +55,7 @@ parity smoke testing is complete.
 
 What MySkills puts where:
 
-- The app data directory contains `myskills.db`, `backups/`, and `staging/`.
+- The Tauri preview app data directory is isolated as `myskills-tauri-preview`; it contains `myskills.db`, `backups/`, and `staging/`.
 - Automatic backups are written before every sync write; retention is configurable in Settings.
 - AI provider API keys live in the system credential store when AI features are enabled.
 
@@ -114,6 +114,7 @@ npm install
 npm run dev         # Tauri dev shell + Next.js dev (:4477)
 npm run check:tauri # command bridge audit + Rust fmt/clippy/tests + frontend build
 npm run validate:tauri # check:tauri + Tauri desktop bundle
+npm run smoke:tauri:launch # launch bundled app and verify isolated preview DB init
 npm run build       # Next.js static export
 npm run build:tauri # Tauri desktop bundle
 ```

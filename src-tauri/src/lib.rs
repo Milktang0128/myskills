@@ -79,11 +79,11 @@ pub fn run() {
 }
 
 fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
-    let app_data = app
+    let default_app_data = app
         .path()
         .app_data_dir()
         .map_err(|err| crate::error::AppError::new("PATH_ERROR", err.to_string()))?;
-    let paths = AppPaths::new(app_data)?;
+    let paths = AppPaths::new(AppPaths::isolated_preview_dir(default_app_data))?;
     let db = db::init_pool(&paths.db_path)?;
     if let Ok(conn) = db.get() {
         let _ = commands::recover_pending_backups(&conn);

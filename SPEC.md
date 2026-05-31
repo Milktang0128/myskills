@@ -212,7 +212,7 @@ Skill 的宿主。MVP 支持：
 | 数据库 | **SQLite (`rusqlite` + pool)** | Rust 后端持有 DB；renderer 不直接执行 SQL |
 | Skill 解析 | **Rust parser + YAML frontmatter** | 扫描、hash、symlink 状态和错误归类在 Rust 后端完成 |
 | 包管理 | **npm 10** | 当前仓库按 `package-lock.json` 维护 |
-| 打包 | **Tauri bundler** | preview 使用 `com.kanbenzhi.myskills.tauri-preview`，正式切换前不复用 Electron 生产数据目录 |
+| 打包 | **Tauri bundler** | preview 使用 `com.kanbenzhi.myskills.tauri-preview`，数据目录强制隔离到 `myskills-tauri-preview`；正式切换前不复用 Electron 生产数据目录 |
 | 语言 | **Rust + TypeScript** | Rust 承载 DB/FS/secrets/network；TypeScript 承载 React UI 和共享 DTO |
 
 ### 5.2 进程模型
@@ -244,7 +244,7 @@ Skill 的宿主。MVP 支持：
 - **D1：** Next.js 用 `output: 'export'` 模式（纯静态），不跑 server。Tauri 生产包直接加载静态 `out/`。
 - **D2：** Renderer 只通过 MySkills 自定义 Tauri commands / events 通信，不开放宽泛 `fs/sql/http/shell` 权限。
 - **D3：** 文件操作（同步、复制、symlink）**全部在 Rust 后端**，渲染进程只拿 DTO。
-- **D4：** SQLite DB 存于 Tauri app data dir；preview app id 为 `com.kanbenzhi.myskills.tauri-preview`，正式迁移前不复用 Electron 生产 DB 目录。
+- **D4：** SQLite DB 存于 Tauri preview app data dir `myskills-tauri-preview`；preview app id 为 `com.kanbenzhi.myskills.tauri-preview`，正式迁移前不复用 Electron 生产 DB 目录。
 - **D5：** Skill 内容哈希（SHA-256 of SKILL.md）用于去重 + 检测漂移。
 - **D6：** **不写入** skill 目录的元数据（不污染原 skill）；所有标签、场景信息只在 DB 里。
 - **D7：** API key 等敏感信息写入系统凭据库；`settings` 表只保留非敏感配置和旧版本迁移标记。
@@ -726,6 +726,7 @@ rollback(history_id):
 - `npm run check:commands`
 - `npm run build`
 - `npm run build:tauri`
+- `npm run smoke:tauri:launch`（本机桌面环境；验证 preview 数据目录隔离和 DB 初始化）
 - CI matrix：启用 `docs/ci/tauri-preview.github-actions.yml` 后，macOS / Ubuntu / Windows 基础检查通过；macOS preview bundle 通过
 - macOS preview 手动 smoke 通过
 - Windows/Linux 构建和启动 smoke 通过
