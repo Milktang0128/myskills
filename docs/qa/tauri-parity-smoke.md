@@ -13,7 +13,7 @@ release requires every stable-gate row below to pass.
 
 Automated checks already available:
 
-- `npm run check:commands` passed: 52 frontend command mappings and 3 backend
+- `npm run check:commands` passed: 53 frontend command mappings and 3 backend
   events are present in the Rust command surface.
 - `npm run validate:tauri` previously passed on this branch: command audit,
   Rust fmt, Rust clippy, Rust tests, Next static build, and Tauri build.
@@ -69,6 +69,9 @@ Automated checks already available:
   copied Electron DB import, backup path rewrite, rollback to
   `myskills.db.failed-*`, source DB immutability, and migration backup
   preservation.
+- `migration_discover` is a read-only Tauri command for Electron DB candidate
+  discovery. It validates schema/integrity, reports metadata and source hashes,
+  and does not import or write source data.
 - `npm run build:tauri:stable` plus
   `npm run smoke:tauri:launch -- --stable-smoke --frontend-smoke` builds the
   stable app id (`com.kanbenzhi.myskills`) and verifies the app writes to the
@@ -131,7 +134,7 @@ Important caveat:
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pass | `build:tauri:mac:signed` produced a Developer ID signed app with hardened runtime; `notarize:tauri:mac` stapled the DMG; `spctl` accepted it as `source=Notarized Developer ID`; the notarized DMG then passed fixture/history/workflow/coverage/frontend smoke. |
 | Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |
 | Linux preview | Build and launch smoke on Linux runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke under `xvfb-run` on `ubuntu-24.04`; activation needs a token with `workflow` scope, then first green runner result. |
-| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests and `smoke:tauri:migration` cover DB copy, markers, backup path rewrite, existing target refusal, invalid source schema rejection, rollback file moves, source immutability, and backup preservation. Stable app id/path mode is available through `build:tauri:stable` and `--stable-smoke`; packaged stable migration smoke now verifies startup import from a disposable Electron DB. Migration remains opt-in via `MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB` until final automatic discovery is approved. |
+| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests and `smoke:tauri:migration` cover DB copy, markers, backup path rewrite, existing target refusal, invalid source schema rejection, rollback file moves, source immutability, and backup preservation. Stable app id/path mode is available through `build:tauri:stable` and `--stable-smoke`; packaged stable migration smoke now verifies startup import from a disposable Electron DB. Read-only candidate discovery is implemented through `migration_discover`; migration remains opt-in via `MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB` until final user-confirmation UI and automatic first-launch selection are approved. |
 
 ## Manual Smoke Script
 

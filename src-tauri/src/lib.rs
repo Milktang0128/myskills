@@ -48,6 +48,7 @@ pub fn run() {
             commands::scenarios_export,
             commands::scenarios_import,
             commands::scenarios_create_from_cluster,
+            commands::migration_discover,
             commands::scan_run,
             commands::scan_last_result,
             commands::coverage_matrix,

@@ -150,6 +150,16 @@ export interface ScenarioImportResult {
   skillsNotFound: { scenarioKey: string; skillName: string; sourceKey: string }[];
 }
 
+export interface ElectronMigrationCandidate {
+  dbPath: string;
+  backupRoot: string | null;
+  sizeBytes: number;
+  modifiedAt: number | null;
+  sourceSha256: string | null;
+  valid: boolean;
+  reason: string | null;
+}
+
 /**
  * Request body for scenarios:createFromCluster — the AI Lens's sole write
  * entry. The renderer derives `name` and `skillIds` from a

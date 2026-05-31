@@ -20,6 +20,7 @@ import type {
   CoverageMatrix,
   CreateFromClusterRequest,
   CreateFromClusterResult,
+  ElectronMigrationCandidate,
   LibraryOverview,
   LibraryOverviewSnapshot,
   LlmChatRequest,
@@ -104,6 +105,8 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.scenarios.export]: 'scenarios_export',
   [IPC.scenarios.import]: 'scenarios_import',
   [IPC.scenarios.createFromCluster]: 'scenarios_create_from_cluster',
+
+  [IPC.migration.discover]: 'migration_discover',
 
   [IPC.scan.run]: 'scan_run',
   [IPC.scan.lastResult]: 'scan_last_result',
@@ -263,6 +266,13 @@ export const api = {
      */
     createFromCluster: (req: CreateFromClusterRequest) =>
       bridge().invoke(IPC.scenarios.createFromCluster, req) as Promise<CreateFromClusterResult>,
+  },
+  migration: {
+    discover: (extraDirs?: string[]) =>
+      bridge().invoke(
+        IPC.migration.discover,
+        extraDirs?.length ? { extraDirs } : undefined,
+      ) as Promise<ElectronMigrationCandidate[]>,
   },
   scan: {
     run: () => bridge().invoke(IPC.scan.run) as Promise<ScanResult>,

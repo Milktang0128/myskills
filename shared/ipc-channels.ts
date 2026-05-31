@@ -38,6 +38,14 @@ export const IPC = {
      */
     createFromCluster: 'scenarios:createFromCluster',
   },
+  migration: {
+    /**
+     * Read-only discovery of Electron v0.1.x userData DB candidates. This
+     * never imports or writes source data; stable migration still needs an
+     * explicit user confirmation flow.
+     */
+    discover: 'migration:discover',
+  },
   scan: {
     run: 'scan:run',
     lastResult: 'scan:lastResult',
@@ -117,6 +125,7 @@ export type IpcChannel =
   | typeof IPC.platforms[keyof typeof IPC.platforms]
   | typeof IPC.skills[keyof typeof IPC.skills]
   | typeof IPC.scenarios[keyof typeof IPC.scenarios]
+  | typeof IPC.migration[keyof typeof IPC.migration]
   | typeof IPC.scan[keyof typeof IPC.scan]
   | typeof IPC.settings[keyof typeof IPC.settings]
   | typeof IPC.coverage[keyof typeof IPC.coverage]
@@ -131,6 +140,7 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.platforms),
   ...Object.values(IPC.skills),
   ...Object.values(IPC.scenarios),
+  ...Object.values(IPC.migration),
   ...Object.values(IPC.scan),
   ...Object.values(IPC.settings),
   ...Object.values(IPC.coverage),

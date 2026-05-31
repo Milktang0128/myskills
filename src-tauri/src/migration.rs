@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags};
+use serde::Serialize;
 use sha2::Digest;
 
 use crate::db::{init_pool, now_ms};
@@ -16,6 +17,18 @@ const REQUIRED_ELECTRON_TABLES: &[&str] = &[
     "settings",
     "sync_history",
 ];
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectronMigrationCandidate {
+    pub db_path: PathBuf,
+    pub backup_root: Option<PathBuf>,
+    pub size_bytes: u64,
+    pub modified_at: Option<i64>,
+    pub source_sha256: Option<String>,
+    pub valid: bool,
+    pub reason: Option<String>,
+}
 
 #[derive(Debug)]
 pub struct StableMigrationReport {
@@ -137,6 +150,90 @@ pub fn rollback_stable_import(
         failed_db,
         restored_db,
     })
+}
+
+pub fn discover_electron_candidates(
+    home_dir: &Path,
+    extra_dirs: &[PathBuf],
+) -> AppResult<Vec<ElectronMigrationCandidate>> {
+    let mut dirs = default_electron_user_data_dirs(home_dir);
+    dirs.extend(extra_dirs.iter().cloned());
+    dirs.sort();
+    dirs.dedup();
+
+    let mut candidates = Vec::new();
+    for dir in dirs {
+        let db_path = dir.join("myskills.db");
+        if !db_path.exists() {
+            continue;
+        }
+        let metadata = fs::metadata(&db_path)?;
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as i64);
+        let backup_root = dir.join("backups");
+        let backup_root = backup_root.is_dir().then_some(backup_root);
+        let mut source_sha256 = None;
+        let validation =
+            match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+                Ok(conn) => match validate_electron_db(&conn) {
+                    Ok(()) => match sha256_file(&db_path) {
+                        Ok(hash) => {
+                            source_sha256 = Some(hash);
+                            Ok(())
+                        }
+                        Err(err) => Err(err),
+                    },
+                    Err(err) => Err(err),
+                },
+                Err(err) => Err(AppError::new("MIGRATION_DB_OPEN_FAILED", err.to_string())),
+            };
+        candidates.push(ElectronMigrationCandidate {
+            db_path,
+            backup_root,
+            size_bytes: metadata.len(),
+            modified_at,
+            source_sha256,
+            valid: validation.is_ok(),
+            reason: validation
+                .err()
+                .map(|err| format!("{}: {}", err.code, err.message)),
+        });
+    }
+    Ok(candidates)
+}
+
+fn default_electron_user_data_dirs(home_dir: &Path) -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        vec![
+            home_dir.join("Library/Application Support/MySkills"),
+            home_dir.join("Library/Application Support/myskills"),
+        ]
+    } else if cfg!(target_os = "windows") {
+        let mut dirs = vec![
+            home_dir.join("AppData/Roaming/MySkills"),
+            home_dir.join("AppData/Roaming/myskills"),
+        ];
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            let app_data = PathBuf::from(app_data);
+            dirs.push(app_data.join("MySkills"));
+            dirs.push(app_data.join("myskills"));
+        }
+        dirs
+    } else {
+        let mut dirs = vec![
+            home_dir.join(".config/MySkills"),
+            home_dir.join(".config/myskills"),
+        ];
+        if let Some(xdg_config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+            let xdg_config_home = PathBuf::from(xdg_config_home);
+            dirs.push(xdg_config_home.join("MySkills"));
+            dirs.push(xdg_config_home.join("myskills"));
+        }
+        dirs
+    }
 }
 
 fn validate_electron_db(conn: &Connection) -> AppResult<()> {
@@ -414,6 +511,58 @@ mod tests {
         let err = prepare_stable_import(&source_db, None, &root.join("target"), 123).unwrap_err();
 
         assert_eq!(err.code, "MIGRATION_SCHEMA_INVALID");
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn discover_electron_candidates_reports_valid_and_invalid_without_mutation() {
+        let root = temp_dir("discover");
+        let home = root.join("home");
+        let valid_dir = home.join("Library/Application Support/MySkills");
+        let invalid_dir = root.join("custom-invalid");
+        fs::create_dir_all(&valid_dir).unwrap();
+        fs::create_dir_all(&invalid_dir).unwrap();
+
+        let valid_db = valid_dir.join("myskills.db");
+        create_source_db(&valid_db);
+        fs::create_dir_all(valid_dir.join("backups")).unwrap();
+        let valid_hash = sha256_file(&valid_db).unwrap();
+
+        let invalid_db = invalid_dir.join("myskills.db");
+        Connection::open(&invalid_db)
+            .unwrap()
+            .execute("CREATE TABLE platforms (id TEXT PRIMARY KEY)", [])
+            .unwrap();
+
+        let candidates =
+            discover_electron_candidates(&home, &[invalid_dir.clone(), invalid_dir.clone()])
+                .unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .filter(|candidate| candidate.db_path == invalid_db)
+                .count(),
+            1
+        );
+
+        let valid = candidates
+            .iter()
+            .find(|candidate| candidate.db_path == valid_db)
+            .expect("valid candidate");
+        assert!(valid.valid);
+        assert_eq!(valid.source_sha256.as_deref(), Some(valid_hash.as_str()));
+        assert_eq!(valid.backup_root, Some(valid_dir.join("backups")));
+        assert_eq!(sha256_file(&valid_db).unwrap(), valid_hash);
+
+        let invalid = candidates
+            .iter()
+            .find(|candidate| candidate.db_path == invalid_db)
+            .expect("invalid candidate");
+        assert!(!invalid.valid);
+        assert!(invalid
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("MIGRATION_SCHEMA_INVALID")));
         fs::remove_dir_all(root).ok();
     }
 

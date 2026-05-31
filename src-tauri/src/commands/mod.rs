@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::db::now_ms;
 use crate::error::{AppError, AppResult};
+use crate::migration;
 use crate::scanner;
 use crate::scanner::parser::load_skill_body;
 use crate::state::{AppState, StoredPlan};
@@ -895,6 +896,33 @@ pub fn scenarios_create_from_cluster(
     Ok(
         json!({ "scenarioId": scenario_id, "created": created, "skillsLinked": linked, "skillsSkipped": skipped }),
     )
+}
+
+#[tauri::command]
+pub fn migration_discover(payload: Option<Value>) -> AppResult<Value> {
+    let home = payload
+        .as_ref()
+        .and_then(|p| p.get("homeDir"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| PathBuf::from(expand_home(path)))
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| AppError::new("PATH_ERROR", "could not resolve home directory"))?;
+    let extra_dirs = payload
+        .as_ref()
+        .and_then(|p| p.get("extraDirs"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| PathBuf::from(expand_home(path)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let candidates = migration::discover_electron_candidates(&home, &extra_dirs)?;
+    Ok(json!(candidates))
 }
 
 #[tauri::command]

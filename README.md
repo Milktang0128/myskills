@@ -175,8 +175,9 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 
 Solo personal project. `v0.1.x` is the frozen Electron/macOS line; `v0.2` is
 the Tauri rewrite branch. The Rust backend has unit coverage for migration and
-scanner invariants, and the packaged preview app has passed first-window boot
-smoke. Release readiness is tracked in
+scanner invariants, the packaged preview app has passed first-window boot
+smoke, and the stable line has a read-only Electron DB discovery command for
+future migration confirmation. Release readiness is tracked in
 [docs/qa/tauri-parity-smoke.md](docs/qa/tauri-parity-smoke.md); Library,
 Coverage, Discover, Sync, History, Settings, and AI flows still require full
 desktop parity smoke before `v0.2.0` is treated as stable.

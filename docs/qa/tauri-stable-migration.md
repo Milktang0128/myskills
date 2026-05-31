@@ -50,7 +50,10 @@ Tauri stable target:
 Run only on first stable Tauri launch, before any scanner or sync write.
 Preview builds hard-fail if this migration is requested. Stable candidates only
 run it when `MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB` is set; automatic source
-discovery remains disabled until the final stable release gate.
+selection remains disabled until the final stable release gate. The backend now
+exposes a read-only `migration_discover` command that finds and validates
+Electron DB candidates without importing or mutating source data; the stable UI
+must still require explicit user confirmation before any import.
 
 1. Resolve the stable Tauri app data directory and create it if needed.
 2. If a stable Tauri `myskills.db` already exists, skip automatic migration and
@@ -108,6 +111,10 @@ Rollback must be available without opening Electron:
 
 Before enabling this migration in a stable build:
 
+- `migration_discover` must return only metadata for Electron DB candidates:
+  path, optional backup root, file size, mtime, SHA-256 for valid candidates,
+  and validation status/reason. It must not write source DBs, Electron backup
+  trees, skill directories, or the Tauri target directory.
 - Rust migration foundation tests must cover copied Electron DB, marker writes,
   backup path rewrite, existing target refusal, invalid source schema rejection,
   unknown external backup path preservation, current DB failure preservation,
