@@ -1041,19 +1041,15 @@ pub fn sync_plan(payload: Option<Value>, state: State<'_, AppState>) -> AppResul
         .ok_or_else(|| AppError::new("INVALID_INPUT", "requests[] required"))?;
     let db = conn(&state)?;
     let plan = match operation {
-        "sync_from_canonical" => plan_sync_from_canonical(&db, requests, &state)?,
-        "promote_to_canonical" => plan_promote_to_canonical(&db, requests, &state)?,
+        "sync_from_canonical" => plan_sync_from_canonical(&db, requests)?,
+        "promote_to_canonical" => plan_promote_to_canonical(&db, requests)?,
         _ => return Err(AppError::new("INVALID_INPUT", "unknown plan kind")),
     };
     store_plan(&state, &plan)?;
     Ok(plan)
 }
 
-fn plan_sync_from_canonical(
-    db: &Connection,
-    requests: &[Value],
-    _state: &State<'_, AppState>,
-) -> AppResult<Value> {
+fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Value> {
     let platforms = sync_platforms(db)?;
     let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
     let canonical = canonical_platform(db, &platform_ids)?;
@@ -1099,11 +1095,7 @@ fn plan_sync_from_canonical(
     Ok(finalize_sync_plan("sync_from_canonical", items))
 }
 
-fn plan_promote_to_canonical(
-    db: &Connection,
-    requests: &[Value],
-    _state: &State<'_, AppState>,
-) -> AppResult<Value> {
+fn plan_promote_to_canonical(db: &Connection, requests: &[Value]) -> AppResult<Value> {
     let platforms = sync_platforms(db)?;
     let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
     let canonical = canonical_platform(db, &platform_ids)?;
@@ -3303,6 +3295,136 @@ mod tests {
             )
             .unwrap();
         assert!(rolled_back.is_some());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn sync_plan_from_canonical_classifies_fixture_targets() {
+        let conn = sync_conn();
+        let root = temp_dir("sync-plan");
+        let shared_root = root.join("shared");
+        let claude_root = root.join("claude");
+        let codex_root = root.join("codex");
+        fs::create_dir_all(&shared_root).unwrap();
+        fs::create_dir_all(&claude_root).unwrap();
+        fs::create_dir_all(&codex_root).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir, enabled, sort_order) VALUES
+             ('shared', 'User Agents Folder', ?1, 1, 0),
+             ('claude', 'Claude Code', ?2, 1, 1),
+             ('codex', 'Codex', ?3, 1, 2)",
+            params![
+                shared_root.to_string_lossy(),
+                claude_root.to_string_lossy(),
+                codex_root.to_string_lossy()
+            ],
+        )
+        .unwrap();
+
+        let cases = [
+            ("skill-missing", "plan-missing", "codex", "symlink_create"),
+            ("skill-same", "plan-same", "claude", "skip"),
+            ("skill-stale", "plan-stale", "claude", "symlink_replace"),
+            ("skill-conflict", "plan-conflict", "codex", "conflict"),
+        ];
+        for (skill_id, name, _, _) in cases {
+            insert_coverage_skill(&conn, skill_id, name);
+            let source = write_skill(&shared_root, name, name);
+            let source_hash = hash_skill_md(&source).unwrap();
+            insert_coverage_location(
+                &conn,
+                skill_id,
+                "shared",
+                &source.to_string_lossy(),
+                &source.to_string_lossy(),
+                false,
+                false,
+                false,
+                Some(&source_hash),
+            );
+        }
+
+        let same_target = write_skill(&claude_root, "plan-same", "plan-same");
+        let same_hash = hash_skill_md(&same_target).unwrap();
+        insert_coverage_location(
+            &conn,
+            "skill-same",
+            "claude",
+            &same_target.to_string_lossy(),
+            &same_target.to_string_lossy(),
+            false,
+            false,
+            false,
+            Some(&same_hash),
+        );
+
+        let stale_target = write_skill(&claude_root, "plan-stale", "plan-stale-old");
+        let stale_hash = hash_skill_md(&stale_target).unwrap();
+        insert_coverage_location(
+            &conn,
+            "skill-stale",
+            "claude",
+            &stale_target.to_string_lossy(),
+            &stale_target.to_string_lossy(),
+            false,
+            false,
+            false,
+            Some(&stale_hash),
+        );
+
+        fs::write(codex_root.join("plan-conflict"), "not a directory").unwrap();
+
+        let requests = cases
+            .iter()
+            .map(|(skill_id, _, platform_id, _)| {
+                json!({ "skillId": skill_id, "targetPlatformIds": [platform_id] })
+            })
+            .collect::<Vec<_>>();
+        let plan = plan_sync_from_canonical(&conn, &requests).unwrap();
+
+        assert_eq!(
+            plan.get("operation").and_then(Value::as_str),
+            Some("sync_from_canonical")
+        );
+        assert!(plan.get("token").and_then(Value::as_str).is_some());
+        let items = plan.get("items").and_then(Value::as_array).unwrap();
+        let action_by_skill = items
+            .iter()
+            .map(|item| {
+                (
+                    item.get("skillId").and_then(Value::as_str).unwrap(),
+                    item.get("action").and_then(Value::as_str).unwrap(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        for (skill_id, _, _, expected_action) in cases {
+            assert_eq!(
+                action_by_skill.get(skill_id).copied(),
+                Some(expected_action)
+            );
+        }
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.get("skillId").and_then(Value::as_str) == Some("skill-same"))
+                .and_then(|item| item.get("reason"))
+                .and_then(Value::as_str),
+            Some("same_hash")
+        );
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.get("skillId").and_then(Value::as_str) == Some("skill-conflict"))
+                .and_then(|item| item.get("reason"))
+                .and_then(Value::as_str),
+            Some("target_exists_file")
+        );
         fs::remove_dir_all(root).ok();
     }
 
