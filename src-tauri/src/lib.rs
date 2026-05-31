@@ -17,6 +17,8 @@ use crate::error::AppResult;
 use crate::paths::AppPaths;
 use crate::state::AppState;
 
+const TAURI_PREVIEW_IDENTIFIER: &str = "com.kanbenzhi.myskills.tauri-preview";
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -91,7 +93,9 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
             .app_data_dir()
             .map_err(|err| crate::error::AppError::new("PATH_ERROR", err.to_string()))?,
     };
-    let paths = AppPaths::new(AppPaths::isolated_preview_dir(default_app_data))?;
+    let preview = is_preview_runtime(app);
+    let paths = AppPaths::new(AppPaths::runtime_data_dir(default_app_data, preview))?;
+    maybe_prepare_stable_migration(&paths, preview)?;
     let db = db::init_pool(&paths.db_path)?;
     let mut last_scan = None;
     if let Ok(mut conn) = db.get() {
@@ -166,6 +170,43 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         ai_queue: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         ai_worker_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
+}
+
+fn is_preview_runtime(app: &tauri::AppHandle) -> bool {
+    if std::env::var("MYSKILLS_INTERNAL_STABLE_APP").is_ok() {
+        return false;
+    }
+    app.config().identifier == TAURI_PREVIEW_IDENTIFIER
+}
+
+fn maybe_prepare_stable_migration(paths: &AppPaths, preview: bool) -> AppResult<()> {
+    let Ok(source_db) = std::env::var("MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB") else {
+        return Ok(());
+    };
+    if source_db.trim().is_empty() {
+        return Ok(());
+    }
+    if preview {
+        return Err(crate::error::AppError::new(
+            "MIGRATION_PREVIEW_DISABLED",
+            "Electron DB migration is disabled for Tauri preview builds",
+        ));
+    }
+    if paths.db_path.exists() {
+        return Ok(());
+    }
+    let backup_root = std::env::var("MYSKILLS_STABLE_MIGRATE_ELECTRON_BACKUPS")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    let timestamp = db::now_ms();
+    migration::prepare_stable_import(
+        std::path::Path::new(&source_db),
+        backup_root.as_deref(),
+        &paths.user_data_dir,
+        timestamp,
+    )?;
+    Ok(())
 }
 
 fn apply_internal_smoke_fixture(

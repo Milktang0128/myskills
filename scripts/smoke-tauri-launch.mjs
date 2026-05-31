@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const root = process.cwd();
 const previewDirName = 'myskills-tauri-preview';
+const stableDirName = 'myskills';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 const expectedFrontendSequence = [
   'matrix',
@@ -27,6 +28,7 @@ function parseArgs(argv) {
     workflowSmoke: false,
     coverageSmoke: false,
     frontendSmoke: false,
+    stableSmoke: false,
   };
   for (const arg of argv) {
     if (arg === '--fixture-smoke') {
@@ -46,6 +48,8 @@ function parseArgs(argv) {
       args.coverageSmoke = true;
     } else if (arg === '--frontend-smoke') {
       args.frontendSmoke = true;
+    } else if (arg === '--stable-smoke') {
+      args.stableSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -66,14 +70,15 @@ function appBinary() {
   return path.join(root, 'src-tauri/target/release/myskills');
 }
 
-function expectedDbPath(home) {
+function expectedDbPath(home, stable = false) {
+  const dirName = stable ? stableDirName : previewDirName;
   if (process.platform === 'darwin') {
-    return path.join(home, 'Library/Application Support', previewDirName, 'myskills.db');
+    return path.join(home, 'Library/Application Support', dirName, 'myskills.db');
   }
   if (process.platform === 'win32') {
-    return path.join(home, 'AppData/Roaming', previewDirName, 'myskills.db');
+    return path.join(home, 'AppData/Roaming', dirName, 'myskills.db');
   }
-  return path.join(home, '.local/share', previewDirName, 'myskills.db');
+  return path.join(home, '.local/share', dirName, 'myskills.db');
 }
 
 function sleep(ms) {
@@ -302,7 +307,7 @@ if (!fs.existsSync(binary)) {
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'myskills-tauri-smoke-'));
 const home = path.join(tempRoot, 'home');
 fs.mkdirSync(home, { recursive: true });
-const dbPath = expectedDbPath(home);
+const dbPath = expectedDbPath(home, args.stableSmoke);
 const smokeDataDir = path.dirname(dbPath);
 const manifest = args.fixtureSmoke ? createFixtures(tempRoot) : null;
 
@@ -330,6 +335,9 @@ if (args.coverageSmoke) {
 }
 if (args.frontendSmoke) {
   env.MYSKILLS_INTERNAL_SMOKE_FRONTEND = '1';
+}
+if (args.stableSmoke) {
+  env.MYSKILLS_INTERNAL_STABLE_APP = '1';
 }
 
 const child = spawn(binary, [], {

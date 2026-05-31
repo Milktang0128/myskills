@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const root = process.cwd();
 const previewDirName = 'myskills-tauri-preview';
+const stableDirName = 'myskills';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 const expectedFrontendSequence = [
   'matrix',
@@ -28,6 +29,7 @@ function parseArgs(argv) {
     workflowSmoke: false,
     coverageSmoke: false,
     frontendSmoke: false,
+    stableSmoke: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -50,6 +52,8 @@ function parseArgs(argv) {
       args.coverageSmoke = true;
     } else if (arg === '--frontend-smoke') {
       args.frontendSmoke = true;
+    } else if (arg === '--stable-smoke') {
+      args.stableSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -68,8 +72,13 @@ function defaultDmgPath() {
   return candidates[0] ?? '';
 }
 
-function expectedDbPath(home) {
-  return path.join(home, 'Library/Application Support', previewDirName, 'myskills.db');
+function expectedDbPath(home, stable = false) {
+  return path.join(
+    home,
+    'Library/Application Support',
+    stable ? stableDirName : previewDirName,
+    'myskills.db',
+  );
 }
 
 function run(command, args, options = {}) {
@@ -332,11 +341,14 @@ try {
     throw new Error(`Mounted app binary not found: ${binary}`);
   }
   const bundleId = run('/usr/libexec/PlistBuddy', ['-c', 'Print CFBundleIdentifier', infoPlist]);
-  if (bundleId !== 'com.kanbenzhi.myskills.tauri-preview') {
+  const expectedBundleId = args.stableSmoke
+    ? 'com.kanbenzhi.myskills'
+    : 'com.kanbenzhi.myskills.tauri-preview';
+  if (bundleId !== expectedBundleId) {
     throw new Error(`Unexpected bundle id: ${bundleId}`);
   }
 
-  const dbPath = expectedDbPath(home);
+  const dbPath = expectedDbPath(home, args.stableSmoke);
   const smokeDataDir = path.dirname(dbPath);
   const env = {
     ...process.env,
@@ -362,6 +374,9 @@ try {
   }
   if (args.frontendSmoke) {
     env.MYSKILLS_INTERNAL_SMOKE_FRONTEND = '1';
+  }
+  if (args.stableSmoke) {
+    env.MYSKILLS_INTERNAL_STABLE_APP = '1';
   }
   const child = spawn(binary, [], {
     cwd: root,

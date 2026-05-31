@@ -38,6 +38,8 @@ Tauri stable target:
 
 - Stable Tauri must switch away from
   `com.kanbenzhi.myskills.tauri-preview` before migration.
+- The stable candidate config is `src-tauri/tauri.stable.conf.json`, which sets
+  the app id to `com.kanbenzhi.myskills`.
 - Target app data is the stable Tauri app data directory for
   `com.kanbenzhi.myskills`.
 - The preview directory `myskills-tauri-preview` remains untouched unless the
@@ -45,7 +47,10 @@ Tauri stable target:
 
 ## Migration Algorithm
 
-Run only on first stable Tauri launch, before any scanner or sync write:
+Run only on first stable Tauri launch, before any scanner or sync write.
+Preview builds hard-fail if this migration is requested. Stable candidates only
+run it when `MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB` is set; automatic source
+discovery remains disabled until the final stable release gate.
 
 1. Resolve the stable Tauri app data directory and create it if needed.
 2. If a stable Tauri `myskills.db` already exists, skip automatic migration and
@@ -119,6 +124,10 @@ Before enabling this migration in a stable build:
 - Verify preview DBs are not imported unless explicitly selected.
 - Add stable enablement tests for first-launch gating and an end-to-end rollback
   drill before switching away from the preview app id.
+- `npm run build:tauri:stable` plus
+  `npm run smoke:tauri:launch -- --stable-smoke --frontend-smoke` must prove the
+  stable app id uses the stable app data directory instead of
+  `myskills-tauri-preview`.
 
 ## Release Rule
 
