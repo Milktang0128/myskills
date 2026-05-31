@@ -45,6 +45,12 @@ export const IPC = {
      * explicit user confirmation flow.
      */
     discover: 'migration:discover',
+    /**
+     * Persist the user's selected Electron DB candidate as a restart-time
+     * migration confirmation manifest. The import still runs only before DB
+     * initialization on next stable launch.
+     */
+    confirm: 'migration:confirm',
   },
   scan: {
     run: 'scan:run',

@@ -262,6 +262,7 @@ let llmConfig = {
   hasApiKey: false,
   baseUrl: null,
 };
+let migrationConfirmationPath = null;
 
 const migrationCandidates = [
   {
@@ -459,6 +460,13 @@ function invoke(command, payload = {}) {
       return Promise.resolve({ deletedDirs: 1, deletedBytes: 2048, nulledRows: 1, remainingBytes: 4096 });
     case 'migration_discover':
       return Promise.resolve(migrationCandidates);
+    case 'migration_confirm':
+      migrationConfirmationPath = '/tmp/myskills-ui/stable-migration-confirmation.json';
+      return Promise.resolve({
+        ok: true,
+        confirmationPath: migrationConfirmationPath,
+        restartRequired: true,
+      });
     case 'scan_last_result':
       return Promise.resolve(lastScan);
     case 'scan_run':
@@ -734,6 +742,7 @@ async function renderWorkspace() {
   installGlobal('getComputedStyle', window.getComputedStyle.bind(window));
   installGlobal('requestAnimationFrame', (cb) => setTimeout(() => cb(Date.now()), 0));
   installGlobal('cancelAnimationFrame', (id) => clearTimeout(id));
+  window.confirm = () => true;
   globalThis.__MYSKILLS_UI_SMOKE__ = {
     invoke,
     listen: () => () => {},
@@ -893,6 +902,10 @@ try {
   expectText('settings migration discovery', 'read-only');
   expectText('settings migration discovery', 'Valid Electron database');
   expectText('settings migration discovery', 'Invalid candidate');
+  clickButton('Confirm for next launch');
+  await waitFor('migration confirmation saved', () =>
+    text().includes('Confirmation saved') && migrationConfirmationPath !== null,
+  );
   expectText('settings view', 'Scan errors (2)');
   expectText('settings view', 'Broken copy');
   expectText('settings view', 'Stats');

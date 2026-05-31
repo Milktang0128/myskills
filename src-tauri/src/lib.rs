@@ -49,6 +49,7 @@ pub fn run() {
             commands::scenarios_import,
             commands::scenarios_create_from_cluster,
             commands::migration_discover,
+            commands::migration_confirm,
             commands::scan_run,
             commands::scan_last_result,
             commands::coverage_matrix,
@@ -181,9 +182,17 @@ fn is_preview_runtime(app: &tauri::AppHandle) -> bool {
 }
 
 fn maybe_prepare_stable_migration(paths: &AppPaths, preview: bool) -> AppResult<()> {
-    let confirmation_file = std::env::var("MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE")
+    let env_confirmation_file = std::env::var("MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE")
         .ok()
-        .filter(|path| !path.trim().is_empty());
+        .filter(|path| !path.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    let confirmation_from_env = env_confirmation_file.is_some();
+    let default_confirmation_file = migration::confirmation_file_path(&paths.user_data_dir);
+    let confirmation_file = env_confirmation_file.or_else(|| {
+        default_confirmation_file
+            .exists()
+            .then_some(default_confirmation_file)
+    });
     let legacy_source_db = std::env::var("MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB")
         .ok()
         .filter(|path| !path.trim().is_empty());
@@ -202,15 +211,24 @@ fn maybe_prepare_stable_migration(paths: &AppPaths, preview: bool) -> AppResult<
             "Electron DB migration is disabled for Tauri preview builds",
         ));
     }
-    if paths.db_path.exists() {
-        return Ok(());
-    }
     let timestamp = db::now_ms();
+    if paths.db_path.exists() {
+        if migration::stable_target_already_migrated(&paths.user_data_dir)? {
+            if !confirmation_from_env {
+                let _ = std::fs::remove_file(&confirmation_file);
+            }
+            return Ok(());
+        }
+        migration::preserve_replaceable_target_db(&paths.user_data_dir, timestamp)?;
+    }
     migration::prepare_confirmed_stable_import(
-        std::path::Path::new(&confirmation_file),
+        &confirmation_file,
         &paths.user_data_dir,
         timestamp,
     )?;
+    if !confirmation_from_env {
+        let _ = std::fs::remove_file(&confirmation_file);
+    }
     Ok(())
 }
 

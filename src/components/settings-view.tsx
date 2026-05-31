@@ -95,6 +95,8 @@ export function SettingsView({ onChanged }: Props) {
   const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
   const [migrationCandidates, setMigrationCandidates] = useState<ElectronMigrationCandidate[]>([]);
   const [discoveringMigration, setDiscoveringMigration] = useState(false);
+  const [confirmingMigrationPath, setConfirmingMigrationPath] = useState<string | null>(null);
+  const [migrationConfirmation, setMigrationConfirmation] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [pls, st, ls, c, cands, netRaw, cfg, feats, migration] = await Promise.all([
@@ -370,6 +372,31 @@ export function SettingsView({ onChanged }: Props) {
       });
     } finally {
       setDiscoveringMigration(false);
+    }
+  }
+
+  async function confirmMigrationCandidate(candidate: ElectronMigrationCandidate) {
+    if (!candidate.valid || !candidate.sourceSha256) return;
+    const ok = await confirmAction({
+      title: t('settings.migration.confirmTitle'),
+      description: t('settings.migration.confirmDescription', { path: candidate.dbPath }),
+      confirmLabel: t('settings.migration.confirm'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
+    setConfirmingMigrationPath(candidate.dbPath);
+    try {
+      const result = await api.migration.confirm(candidate);
+      setMigrationConfirmation(result.confirmationPath);
+    } catch (err) {
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
+    } finally {
+      setConfirmingMigrationPath(null);
     }
   }
 
@@ -660,7 +687,10 @@ export function SettingsView({ onChanged }: Props) {
           <MigrationDiscoverySection
             candidates={migrationCandidates}
             discovering={discoveringMigration}
+            confirmingPath={confirmingMigrationPath}
+            confirmationPath={migrationConfirmation}
             onRefresh={refreshMigrationCandidates}
+            onConfirm={confirmMigrationCandidate}
           />
 
           <Separator />
@@ -954,11 +984,17 @@ export function SettingsView({ onChanged }: Props) {
 function MigrationDiscoverySection({
   candidates,
   discovering,
+  confirmingPath,
+  confirmationPath,
   onRefresh,
+  onConfirm,
 }: {
   candidates: ElectronMigrationCandidate[];
   discovering: boolean;
+  confirmingPath: string | null;
+  confirmationPath: string | null;
   onRefresh: () => void;
+  onConfirm: (candidate: ElectronMigrationCandidate) => void;
 }) {
   const t = useT();
   const validCount = candidates.filter((candidate) => candidate.valid).length;
@@ -995,6 +1031,11 @@ function MigrationDiscoverySection({
         <p className="mt-1 text-xs text-muted-foreground">
           {t('settings.migration.readOnlyHelp')}
         </p>
+        {confirmationPath && (
+          <p className="mt-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-950 dark:bg-emerald-950/20 dark:text-emerald-300">
+            {t('settings.migration.confirmed', { path: confirmationPath })}
+          </p>
+        )}
 
         {candidates.length === 0 ? (
           <p className="mt-3 rounded border border-dashed px-3 py-2 text-xs text-muted-foreground">
@@ -1050,6 +1091,20 @@ function MigrationDiscoverySection({
                     </div>
                   )}
                 </div>
+                {candidate.valid && candidate.sourceSha256 && (
+                  <div className="mt-3 flex justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onConfirm(candidate)}
+                      disabled={confirmingPath === candidate.dbPath}
+                    >
+                      {confirmingPath === candidate.dbPath
+                        ? t('settings.migration.confirming')
+                        : t('settings.migration.confirm')}
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

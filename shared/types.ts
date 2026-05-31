@@ -160,6 +160,12 @@ export interface ElectronMigrationCandidate {
   reason: string | null;
 }
 
+export interface ElectronMigrationConfirmationResult {
+  ok: true;
+  confirmationPath: string;
+  restartRequired: true;
+}
+
 /**
  * Request body for scenarios:createFromCluster — the AI Lens's sole write
  * entry. The renderer derives `name` and `skillIds` from a

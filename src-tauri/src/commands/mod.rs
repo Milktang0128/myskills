@@ -926,6 +926,30 @@ pub fn migration_discover(payload: Option<Value>) -> AppResult<Value> {
 }
 
 #[tauri::command]
+pub fn migration_confirm(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let source_db = PathBuf::from(expand_home(required_str(&payload, "sourceDb")?));
+    let source_sha256 = required_str(&payload, "sourceSha256")?;
+    let backup_root = payload
+        .as_ref()
+        .and_then(|p| p.get("backupRoot"))
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| PathBuf::from(expand_home(path)));
+    let confirmation_path = migration::write_stable_confirmation(
+        &state.paths.user_data_dir,
+        &source_db,
+        backup_root.as_deref(),
+        source_sha256,
+        now_ms(),
+    )?;
+    Ok(json!({
+        "ok": true,
+        "confirmationPath": confirmation_path,
+        "restartRequired": true
+    }))
+}
+
+#[tauri::command]
 pub fn coverage_matrix(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;

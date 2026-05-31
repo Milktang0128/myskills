@@ -178,7 +178,8 @@ the Tauri rewrite branch. The Rust backend has unit coverage for migration and
 scanner invariants, the packaged preview app has passed first-window boot
 smoke, and Settings exposes read-only Electron DB candidate discovery for the
 future stable migration confirmation flow. Stable startup migration is gated by
-a confirmed source-hash manifest rather than a bare DB path. Release readiness is tracked in
+a confirmed source-hash manifest, written only after user confirmation, rather
+than a bare DB path. Release readiness is tracked in
 [docs/qa/tauri-parity-smoke.md](docs/qa/tauri-parity-smoke.md); Library,
 Coverage, Discover, Sync, History, Settings, and AI flows still require full
 desktop parity smoke before `v0.2.0` is treated as stable.

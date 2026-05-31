@@ -685,6 +685,13 @@ export const en = {
   'settings.migration.readOnlyBadge': 'read-only',
   'settings.migration.readOnlyHelp':
     'This panel does not import, move, or rewrite data. Stable migration still requires an explicit confirmation step.',
+  'settings.migration.confirm': 'Confirm for next launch',
+  'settings.migration.confirming': 'Confirming…',
+  'settings.migration.confirmTitle': 'Confirm Electron migration source?',
+  'settings.migration.confirmDescription':
+    'MySkills will write a local confirmation manifest for {{path}}. The actual import runs only on the next stable launch, before the Tauri DB opens.',
+  'settings.migration.confirmed':
+    'Confirmation saved: {{path}}. Restart the stable app to import this Electron database.',
   'settings.migration.empty': 'No Electron MySkills database candidate found.',
   'settings.migration.valid': 'Valid Electron database',
   'settings.migration.invalid': 'Invalid candidate',

@@ -685,6 +685,13 @@ export const zh: Dict = {
   'settings.migration.readOnlyBadge': '只读',
   'settings.migration.readOnlyHelp':
     '此面板不会导入、移动或改写数据。稳定迁移仍需明确的用户确认步骤。',
+  'settings.migration.confirm': '确认下次启动导入',
+  'settings.migration.confirming': '确认中…',
+  'settings.migration.confirmTitle': '确认 Electron 迁移来源？',
+  'settings.migration.confirmDescription':
+    'MySkills 会为 {{path}} 写入本地确认清单。真正导入只会在下次稳定版启动、Tauri DB 打开之前执行。',
+  'settings.migration.confirmed':
+    '确认清单已保存：{{path}}。重启稳定版应用后会导入这个 Electron 数据库。',
   'settings.migration.empty': '未发现 Electron MySkills 数据库候选。',
   'settings.migration.valid': '有效的 Electron 数据库',
   'settings.migration.invalid': '无效候选',

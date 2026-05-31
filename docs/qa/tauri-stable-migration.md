@@ -55,48 +55,55 @@ Automatic source selection remains disabled until the final stable release
 gate. The backend now exposes a read-only `migration_discover` command that
 finds and validates Electron DB candidates without importing or mutating source
 data; the stable UI shows those candidates in Settings and must still require
-explicit user confirmation before any import.
+explicit user confirmation before any import. Settings writes the confirmation
+manifest to the stable app data directory; the actual import runs on the next
+stable launch before the DB pool opens.
 
 1. Resolve the stable Tauri app data directory and create it if needed.
 2. If a stable Tauri `myskills.db` already exists, skip automatic migration and
    show the existing DB status.
 3. Detect candidate Electron `myskills.db` files. If zero or multiple valid
    candidates are found, ask the user to choose instead of guessing.
-4. Write a confirmation manifest only after explicit user approval:
+4. Write `stable-migration-confirmation.json` only after explicit user approval:
    - `sourceDb`: absolute path to the chosen Electron `myskills.db`.
    - `backupRoot`: optional Electron `backups/` path.
    - `sourceSha256`: SHA-256 observed during discovery.
    - `confirmedAt`: confirmation timestamp.
 5. On stable startup, re-hash the source DB and abort with
    `MIGRATION_SOURCE_CHANGED` if it no longer matches `sourceSha256`.
-6. Validate the source DB:
+6. If a fresh Tauri DB already exists but contains no user skills, skill
+   locations, non-built-in scenarios, scenario links, sync history, or migration
+   marker, preserve it as `myskills.db.pre-migration-*` before importing. If it
+   contains user data, abort with `MIGRATION_TARGET_NOT_EMPTY`.
+7. Validate the source DB:
    - `PRAGMA integrity_check` returns `ok`.
    - Required tables exist: `platforms`, `skills`, `skill_locations`,
      `scenarios`, `skill_scenarios`, `settings`, `sync_history`.
    - `schema_migrations` exists or the schema can be repaired by the current
      idempotent migrations.
-7. Copy the Electron DB to
+8. Copy the Electron DB to
    `migration-backups/electron-<timestamp>/myskills.db` under the Tauri target
    directory. Record source path, source size, and SHA-256.
-8. Copy the Electron `backups/` directory into the same migration backup set.
+9. Copy the Electron `backups/` directory into the same migration backup set.
    Do not copy `staging/`.
-9. Create `myskills.db.importing` in the Tauri target directory from the DB
+10. Create `myskills.db.importing` in the Tauri target directory from the DB
    backup copy.
-10. Run the current Tauri migrations on `myskills.db.importing`.
-11. Rewrite migrated `sync_history.backup_path` values whose prefix points at
+11. Run the current Tauri migrations on `myskills.db.importing`.
+12. Rewrite migrated `sync_history.backup_path` values whose prefix points at
    the Electron `backups/` directory so they point at the copied Tauri
    migration backup directory. Leave unknown external backup paths unchanged
    and mark them non-rollbackable in UI.
-12. Insert a migration marker into `settings`:
+13. Insert a migration marker into `settings`:
     `migration.electron_v0_1.source_path`,
     `migration.electron_v0_1.source_sha256`,
     `migration.electron_v0_1.migrated_at`.
-13. Run `PRAGMA integrity_check` again on the importing DB.
-14. Atomically rename `myskills.db.importing` to `myskills.db`. Automatic
+14. Run `PRAGMA integrity_check` again on the importing DB.
+15. Atomically rename `myskills.db.importing` to `myskills.db`. Automatic
     migration refuses to run when a stable Tauri DB already exists; any future
     manual replace mode must first preserve the existing target as
     `myskills.db.pre-migration-*`.
-15. Start normal Tauri recovery steps: pending backup recovery, pending history
+16. Remove the default confirmation manifest after successful import.
+17. Start normal Tauri recovery steps: pending backup recovery, pending history
     recovery, staging GC, and backup retention sweep.
 
 ## Rollback
@@ -128,8 +135,8 @@ Before enabling this migration in a stable build:
   source DBs whose SHA-256 changed after confirmation. A bare source path is
   not enough to run migration.
 - Settings must show the candidate list as read-only status, including invalid
-  reasons. It must not expose an import button until the first-launch stable
-  confirmation flow can run before normal DB initialization.
+  reasons. Its confirm action may only write the restart-time manifest; it must
+  not import while the runtime DB pool is open.
 - Rust migration foundation tests must cover copied Electron DB, marker writes,
   backup path rewrite, existing target refusal, invalid source schema rejection,
   unknown external backup path preservation, current DB failure preservation,

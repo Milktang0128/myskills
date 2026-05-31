@@ -8,6 +8,8 @@ use sha2::Digest;
 use crate::db::{init_pool, now_ms};
 use crate::error::{AppError, AppResult};
 
+pub const STABLE_CONFIRMATION_FILE: &str = "stable-migration-confirmation.json";
+
 const REQUIRED_ELECTRON_TABLES: &[&str] = &[
     "platforms",
     "skills",
@@ -45,13 +47,52 @@ pub struct StableRollbackReport {
     pub restored_db: Option<PathBuf>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StableMigrationConfirmation {
     pub source_db: PathBuf,
     pub backup_root: Option<PathBuf>,
     pub source_sha256: String,
     pub confirmed_at: Option<i64>,
+}
+
+pub fn confirmation_file_path(target_data_dir: &Path) -> PathBuf {
+    target_data_dir.join(STABLE_CONFIRMATION_FILE)
+}
+
+pub fn write_stable_confirmation(
+    target_data_dir: &Path,
+    source_db: &Path,
+    backup_root: Option<&Path>,
+    source_sha256: &str,
+    confirmed_at: i64,
+) -> AppResult<PathBuf> {
+    let confirmation = StableMigrationConfirmation {
+        source_db: source_db.to_path_buf(),
+        backup_root: backup_root.map(Path::to_path_buf),
+        source_sha256: source_sha256.to_string(),
+        confirmed_at: Some(confirmed_at),
+    };
+    validate_stable_confirmation(&confirmation)?;
+    let actual_sha256 = sha256_file(source_db)?;
+    if !actual_sha256.eq_ignore_ascii_case(source_sha256) {
+        return Err(AppError::new(
+            "MIGRATION_SOURCE_CHANGED",
+            format!(
+                "Electron DB hash changed after discovery: expected {source_sha256}, got {actual_sha256}"
+            ),
+        ));
+    }
+    fs::create_dir_all(target_data_dir)?;
+    let path = confirmation_file_path(target_data_dir);
+    let raw = serde_json::to_string_pretty(&confirmation).map_err(|err| {
+        AppError::new(
+            "MIGRATION_CONFIRMATION_INVALID",
+            format!("Could not serialize migration confirmation: {err}"),
+        )
+    })?;
+    fs::write(&path, raw)?;
+    Ok(path)
 }
 
 pub fn prepare_confirmed_stable_import(
@@ -76,6 +117,40 @@ pub fn prepare_confirmed_stable_import(
         target_data_dir,
         timestamp_ms,
     )
+}
+
+pub fn preserve_replaceable_target_db(
+    target_data_dir: &Path,
+    timestamp_ms: i64,
+) -> AppResult<Option<PathBuf>> {
+    let current_db = target_data_dir.join("myskills.db");
+    if !current_db.exists() {
+        return Ok(None);
+    }
+    if !target_db_is_replaceable(&current_db)? {
+        return Err(AppError::new(
+            "MIGRATION_TARGET_NOT_EMPTY",
+            format!(
+                "Tauri stable DB already contains user data at {}",
+                current_db.display()
+            ),
+        ));
+    }
+    let preserved = target_data_dir.join(format!("myskills.db.pre-migration-{timestamp_ms}"));
+    if preserved.exists() {
+        fs::remove_file(&preserved)?;
+    }
+    fs::rename(&current_db, &preserved)?;
+    Ok(Some(preserved))
+}
+
+pub fn stable_target_already_migrated(target_data_dir: &Path) -> AppResult<bool> {
+    let target_db = target_data_dir.join("myskills.db");
+    if !target_db.exists() {
+        return Ok(false);
+    }
+    let conn = Connection::open_with_flags(target_db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    migration_marker_exists(&conn)
 }
 
 pub fn prepare_stable_import(
@@ -254,6 +329,11 @@ fn read_stable_confirmation(path: &Path) -> AppResult<StableMigrationConfirmatio
             format!("Invalid migration confirmation {}: {err}", path.display()),
         )
     })?;
+    validate_stable_confirmation(&confirmation)?;
+    Ok(confirmation)
+}
+
+fn validate_stable_confirmation(confirmation: &StableMigrationConfirmation) -> AppResult<()> {
     if confirmation.source_db.as_os_str().is_empty() {
         return Err(AppError::new(
             "MIGRATION_CONFIRMATION_INVALID",
@@ -278,11 +358,57 @@ fn read_stable_confirmation(path: &Path) -> AppResult<StableMigrationConfirmatio
             "Migration confirmation must include confirmedAt",
         ));
     }
-    Ok(confirmation)
+    Ok(())
 }
 
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn target_db_is_replaceable(target_db: &Path) -> AppResult<bool> {
+    let conn = Connection::open_with_flags(target_db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    if migration_marker_exists(&conn)? {
+        return Ok(false);
+    }
+    for (table, sql) in [
+        ("skills", "SELECT COUNT(*) FROM skills"),
+        ("skill_locations", "SELECT COUNT(*) FROM skill_locations"),
+        (
+            "scenarios",
+            "SELECT COUNT(*) FROM scenarios WHERE is_builtin = 0",
+        ),
+        ("skill_scenarios", "SELECT COUNT(*) FROM skill_scenarios"),
+        ("sync_history", "SELECT COUNT(*) FROM sync_history"),
+    ] {
+        if table_exists(&conn, table)? {
+            let count: i64 = conn.query_row(sql, [], |row| row.get(0))?;
+            if count > 0 {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn migration_marker_exists(conn: &Connection) -> AppResult<bool> {
+    if !table_exists(conn, "settings")? {
+        return Ok(false);
+    }
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM settings WHERE key LIKE 'migration.electron_v0_1.%'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> AppResult<bool> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        params![table],
+        |row| row.get(0),
+    )?;
+    Ok(exists > 0)
 }
 
 fn default_electron_user_data_dirs(home_dir: &Path) -> Vec<PathBuf> {
@@ -619,6 +745,73 @@ mod tests {
         assert_eq!(report.source_db, source_db);
         assert_eq!(report.source_sha256, source_hash);
         assert!(target_dir.join("myskills.db").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn write_stable_confirmation_rejects_changed_source_hash() {
+        let root = temp_dir("write-confirm-changed");
+        let electron_dir = root.join("electron");
+        fs::create_dir_all(&electron_dir).unwrap();
+        let source_db = electron_dir.join("myskills.db");
+        create_source_db(&source_db);
+
+        let err = write_stable_confirmation(
+            &root.join("target"),
+            &source_db,
+            None,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            123,
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code, "MIGRATION_SOURCE_CHANGED");
+        assert!(!confirmation_file_path(&root.join("target")).exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn preserve_replaceable_target_db_only_allows_empty_tauri_db() {
+        let root = temp_dir("preserve-empty");
+        let target_dir = root.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target_db = target_dir.join("myskills.db");
+        init_pool(&target_db).unwrap();
+
+        let preserved = preserve_replaceable_target_db(&target_dir, 123).unwrap();
+
+        assert_eq!(
+            preserved.as_deref(),
+            Some(target_dir.join("myskills.db.pre-migration-123").as_path())
+        );
+        assert!(!target_db.exists());
+        assert!(target_dir.join("myskills.db.pre-migration-123").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn preserve_replaceable_target_db_rejects_user_data() {
+        let root = temp_dir("preserve-user-data");
+        let target_dir = root.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target_db = target_dir.join("myskills.db");
+        let pool = init_pool(&target_db).unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO skills
+             (id, name, source_key, content_hash, created_at, updated_at, last_scanned_at)
+             VALUES ('skill-1', 'Skill 1', 'local', 'hash', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        drop(pool);
+
+        let err = preserve_replaceable_target_db(&target_dir, 123).unwrap_err();
+
+        assert_eq!(err.code, "MIGRATION_TARGET_NOT_EMPTY");
+        assert!(target_db.exists());
+        assert!(!target_dir.join("myskills.db.pre-migration-123").exists());
         fs::remove_dir_all(root).ok();
     }
 
