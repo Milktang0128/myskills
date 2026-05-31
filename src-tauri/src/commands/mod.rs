@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use arboard::Clipboard;
@@ -62,6 +62,16 @@ struct SuggestionActionRow {
     scenario_key: String,
     accepted_at: Option<i64>,
     dismissed_at: Option<i64>,
+}
+
+struct SyncSkillRow {
+    id: String,
+    name: String,
+}
+
+struct SyncPlatformRow {
+    id: String,
+    skills_dir: String,
 }
 
 #[tauri::command]
@@ -997,26 +1007,161 @@ pub fn sync_plan(payload: Option<Value>, state: State<'_, AppState>) -> AppResul
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or("sync_from_canonical");
-    let token = Uuid::new_v4().to_string();
-    let now = now_ms();
-    let plan = json!({
-        "token": token,
-        "generatedAt": now,
-        "expiresAt": now + 5 * 60 * 1000,
-        "operation": if operation == "promote_to_canonical" { "promote_to_canonical" } else { "sync_from_canonical" },
-        "items": []
-    });
-    state.evict_expired_plans();
-    if let Ok(mut store) = state.plan_store.lock() {
-        store.insert(
-            token,
-            StoredPlan {
-                plan: plan.clone(),
-                expires_at: SystemTime::now() + AppState::plan_ttl(),
-            },
-        );
-    }
+    let requests = p
+        .get("requests")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "requests[] required"))?;
+    let db = conn(&state)?;
+    let plan = match operation {
+        "sync_from_canonical" => plan_sync_from_canonical(&db, requests, &state)?,
+        "promote_to_canonical" => plan_promote_to_canonical(&db, requests, &state)?,
+        _ => return Err(AppError::new("INVALID_INPUT", "unknown plan kind")),
+    };
+    store_plan(&state, &plan)?;
     Ok(plan)
+}
+
+fn plan_sync_from_canonical(
+    db: &Connection,
+    requests: &[Value],
+    _state: &State<'_, AppState>,
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let canonical = canonical_platform(db, &platform_ids)?;
+    let op_group_id = Uuid::new_v4().to_string();
+    let mut items = Vec::new();
+    for req in requests {
+        let Some(skill_id) = req.get("skillId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(skill) = sync_skill(db, skill_id)? else {
+            continue;
+        };
+        let source = sync_location(db, skill_id, &canonical, false)?;
+        let target_ids = req
+            .get("targetPlatformIds")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| platform_ids.clone());
+        for target_id in target_ids
+            .into_iter()
+            .filter(|id| id != &canonical)
+            .filter(|id| platforms.iter().any(|p| p.id == *id))
+        {
+            let target_platform = platforms.iter().find(|p| p.id == target_id).unwrap();
+            let target = sync_location(db, skill_id, &target_id, false)?;
+            items.push(build_sync_item(SyncBuildItemArgs {
+                skill: &skill,
+                source: source.as_ref(),
+                target: target.as_ref(),
+                source_platform_id: &canonical,
+                target_platform_id: &target_id,
+                target_platform_dir: &target_platform.skills_dir,
+                op_group_id: &op_group_id,
+                override_action: None,
+            }));
+        }
+    }
+    Ok(finalize_sync_plan("sync_from_canonical", items))
+}
+
+fn plan_promote_to_canonical(
+    db: &Connection,
+    requests: &[Value],
+    _state: &State<'_, AppState>,
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let canonical = canonical_platform(db, &platform_ids)?;
+    let Some(canonical_platform) = platforms.iter().find(|p| p.id == canonical) else {
+        return Ok(finalize_sync_plan("promote_to_canonical", Vec::new()));
+    };
+    let mut items = Vec::new();
+    for req in requests {
+        let Some(skill_id) = req.get("skillId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(skill) = sync_skill(db, skill_id)? else {
+            continue;
+        };
+        let locs = sync_locations_for_skill(db, skill_id)?;
+        let source = if let Some(id) = req.get("sourceLocationId").and_then(Value::as_i64) {
+            locs.iter()
+                .find(|loc| loc.id == id && loc.platform_id != canonical && !loc.is_disabled)
+                .cloned()
+        } else {
+            locs.iter()
+                .find(|loc| loc.platform_id != canonical && !loc.is_disabled)
+                .cloned()
+        };
+        let Some(source) = source else {
+            continue;
+        };
+        let op_group_id = Uuid::new_v4().to_string();
+        let existing_canonical = locs
+            .iter()
+            .find(|loc| loc.platform_id == canonical && !loc.is_disabled)
+            .cloned();
+        let copy_item = build_sync_item(SyncBuildItemArgs {
+            skill: &skill,
+            source: Some(&source),
+            target: existing_canonical.as_ref(),
+            source_platform_id: &source.platform_id,
+            target_platform_id: &canonical,
+            target_platform_dir: &canonical_platform.skills_dir,
+            op_group_id: &op_group_id,
+            override_action: Some("copy_to_canonical"),
+        });
+        let canonical_target = copy_item
+            .get("targetPath")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let basename = copy_item
+            .get("targetBasename")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let can_replace =
+            copy_item.get("action").and_then(Value::as_str) == Some("copy_to_canonical");
+        items.push(copy_item);
+        if !can_replace {
+            continue;
+        }
+        for loc in locs
+            .iter()
+            .filter(|loc| loc.platform_id != canonical && !loc.is_disabled)
+        {
+            let Some(platform) = platforms.iter().find(|p| p.id == loc.platform_id) else {
+                continue;
+            };
+            let target_path = PathBuf::from(&platform.skills_dir).join(&basename);
+            items.push(json!({
+                "skillName": skill.name,
+                "skillId": skill.id,
+                "opGroupId": op_group_id,
+                "targetBasename": basename,
+                "sourcePlatformId": canonical,
+                "sourceLocationId": -1,
+                "sourceRealPath": canonical_target,
+                "sourceDev": 0,
+                "sourceIno": 0,
+                "sourceHash": source.content_hash,
+                "targetPlatformId": loc.platform_id,
+                "targetPath": target_path.to_string_lossy(),
+                "targetHash": loc.content_hash,
+                "mode": "symlink",
+                "action": "symlink_replace"
+            }));
+        }
+    }
+    Ok(finalize_sync_plan("promote_to_canonical", items))
 }
 
 #[tauri::command]
@@ -1025,28 +1170,51 @@ pub fn sync_plan_toggle_disabled(
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
     let p = payload.unwrap_or_else(|| json!({}));
-    let disable = p
-        .pointer("/requests/0/disable")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let token = Uuid::new_v4().to_string();
-    let now = now_ms();
-    let plan = json!({
-        "token": token,
-        "generatedAt": now,
-        "expiresAt": now + 5 * 60 * 1000,
-        "operation": if disable { "disable" } else { "enable" },
-        "items": []
-    });
-    if let Ok(mut store) = state.plan_store.lock() {
-        store.insert(
-            token,
-            StoredPlan {
-                plan: plan.clone(),
-                expires_at: SystemTime::now() + AppState::plan_ttl(),
-            },
-        );
+    let requests = p
+        .get("requests")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "requests[] required"))?;
+    let db = conn(&state)?;
+    let platforms = sync_platforms(&db)?;
+    let mut items = Vec::new();
+    let mut operation = "enable";
+    for req in requests {
+        let skill_id = req
+            .get("skillId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "skillId required"))?;
+        let location_id = req
+            .get("locationId")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "locationId required"))?;
+        let disable = req
+            .get("disable")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "disable required"))?;
+        if disable {
+            operation = "disable";
+        }
+        let Some(skill) = sync_skill(&db, skill_id)? else {
+            continue;
+        };
+        let Some(loc) = sync_location_by_id(&db, location_id)? else {
+            continue;
+        };
+        if loc.skill_id != skill_id {
+            continue;
+        }
+        let Some(platform) = platforms.iter().find(|p| p.id == loc.platform_id) else {
+            continue;
+        };
+        items.push(build_toggle_item(
+            &skill,
+            &loc,
+            &platform.skills_dir,
+            disable,
+        ));
     }
+    let plan = finalize_sync_plan(operation, items);
+    store_plan(&state, &plan)?;
     Ok(plan)
 }
 
@@ -1057,15 +1225,75 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
         .sync_lock
         .lock()
         .map_err(|_| AppError::new("SYNC_LOCK_POISONED", "sync lock poisoned"))?;
-    let plan = state
+    let stored = state
         .plan_store
         .lock()
         .map_err(|_| AppError::new("PLAN_STORE_POISONED", "plan store poisoned"))?
         .remove(token)
-        .ok_or_else(|| AppError::new("PLAN_EXPIRED", "sync plan token is missing or expired"))?
-        .plan;
-    let items = plan.get("items").cloned().unwrap_or_else(|| json!([]));
-    Ok(json!({ "applied": [], "skipped": items, "failed": [] }))
+        .ok_or_else(|| AppError::new("PLAN_EXPIRED", "sync plan token is missing or expired"))?;
+    if stored.expires_at <= SystemTime::now() {
+        return Err(AppError::new(
+            "PLAN_EXPIRED",
+            "sync plan token is missing or expired",
+        ));
+    }
+    let db = conn(&state)?;
+    let plan = stored.plan;
+    let plan_json = serde_json::to_string(&plan)
+        .map_err(|err| AppError::new("SERIALIZE_FAILED", err.to_string()))?;
+    let items = plan
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut applied = Vec::new();
+    let mut skipped = Vec::new();
+    let mut failed = Vec::new();
+    let mut aborted_groups = std::collections::HashSet::new();
+
+    for item in items {
+        let group = item
+            .get("opGroupId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if aborted_groups.contains(&group) {
+            skipped.push(item);
+            continue;
+        }
+        let action = item
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("conflict");
+        if action == "skip" || action == "conflict" {
+            skipped.push(item);
+            continue;
+        }
+        let history_id = insert_pending_history(&db, &item, &plan_json)?;
+        match execute_sync_item(&db, &state.paths.backup_root, &item) {
+            Ok(outcome) => {
+                db.execute(
+                    "UPDATE sync_history SET success = 1, message = NULL, before_hash = ?1, after_hash = ?2, backup_path = ?3 WHERE id = ?4",
+                    params![outcome.before_hash, outcome.after_hash, outcome.backup_path, history_id],
+                )?;
+                applied.push(item);
+            }
+            Err(err) => {
+                let message = err.message;
+                db.execute(
+                    "UPDATE sync_history SET success = 0, message = ?1 WHERE id = ?2",
+                    params![message, history_id],
+                )?;
+                failed.push(json!({ "item": item, "message": message }));
+                aborted_groups.insert(group);
+            }
+        }
+    }
+    let result = scanner::scan_all(&db)?;
+    if let Ok(mut last) = state.last_scan.lock() {
+        *last = Some(result);
+    }
+    Ok(json!({ "applied": applied, "skipped": skipped, "failed": failed }))
 }
 
 #[tauri::command]
@@ -1129,6 +1357,865 @@ pub fn sync_rollback(payload: Option<Value>) -> AppResult<Value> {
         "NOT_IMPLEMENTED",
         "sync rollback is not yet ported to Tauri",
     ))
+}
+
+struct ExecuteOutcome {
+    before_hash: Option<String>,
+    after_hash: Option<String>,
+    backup_path: Option<String>,
+}
+
+fn finalize_sync_plan(operation: &str, items: Vec<Value>) -> Value {
+    let token = Uuid::new_v4().to_string();
+    let now = now_ms();
+    json!({
+        "token": token,
+        "generatedAt": now,
+        "expiresAt": now + 5 * 60 * 1000,
+        "operation": operation,
+        "items": items
+    })
+}
+
+fn store_plan(state: &State<'_, AppState>, plan: &Value) -> AppResult<()> {
+    let token = plan
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_STATE", "plan token missing"))?
+        .to_string();
+    state.evict_expired_plans();
+    let mut store = state
+        .plan_store
+        .lock()
+        .map_err(|_| AppError::new("PLAN_STORE_POISONED", "plan store poisoned"))?;
+    store.insert(
+        token,
+        StoredPlan {
+            plan: plan.clone(),
+            expires_at: SystemTime::now() + AppState::plan_ttl(),
+        },
+    );
+    Ok(())
+}
+
+fn sync_platforms(db: &Connection) -> AppResult<Vec<SyncPlatformRow>> {
+    let mut stmt = db.prepare(
+        "SELECT id, skills_dir FROM platforms WHERE enabled = 1 ORDER BY sort_order, id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SyncPlatformRow {
+            id: r.get(0)?,
+            skills_dir: r.get(1)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn canonical_platform(db: &Connection, enabled: &[String]) -> AppResult<String> {
+    let configured = get_setting(db, "canonical_platform")?.unwrap_or_else(|| "shared".to_string());
+    if enabled.iter().any(|id| id == &configured) {
+        Ok(configured)
+    } else {
+        Ok(enabled.first().cloned().unwrap_or(configured))
+    }
+}
+
+fn sync_skill(db: &Connection, skill_id: &str) -> AppResult<Option<SyncSkillRow>> {
+    Ok(db
+        .query_row(
+            "SELECT id, name FROM skills WHERE id = ?1",
+            params![skill_id],
+            |r| {
+                Ok(SyncSkillRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn sync_location(
+    db: &Connection,
+    skill_id: &str,
+    platform_id: &str,
+    include_disabled: bool,
+) -> AppResult<Option<LocRow>> {
+    let disabled_sql = if include_disabled {
+        ""
+    } else {
+        " AND is_disabled = 0"
+    };
+    Ok(db
+        .query_row(
+            &format!(
+                "SELECT id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
+                 FROM skill_locations WHERE skill_id = ?1 AND platform_id = ?2{disabled_sql}"
+            ),
+            params![skill_id, platform_id],
+            loc_row_from_sql,
+        )
+        .optional()?)
+}
+
+fn sync_location_by_id(db: &Connection, id: i64) -> AppResult<Option<LocRow>> {
+    Ok(db
+        .query_row(
+            "SELECT id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
+             FROM skill_locations WHERE id = ?1",
+            params![id],
+            loc_row_from_sql,
+        )
+        .optional()?)
+}
+
+fn sync_locations_for_skill(db: &Connection, skill_id: &str) -> AppResult<Vec<LocRow>> {
+    let mut stmt = db.prepare(
+        "SELECT id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
+         FROM skill_locations WHERE skill_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![skill_id], loc_row_from_sql)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn loc_row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<LocRow> {
+    Ok(LocRow {
+        id: r.get(0)?,
+        skill_id: r.get(1)?,
+        platform_id: r.get(2)?,
+        install_path: r.get(3)?,
+        real_path: r.get(4)?,
+        is_symlink: r.get::<_, i64>(5)? != 0,
+        is_broken_link: r.get::<_, i64>(6)? != 0,
+        is_disabled: r.get::<_, i64>(7)? != 0,
+        content_hash: r.get(8)?,
+        mtime: r.get(9)?,
+    })
+}
+
+struct SyncBuildItemArgs<'a> {
+    skill: &'a SyncSkillRow,
+    source: Option<&'a LocRow>,
+    target: Option<&'a LocRow>,
+    source_platform_id: &'a str,
+    target_platform_id: &'a str,
+    target_platform_dir: &'a str,
+    op_group_id: &'a str,
+    override_action: Option<&'a str>,
+}
+
+fn build_sync_item(args: SyncBuildItemArgs<'_>) -> Value {
+    let SyncBuildItemArgs {
+        skill,
+        source,
+        target,
+        source_platform_id,
+        target_platform_id,
+        target_platform_dir,
+        op_group_id,
+        override_action,
+    } = args;
+    let Some(source) = source else {
+        return sync_placeholder(
+            skill,
+            source_platform_id,
+            target_platform_id,
+            "conflict",
+            "canonical_missing",
+            op_group_id,
+        );
+    };
+    let basename = Path::new(&source.real_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if !is_safe_basename(&basename) {
+        return sync_placeholder(
+            skill,
+            source_platform_id,
+            target_platform_id,
+            "conflict",
+            "unsafe_target_name",
+            op_group_id,
+        );
+    }
+    let target_path = PathBuf::from(target_platform_dir).join(&basename);
+    if !target_inside_platform(&target_path, target_platform_dir) {
+        return sync_placeholder_with_path(
+            skill,
+            source_platform_id,
+            target_platform_id,
+            &target_path,
+            "target_outside_root",
+            op_group_id,
+            &basename,
+        );
+    }
+    if has_case_collision(target_platform_dir, &basename) {
+        return sync_placeholder_with_path(
+            skill,
+            source_platform_id,
+            target_platform_id,
+            &target_path,
+            "case_collision",
+            op_group_id,
+            &basename,
+        );
+    }
+    let (source_dev, source_ino) = if source.id < 0 {
+        (0, 0)
+    } else {
+        match fs::metadata(&source.real_path) {
+            Ok(m) if m.is_dir() => metadata_dev_ino(&m),
+            _ => {
+                return sync_placeholder_with_path(
+                    skill,
+                    source_platform_id,
+                    target_platform_id,
+                    &target_path,
+                    "unreadable",
+                    op_group_id,
+                    &basename,
+                )
+            }
+        }
+    };
+    let action = override_action
+        .map(str::to_string)
+        .unwrap_or_else(|| classify_sync_target(&target_path, &source.real_path, source, target));
+    let reason = if action == "skip" {
+        if target.and_then(|t| t.content_hash.as_deref()) == source.content_hash.as_deref() {
+            Some("same_hash")
+        } else {
+            Some("already_linked")
+        }
+    } else if action == "conflict" {
+        Some("target_exists_file")
+    } else {
+        None
+    };
+    json!({
+        "skillName": skill.name,
+        "skillId": skill.id,
+        "opGroupId": op_group_id,
+        "targetBasename": basename,
+        "sourcePlatformId": source_platform_id,
+        "sourceLocationId": source.id,
+        "sourceRealPath": source.real_path,
+        "sourceDev": source_dev,
+        "sourceIno": source_ino,
+        "sourceHash": source.content_hash,
+        "targetPlatformId": target_platform_id,
+        "targetPath": target_path.to_string_lossy(),
+        "targetHash": target.and_then(|t| t.content_hash.clone()),
+        "mode": "symlink",
+        "action": action,
+        "reason": reason,
+    })
+}
+
+fn build_toggle_item(skill: &SyncSkillRow, loc: &LocRow, skills_dir: &str, disable: bool) -> Value {
+    let op_group_id = Uuid::new_v4().to_string();
+    if disable && loc.is_disabled {
+        return sync_placeholder(
+            skill,
+            &loc.platform_id,
+            &loc.platform_id,
+            "skip",
+            "already_disabled",
+            &op_group_id,
+        );
+    }
+    if !disable && !loc.is_disabled {
+        return sync_placeholder(
+            skill,
+            &loc.platform_id,
+            &loc.platform_id,
+            "skip",
+            "already_enabled",
+            &op_group_id,
+        );
+    }
+    let basename = Path::new(&loc.install_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    if !is_safe_basename(&basename) {
+        return sync_placeholder(
+            skill,
+            &loc.platform_id,
+            &loc.platform_id,
+            "conflict",
+            "unsafe_target_name",
+            &op_group_id,
+        );
+    }
+    let target_path = if disable {
+        PathBuf::from(skills_dir).join(".disabled").join(&basename)
+    } else {
+        PathBuf::from(skills_dir).join(&basename)
+    };
+    if target_path.exists() || is_broken_symlink(&target_path) {
+        return sync_placeholder_with_path(
+            skill,
+            &loc.platform_id,
+            &loc.platform_id,
+            &target_path,
+            "target_exists_dir",
+            &op_group_id,
+            &basename,
+        );
+    }
+    let (source_dev, source_ino) = fs::symlink_metadata(&loc.install_path)
+        .map(|m| metadata_dev_ino(&m))
+        .unwrap_or((0, 0));
+    json!({
+        "skillName": skill.name,
+        "skillId": skill.id,
+        "opGroupId": op_group_id,
+        "targetBasename": basename,
+        "sourcePlatformId": loc.platform_id,
+        "sourceLocationId": loc.id,
+        "sourceRealPath": loc.install_path,
+        "sourceDev": source_dev,
+        "sourceIno": source_ino,
+        "sourceHash": loc.content_hash,
+        "targetPlatformId": loc.platform_id,
+        "targetPath": target_path.to_string_lossy(),
+        "targetHash": Value::Null,
+        "mode": "symlink",
+        "action": if disable { "disable" } else { "enable" },
+    })
+}
+
+fn sync_placeholder(
+    skill: &SyncSkillRow,
+    source_platform_id: &str,
+    target_platform_id: &str,
+    action: &str,
+    reason: &str,
+    op_group_id: &str,
+) -> Value {
+    json!({
+        "skillName": skill.name,
+        "skillId": skill.id,
+        "opGroupId": op_group_id,
+        "targetBasename": "",
+        "sourcePlatformId": source_platform_id,
+        "sourceLocationId": -1,
+        "sourceRealPath": "",
+        "sourceDev": 0,
+        "sourceIno": 0,
+        "sourceHash": Value::Null,
+        "targetPlatformId": target_platform_id,
+        "targetPath": "",
+        "targetHash": Value::Null,
+        "mode": "symlink",
+        "action": action,
+        "reason": reason,
+    })
+}
+
+fn sync_placeholder_with_path(
+    skill: &SyncSkillRow,
+    source_platform_id: &str,
+    target_platform_id: &str,
+    target_path: &Path,
+    reason: &str,
+    op_group_id: &str,
+    basename: &str,
+) -> Value {
+    let mut item = sync_placeholder(
+        skill,
+        source_platform_id,
+        target_platform_id,
+        "conflict",
+        reason,
+        op_group_id,
+    );
+    item["targetPath"] = json!(target_path.to_string_lossy());
+    item["targetBasename"] = json!(basename);
+    item
+}
+
+fn classify_sync_target(
+    target_path: &Path,
+    source_real: &str,
+    source: &LocRow,
+    target: Option<&LocRow>,
+) -> String {
+    if let Some(target) = target {
+        if target.is_broken_link {
+            return "symlink_create".to_string();
+        }
+        if target.is_symlink {
+            if target.real_path == source_real {
+                return "skip".to_string();
+            }
+            return "symlink_replace".to_string();
+        }
+        if source.content_hash.is_some()
+            && target.content_hash.is_some()
+            && source.content_hash == target.content_hash
+        {
+            return "skip".to_string();
+        }
+        return "symlink_replace".to_string();
+    }
+    match fs::symlink_metadata(target_path) {
+        Ok(meta) if meta.file_type().is_symlink() => match fs::canonicalize(target_path) {
+            Ok(real) if real.as_path() == Path::new(source_real) => "skip".to_string(),
+            Ok(_) => "symlink_replace".to_string(),
+            Err(_) => "symlink_create".to_string(),
+        },
+        Ok(meta) if meta.is_dir() => "symlink_replace".to_string(),
+        Ok(_) => "conflict".to_string(),
+        Err(_) => "symlink_create".to_string(),
+    }
+}
+
+fn insert_pending_history(db: &Connection, item: &Value, plan_json: &str) -> AppResult<i64> {
+    db.execute(
+        "INSERT INTO sync_history
+           (skill_id, action, from_path, to_path, platform_id, before_hash, after_hash, backup_path,
+            dry_run_plan, conflict_resolution, success, message, created_at,
+            installed_from_source, installed_from_skill_id, op_group_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, ?6, ?7, 0, '_pending_', ?8, ?9, ?10, ?11)",
+        params![
+            item.get("skillId")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            item.get("action")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            item.get("sourceRealPath").and_then(Value::as_str),
+            item.get("targetPath").and_then(Value::as_str),
+            item.get("targetPlatformId").and_then(Value::as_str),
+            plan_json,
+            item.get("action").and_then(Value::as_str),
+            now_ms(),
+            item.get("installedFromSource").and_then(Value::as_str),
+            item.get("installedFromSkillId").and_then(Value::as_str),
+            item.get("opGroupId").and_then(Value::as_str),
+        ],
+    )?;
+    Ok(db.last_insert_rowid())
+}
+
+fn execute_sync_item(
+    db: &Connection,
+    backup_root: &Path,
+    item: &Value,
+) -> AppResult<ExecuteOutcome> {
+    match item
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "symlink_create" => do_symlink_item(db, backup_root, item, false),
+        "symlink_replace" => do_symlink_item(db, backup_root, item, true),
+        "copy_to_canonical" => do_copy_item(backup_root, item),
+        "disable" | "enable" => do_move_item(item),
+        action => Err(AppError::new(
+            "SYNC_EXECUTE_FAILED",
+            format!("refusing to execute unknown action: {action}"),
+        )),
+    }
+}
+
+fn do_move_item(item: &Value) -> AppResult<ExecuteOutcome> {
+    let from = value_path(item, "sourceRealPath")?;
+    let to = value_path(item, "targetPath")?;
+    let meta = fs::symlink_metadata(&from)
+        .map_err(|_| AppError::new("SOURCE_CHANGED", "source entry disappeared since plan"))?;
+    let (dev, ino) = metadata_dev_ino(&meta);
+    if item.get("sourceDev").and_then(Value::as_i64).unwrap_or(0) != dev
+        || item.get("sourceIno").and_then(Value::as_i64).unwrap_or(0) != ino
+    {
+        return Err(AppError::new(
+            "SOURCE_CHANGED",
+            "source entry changed since plan",
+        ));
+    }
+    if to.exists() || is_broken_symlink(&to) {
+        return Err(AppError::new("TARGET_EXISTS", "destination already exists"));
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(&from, &to)?;
+    Ok(ExecuteOutcome {
+        before_hash: item
+            .get("sourceHash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        after_hash: item
+            .get("sourceHash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        backup_path: None,
+    })
+}
+
+fn do_symlink_item(
+    db: &Connection,
+    backup_root: &Path,
+    item: &Value,
+    allow_replace: bool,
+) -> AppResult<ExecuteOutcome> {
+    let source = value_path(item, "sourceRealPath")?;
+    let target = value_path(item, "targetPath")?;
+    let source_real = fs::canonicalize(&source).map_err(|_| {
+        AppError::new(
+            "SOURCE_CHANGED",
+            "source disappeared since plan was generated",
+        )
+    })?;
+    let meta = fs::metadata(&source_real)?;
+    if !meta.is_dir() {
+        return Err(AppError::new(
+            "SOURCE_CHANGED",
+            "source is no longer a directory",
+        ));
+    }
+    let planned_dev = item.get("sourceDev").and_then(Value::as_i64).unwrap_or(0);
+    let planned_ino = item.get("sourceIno").and_then(Value::as_i64).unwrap_or(0);
+    if planned_dev != 0 || planned_ino != 0 {
+        let (dev, ino) = metadata_dev_ino(&meta);
+        if dev != planned_dev || ino != planned_ino {
+            return Err(AppError::new("SOURCE_CHANGED", "source changed since plan"));
+        }
+    }
+    if let Some(expected_hash) = item.get("sourceHash").and_then(Value::as_str) {
+        let current_hash = hash_skill_md(&source_real)?;
+        if current_hash != expected_hash {
+            return Err(AppError::new(
+                "SOURCE_CHANGED",
+                "source content changed since plan",
+            ));
+        }
+    }
+    reassert_target_in_platform(db, item)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut backup_path = None;
+    let mut before_hash = None;
+    if target.exists() || is_broken_symlink(&target) {
+        let meta = fs::symlink_metadata(&target)?;
+        if meta.file_type().is_symlink() {
+            if let Ok(resolved) = fs::canonicalize(&target) {
+                if resolved == source_real {
+                    return Ok(ExecuteOutcome {
+                        before_hash: None,
+                        after_hash: None,
+                        backup_path: None,
+                    });
+                }
+            }
+            if !allow_replace {
+                return Err(AppError::new(
+                    "TARGET_EXISTS",
+                    "target is a symlink to a different path",
+                ));
+            }
+        } else if !allow_replace {
+            return Err(AppError::new(
+                "TARGET_EXISTS",
+                "target already exists and replace was not authorized",
+            ));
+        }
+        let backup = create_sync_backup(backup_root, &target, item)?;
+        before_hash = hash_skill_md(Path::new(&backup)).ok();
+        backup_path = Some(backup);
+    }
+    let tmp = target.with_file_name(format!(
+        "{}.myskills-tmp-{}",
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("skill"),
+        Uuid::new_v4()
+    ));
+    create_dir_symlink(&source_real, &tmp)?;
+    if let Err(err) = fs::rename(&tmp, &target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    Ok(ExecuteOutcome {
+        before_hash,
+        after_hash: item
+            .get("sourceHash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        backup_path,
+    })
+}
+
+fn do_copy_item(backup_root: &Path, item: &Value) -> AppResult<ExecuteOutcome> {
+    let source = value_path(item, "sourceRealPath")?;
+    let target = value_path(item, "targetPath")?;
+    let source_real = fs::canonicalize(&source)?;
+    let meta = fs::metadata(&source_real)?;
+    let (dev, ino) = metadata_dev_ino(&meta);
+    if item.get("sourceDev").and_then(Value::as_i64).unwrap_or(0) != dev
+        || item.get("sourceIno").and_then(Value::as_i64).unwrap_or(0) != ino
+    {
+        return Err(AppError::new("SOURCE_CHANGED", "source changed since plan"));
+    }
+    if has_symlink_in_tree(&source_real)? {
+        return Err(AppError::new(
+            "SOURCE_HAS_SYMLINK",
+            "source tree contains a symlink",
+        ));
+    }
+    let mut backup_path = None;
+    let mut before_hash = None;
+    if target.exists() || is_broken_symlink(&target) {
+        let backup = create_sync_backup(backup_root, &target, item)?;
+        before_hash = hash_skill_md(Path::new(&backup)).ok();
+        backup_path = Some(backup);
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = target.with_file_name(format!(
+        "{}.myskills-copy-{}",
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("skill"),
+        Uuid::new_v4()
+    ));
+    copy_tree(&source_real, &tmp)?;
+    if let Some(expected) = item.get("sourceHash").and_then(Value::as_str) {
+        let copied_hash = hash_skill_md(&tmp)?;
+        if copied_hash != expected {
+            let _ = fs::remove_dir_all(&tmp);
+            return Err(AppError::new("COPY_VERIFY_FAILED", "copy hash mismatch"));
+        }
+    }
+    if let Err(err) = fs::rename(&tmp, &target) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(err.into());
+    }
+    Ok(ExecuteOutcome {
+        before_hash,
+        after_hash: item
+            .get("sourceHash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        backup_path,
+    })
+}
+
+fn value_path(item: &Value, key: &str) -> AppResult<PathBuf> {
+    item.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::new("INVALID_PLAN", format!("{key} required")))
+}
+
+fn metadata_dev_ino(meta: &fs::Metadata) -> (i64, i64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev() as i64, meta.ino() as i64)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        (0, 0)
+    }
+}
+
+fn is_safe_basename(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." || name.len() > 240 {
+        return false;
+    }
+    if name.starts_with('.')
+        || name.ends_with('.')
+        || name.chars().last().is_some_and(char::is_whitespace)
+    {
+        return false;
+    }
+    !name.contains('/') && !name.contains('\\') && !name.contains('\0')
+}
+
+fn target_inside_platform(target: &Path, platform_dir: &str) -> bool {
+    let root = fs::canonicalize(platform_dir).unwrap_or_else(|_| PathBuf::from(platform_dir));
+    let parent = target.parent().unwrap_or_else(|| Path::new(platform_dir));
+    let real_parent = nearest_existing_realpath(parent);
+    path_inside(
+        &real_parent.join(target.file_name().unwrap_or_default()),
+        &root,
+    )
+}
+
+fn nearest_existing_realpath(path: &Path) -> PathBuf {
+    let mut probe = path.to_path_buf();
+    let mut tail = Vec::new();
+    loop {
+        if let Ok(real) = fs::canonicalize(&probe) {
+            return tail
+                .into_iter()
+                .rev()
+                .fold(real, |acc: PathBuf, part| acc.join(part));
+        }
+        let Some(name) = probe.file_name().map(|n| n.to_os_string()) else {
+            return path.to_path_buf();
+        };
+        tail.push(name);
+        if !probe.pop() {
+            return path.to_path_buf();
+        }
+    }
+}
+
+fn path_inside(child: &Path, parent: &Path) -> bool {
+    let child = child.components().collect::<Vec<_>>();
+    let parent = parent.components().collect::<Vec<_>>();
+    child.len() > parent.len() && child.iter().zip(parent.iter()).all(|(a, b)| a == b)
+}
+
+fn has_case_collision(dir: &str, basename: &str) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    let target = basename.to_lowercase();
+    entries.filter_map(Result::ok).any(|entry| {
+        let name = entry.file_name().to_string_lossy().to_string();
+        name != basename && name.to_lowercase() == target
+    })
+}
+
+fn is_broken_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink() && fs::metadata(path).is_err())
+        .unwrap_or(false)
+}
+
+fn reassert_target_in_platform(db: &Connection, item: &Value) -> AppResult<()> {
+    let platform_id = item
+        .get("targetPlatformId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_PLAN", "targetPlatformId required"))?;
+    let target = value_path(item, "targetPath")?;
+    let skills_dir: String = db.query_row(
+        "SELECT skills_dir FROM platforms WHERE id = ?1",
+        params![platform_id],
+        |r| r.get(0),
+    )?;
+    if target_inside_platform(&target, &skills_dir) {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "TARGET_OUTSIDE_ROOT",
+            "target resolves outside platform root",
+        ))
+    }
+}
+
+fn create_sync_backup(backup_root: &Path, src: &Path, item: &Value) -> AppResult<String> {
+    fs::create_dir_all(backup_root)?;
+    let platform = item
+        .get("targetPlatformId")
+        .and_then(Value::as_str)
+        .unwrap_or("platform");
+    let skill = item
+        .get("skillName")
+        .and_then(Value::as_str)
+        .unwrap_or("skill")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let dest = backup_root.join(format!("{}_{}_{}", now_ms(), platform, skill));
+    match fs::rename(src, &dest) {
+        Ok(_) => return Ok(dest.to_string_lossy().to_string()),
+        Err(_) => {
+            let meta = fs::symlink_metadata(src)?;
+            if meta.file_type().is_symlink() {
+                let link = fs::read_link(src)?;
+                create_dir_symlink(&link, &dest)?;
+                fs::remove_file(src)?;
+            } else if meta.is_dir() {
+                copy_tree(src, &dest)?;
+                fs::remove_dir_all(src)?;
+            } else {
+                fs::copy(src, &dest)?;
+                fs::remove_file(src)?;
+            }
+        }
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
+fn create_dir_symlink(source: &Path, link: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, link)?;
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(source, link)?;
+    }
+    Ok(())
+}
+
+fn copy_tree(src: &Path, dest: &Path) -> AppResult<()> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        let meta = fs::symlink_metadata(&from)?;
+        if meta.file_type().is_symlink() {
+            let target = fs::read_link(&from)?;
+            create_dir_symlink(&target, &to)?;
+        } else if meta.is_dir() {
+            copy_tree(&from, &to)?;
+        } else if meta.is_file() {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+fn has_symlink_in_tree(root: &Path) -> AppResult<bool> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(dir) = stack.pop() {
+        visited += 1;
+        if visited > 5000 {
+            return Err(AppError::new("SOURCE_HAS_SYMLINK", "source tree too large"));
+        }
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)?;
+            if meta.file_type().is_symlink() {
+                return Ok(true);
+            }
+            if meta.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn hash_skill_md(dir: &Path) -> AppResult<String> {
+    let bytes = fs::read(dir.join("SKILL.md"))?;
+    Ok(hex::encode(sha2::Sha256::digest(bytes)))
 }
 
 #[tauri::command]
