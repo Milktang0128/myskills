@@ -35,6 +35,11 @@ Automated checks already available:
   `npm run smoke:tauri:dmg -- --history-smoke` extend that packaged sync smoke
   by rolling the copy operation back, verifying `rolled_back_at`, and checking
   the original canonical fixture content is restored.
+- `npm run smoke:tauri:launch -- --workflow-smoke` and
+  `npm run smoke:tauri:dmg -- --workflow-smoke` exercise packaged Settings and
+  Scenarios backend workflows by writing theme/language/network settings,
+  importing a scenario, linking a fixture skill, updating it, deleting a
+  transient scenario, exporting scenarios, and verifying the resulting DB rows.
 - `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
   Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
   build, and packaged fixture smoke across macOS, Linux, and Windows preview
@@ -82,8 +87,8 @@ Important caveat:
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
 | Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test and packaged app/DMG fixture smoke cover real scanner to Library DB, platform filter, disabled scope, parser-error reporting, scan run, and stats; visual List/Kanban UI smoke still pending. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
-| Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
-| Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
+| Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; packaged workflow smoke verifies language/theme/network setting writes; Settings UI toggles still pending visual smoke. |
+| Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests and packaged app/DMG workflow smoke cover import, export, link, update, and delete semantics; packaged UI file workflow still pending. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | partial | Rust fixture test covers symlink_create, skip/same_hash, symlink_replace, conflict/target_exists_file, token generation, and operation naming; packaged confirm dialog still pending. |
 | Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; packaged app/DMG history smoke proves copy replacement backup path isolation and rollback restore; symlink packaged UI workflow still pending. |
 | History | Sync history and rollback flow work from packaged app | partial | Rust workflow test and packaged app/DMG history smoke verify success history rows, `rolled_back_at`, backup consumption, and restored target content; packaged History UI still pending. |
@@ -135,10 +140,12 @@ npm run smoke:tauri:launch
 npm run smoke:tauri:launch -- --fixture-smoke
 npm run smoke:tauri:launch -- --sync-smoke
 npm run smoke:tauri:launch -- --history-smoke
+npm run smoke:tauri:launch -- --workflow-smoke
 npm run smoke:tauri:dmg
 npm run smoke:tauri:dmg -- --fixture-smoke
 npm run smoke:tauri:dmg -- --sync-smoke
 npm run smoke:tauri:dmg -- --history-smoke
+npm run smoke:tauri:dmg -- --workflow-smoke
 npm run smoke:tauri:migration
 ```
 

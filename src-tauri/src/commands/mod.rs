@@ -672,7 +672,7 @@ pub fn scenarios_export(payload: Option<Value>, state: State<'_, AppState>) -> A
     scenarios_export_response(&db)
 }
 
-fn scenarios_export_response(db: &Connection) -> AppResult<Value> {
+pub(crate) fn scenarios_export_response(db: &Connection) -> AppResult<Value> {
     let scenario_rows = db
         .prepare("SELECT id, key, name, description, color, icon FROM scenarios ORDER BY sort_order, name")?
         .query_map([], |r| {
@@ -722,7 +722,7 @@ pub fn scenarios_import(payload: Option<Value>, state: State<'_, AppState>) -> A
     scenarios_import_payload(&mut db, &p)
 }
 
-fn scenarios_import_payload(db: &mut Connection, payload: &Value) -> AppResult<Value> {
+pub(crate) fn scenarios_import_payload(db: &mut Connection, payload: &Value) -> AppResult<Value> {
     if payload.get("version").and_then(Value::as_str) != Some("1") {
         let version = payload.get("version").cloned().unwrap_or(Value::Null);
         return Err(AppError::new(

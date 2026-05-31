@@ -94,7 +94,7 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
     let paths = AppPaths::new(AppPaths::isolated_preview_dir(default_app_data))?;
     let db = db::init_pool(&paths.db_path)?;
     let mut last_scan = None;
-    if let Ok(conn) = db.get() {
+    if let Ok(mut conn) = db.get() {
         let _ = commands::recover_pending_backups(&conn);
         let _ = commands::recover_pending_history(&conn);
         if let Ok(days) = commands::backup_retention_days(&conn) {
@@ -102,6 +102,9 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         }
         if let Some(scan) = apply_internal_smoke_fixture(&conn)? {
             last_scan = Some(scan);
+        }
+        if std::env::var("MYSKILLS_INTERNAL_SMOKE_WORKFLOWS").is_ok() {
+            run_internal_smoke_workflows(&mut conn)?;
         }
         if std::env::var("MYSKILLS_INTERNAL_SMOKE_SYNC").is_ok() {
             run_internal_smoke_sync(&conn, &paths.backup_root)?;
@@ -242,6 +245,104 @@ fn run_internal_smoke_sync(conn: &rusqlite::Connection, backup_root: &Path) -> A
             "internal smoke sync did not apply exactly one copy operation",
             result,
         ));
+    }
+    Ok(())
+}
+
+fn run_internal_smoke_workflows(conn: &mut rusqlite::Connection) -> AppResult<()> {
+    for (key, value) in [
+        ("allow_external_network", "0"),
+        ("theme", "dark"),
+        ("language", "zh"),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+    }
+
+    let import_payload = serde_json::json!({
+        "version": "1",
+        "scenarios": [{
+            "key": "packaged-smoke-import",
+            "name": "Packaged Smoke Import",
+            "description": "Imported by packaged workflow smoke.",
+            "color": "#2563eb",
+            "icon": "sparkles",
+            "skills": [{ "name": "fixture-claude-only", "sourceKey": "local" }]
+        }]
+    });
+    let imported = commands::scenarios_import_payload(conn, &import_payload)?;
+    if imported
+        .get("skillsLinked")
+        .and_then(serde_json::Value::as_i64)
+        != Some(1)
+    {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_WORKFLOW_FAILED",
+            "scenario import did not link the expected fixture skill",
+            imported,
+        ));
+    }
+
+    let scenario_id: i64 = conn.query_row(
+        "SELECT id FROM scenarios WHERE key = 'packaged-smoke-import'",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "UPDATE scenarios
+         SET name = 'Packaged Smoke Updated',
+             description = 'Updated by packaged workflow smoke.'
+         WHERE id = ?1",
+        params![scenario_id],
+    )?;
+    conn.execute(
+        "INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
+         VALUES ('packaged-smoke-delete', 'Packaged Smoke Delete', 'delete me', '#111111', 'trash', 999, 0, ?1)",
+        params![crate::db::now_ms()],
+    )?;
+    conn.execute(
+        "DELETE FROM scenarios WHERE key = 'packaged-smoke-delete' AND is_builtin = 0",
+        [],
+    )?;
+
+    let exported = commands::scenarios_export_response(conn)?;
+    let exported_smoke = exported
+        .get("scenarios")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|scenarios| {
+            scenarios.iter().any(|scenario| {
+                scenario.get("key").and_then(serde_json::Value::as_str)
+                    == Some("packaged-smoke-import")
+                    && scenario
+                        .get("skills")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|skills| {
+                            skills.iter().any(|skill| {
+                                skill.get("name").and_then(serde_json::Value::as_str)
+                                    == Some("fixture-claude-only")
+                            })
+                        })
+            })
+        });
+    if !exported_smoke {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_WORKFLOW_FAILED",
+            "scenario export did not include the imported fixture scenario",
+            exported,
+        ));
+    }
+    for (key, value) in [
+        ("smoke.workflows.completed", "1"),
+        ("smoke.scenarios.exported", "1"),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
     }
     Ok(())
 }

@@ -10,7 +10,13 @@ const previewDirName = 'myskills-tauri-preview';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 
 function parseArgs(argv) {
-  const args = { dmg: '', fixtureSmoke: false, syncSmoke: false, historySmoke: false };
+  const args = {
+    dmg: '',
+    fixtureSmoke: false,
+    syncSmoke: false,
+    historySmoke: false,
+    workflowSmoke: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--dmg') {
@@ -24,6 +30,9 @@ function parseArgs(argv) {
       args.fixtureSmoke = true;
       args.syncSmoke = true;
       args.historySmoke = true;
+    } else if (arg === '--workflow-smoke') {
+      args.fixtureSmoke = true;
+      args.workflowSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -154,6 +163,37 @@ function inspectFixtureDb(dbPath, manifest, options = {}) {
       }
       syncBackupPath = syncRow.backupPath;
     }
+    let workflowScenario = null;
+    if (options.workflowSmoke) {
+      const settings = Object.fromEntries(
+        queryJson(
+          dbPath,
+          "SELECT key, value FROM settings WHERE key IN ('allow_external_network', 'theme', 'language', 'smoke.workflows.completed', 'smoke.scenarios.exported')",
+        ).map((row) => [row.key, row.value]),
+      );
+      if (
+        settings.allow_external_network !== '0' ||
+        settings.theme !== 'dark' ||
+        settings.language !== 'zh' ||
+        settings['smoke.workflows.completed'] !== '1' ||
+        settings['smoke.scenarios.exported'] !== '1'
+      ) {
+        return null;
+      }
+      const scenario = queryJson(
+        dbPath,
+        "SELECT sc.name AS name, COUNT(ss.skill_id) AS skillCount FROM scenarios sc LEFT JOIN skill_scenarios ss ON ss.scenario_id = sc.id WHERE sc.key = 'packaged-smoke-import' GROUP BY sc.id",
+      )[0];
+      if (!scenario || scenario.name !== 'Packaged Smoke Updated' || scenario.skillCount !== 1) {
+        return null;
+      }
+      const deletedCount = queryJson(
+        dbPath,
+        "SELECT COUNT(*) AS count FROM scenarios WHERE key = 'packaged-smoke-delete'",
+      )[0]?.count;
+      if (deletedCount !== 0) return null;
+      workflowScenario = scenario.name;
+    }
     return {
       totalSkills,
       disabledLocations,
@@ -163,6 +203,7 @@ function inspectFixtureDb(dbPath, manifest, options = {}) {
       errorKinds: [...errorKinds].sort(),
       ...(syncBackupPath ? { syncBackupPath } : {}),
       ...(rolledBackAt ? { rolledBackAt } : {}),
+      ...(workflowScenario ? { workflowScenario } : {}),
     };
   } catch {
     return null;
@@ -231,6 +272,9 @@ try {
   if (args.historySmoke) {
     env.MYSKILLS_INTERNAL_SMOKE_ROLLBACK = '1';
   }
+  if (args.workflowSmoke) {
+    env.MYSKILLS_INTERNAL_SMOKE_WORKFLOWS = '1';
+  }
   const child = spawn(binary, [], {
     cwd: root,
     env,
@@ -255,6 +299,7 @@ try {
     fixtureResult = inspectFixtureDb(dbPath, manifest, {
       syncSmoke: args.syncSmoke,
       historySmoke: args.historySmoke,
+      workflowSmoke: args.workflowSmoke,
     });
     return Boolean(fixtureResult);
   }, timeoutMs).then((ok) => (ok ? { dbReady: true } : { dbReady: false }));
