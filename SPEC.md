@@ -723,8 +723,10 @@ rollback(history_id):
 - `cargo fmt --check`
 - `cargo clippy -- -D warnings`
 - `cargo test`
+- `npm run check:commands`
 - `npm run build`
 - `npm run build:tauri`
+- CI matrix：启用 `docs/ci/tauri-preview.github-actions.yml` 后，macOS / Ubuntu / Windows 基础检查通过；macOS preview bundle 通过
 - macOS preview 手动 smoke 通过
 - Windows/Linux 构建和启动 smoke 通过
 - 明确 Electron 生产 DB 到 Tauri 正式 app id 的迁移/回滚策略

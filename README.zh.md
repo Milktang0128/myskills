@@ -111,6 +111,8 @@ MySkills 写入的位置：
 ```bash
 npm install
 npm run dev         # Tauri dev shell + Next.js dev (:4477)
+npm run check:tauri # command bridge 审计 + Rust fmt/clippy/tests + 前端 build
+npm run validate:tauri # check:tauri + Tauri 桌面 bundle
 npm run build       # Next.js 静态导出
 npm run build:tauri # Tauri 桌面 bundle
 ```

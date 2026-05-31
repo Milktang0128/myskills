@@ -1,0 +1,70 @@
+name: Tauri Preview
+
+on:
+  push:
+    branches:
+      - tauri/refactor-v0.2
+  pull_request:
+    branches:
+      - tauri/refactor-v0.2
+
+jobs:
+  parity-check:
+    name: Parity check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Audit command bridge parity
+        run: npm run check:commands
+
+      - name: Rust format
+        run: npm run check:rust:fmt
+
+      - name: Rust clippy
+        run: npm run check:rust:clippy
+
+      - name: Rust tests
+        run: npm run test:rust
+
+      - name: Frontend static build
+        run: npm run build
+
+      - name: macOS preview bundle
+        if: runner.os == 'macOS'
+        run: npm run build:tauri

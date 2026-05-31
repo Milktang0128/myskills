@@ -112,6 +112,8 @@ What MySkills puts where:
 ```bash
 npm install
 npm run dev         # Tauri dev shell + Next.js dev (:4477)
+npm run check:tauri # command bridge audit + Rust fmt/clippy/tests + frontend build
+npm run validate:tauri # check:tauri + Tauri desktop bundle
 npm run build       # Next.js static export
 npm run build:tauri # Tauri desktop bundle
 ```
