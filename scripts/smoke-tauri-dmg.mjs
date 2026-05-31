@@ -8,6 +8,16 @@ import { spawn, spawnSync } from 'node:child_process';
 const root = process.cwd();
 const previewDirName = 'myskills-tauri-preview';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
+const expectedFrontendSequence = [
+  'matrix',
+  'library-list',
+  'library-kanban',
+  'library-ai-lens',
+  'discover',
+  'scenarios',
+  'history',
+  'settings',
+].join(',');
 
 function parseArgs(argv) {
   const args = {
@@ -267,17 +277,24 @@ function inspectFrontendReady(dbPath) {
     const settings = Object.fromEntries(
       queryJson(
         dbPath,
-        "SELECT key, value FROM settings WHERE key IN ('smoke.frontend.expected', 'smoke.frontend.ready', 'smoke.frontend.view')",
+        "SELECT key, value FROM settings WHERE key IN ('smoke.frontend.expected', 'smoke.frontend.ready', 'smoke.frontend.view', 'smoke.frontend.ui.ready', 'smoke.frontend.ui.sequence', 'smoke.frontend.ui.error')",
       ).map((row) => [row.key, row.value]),
     );
     if (
       settings['smoke.frontend.expected'] !== '1' ||
       settings['smoke.frontend.ready'] !== '1' ||
-      settings['smoke.frontend.view'] !== 'workspace'
+      settings['smoke.frontend.view'] !== 'workspace' ||
+      settings['smoke.frontend.ui.ready'] !== '1' ||
+      settings['smoke.frontend.ui.sequence'] !== expectedFrontendSequence
     ) {
       return null;
     }
-    return { frontendReady: true, frontendView: settings['smoke.frontend.view'] };
+    return {
+      frontendReady: true,
+      frontendView: settings['smoke.frontend.view'],
+      frontendUiReady: true,
+      frontendUiSequence: settings['smoke.frontend.ui.sequence'],
+    };
   } catch {
     return null;
   }

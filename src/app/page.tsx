@@ -78,11 +78,13 @@ export default function Workspace() {
   const [bulkCatOpen, setBulkCatOpen] = useState(false);
   const [discoverMode, setDiscoverMode] = useState<SearchMode>('keyword');
   const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
+  const [frontendSmokeActive, setFrontendSmokeActive] = useState(false);
   // True once a cached library overview exists. Drives the one-shot Day-0
   // guidance card: visible until first AI Lens generation, then silenced.
   const [hasOverviewRun, setHasOverviewRun] = useState(false);
 
   const reqIdRef = useRef(0);
+  const frontendSmokeRanRef = useRef(false);
 
   // Filter is "at default" when nothing's been narrowed — all scope + no
   // scenario + no platform. The sub-toolbar only renders in this state; any
@@ -183,6 +185,8 @@ export default function Workspace() {
       .get('smoke.frontend.expected')
       .then(async (expected) => {
         if (cancelled || expected !== '1') return;
+        setFrontendSmokeActive(true);
+        setOnboardingDone(true);
         await Promise.all([
           api.settings.set('smoke.frontend.ready', '1'),
           api.settings.set('smoke.frontend.view', 'workspace'),
@@ -195,6 +199,122 @@ export default function Workspace() {
       cancelled = true;
     };
   }, [bridgeReady]);
+
+  useEffect(() => {
+    if (!frontendSmokeActive) return;
+    if (frontendSmokeRanRef.current) return;
+    frontendSmokeRanRef.current = true;
+    let cancelled = false;
+    const nextCommit = () => new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    const steps: Array<{
+      name: string;
+      select: () => void;
+      selector: string;
+    }> = [
+      {
+        name: 'matrix',
+        select: () => {
+          setSidebarView('matrix');
+          setFilter({ scope: 'all' });
+          setLibraryView('list');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="matrix"]',
+      },
+      {
+        name: 'library-list',
+        select: () => {
+          setSidebarView('library');
+          setFilter({ scope: 'all' });
+          setLibraryView('list');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="library-list"]',
+      },
+      {
+        name: 'library-kanban',
+        select: () => {
+          setSidebarView('library');
+          setFilter({ scope: 'all' });
+          setLibraryView('kanban');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="library-kanban"]',
+      },
+      {
+        name: 'library-ai-lens',
+        select: () => {
+          setSidebarView('library');
+          setFilter({ scope: 'all' });
+          setLibraryView('ai-lens');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="library-ai-lens"]',
+      },
+      {
+        name: 'discover',
+        select: () => {
+          setSidebarView('discover');
+          setSearch('catalog');
+          setDiscoverMode('keyword');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="discover"]',
+      },
+      {
+        name: 'scenarios',
+        select: () => {
+          setSidebarView('scenarios');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="scenarios"]',
+      },
+      {
+        name: 'history',
+        select: () => {
+          setSidebarView('history');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="history"]',
+      },
+      {
+        name: 'settings',
+        select: () => {
+          setSidebarView('settings');
+          setSelectedId(null);
+        },
+        selector: '[data-smoke-view="settings"]',
+      },
+    ];
+    async function runSmoke() {
+      const seen: string[] = [];
+      try {
+        for (const step of steps) {
+          if (cancelled) return;
+          step.select();
+          await nextCommit();
+          if (cancelled) return;
+          if (!document.querySelector(step.selector)) {
+            throw new Error(`missing ${step.selector}`);
+          }
+          seen.push(step.name);
+        }
+        await Promise.all([
+          api.settings.set('smoke.frontend.ui.ready', '1'),
+          api.settings.set('smoke.frontend.ui.sequence', seen.join(',')),
+        ]);
+      } catch (err) {
+        await api.settings.set(
+          'smoke.frontend.ui.error',
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    void runSmoke();
+    return () => {
+      cancelled = true;
+    };
+  }, [frontendSmokeActive]);
 
   // Refresh hasOverviewRun whenever the user lands on the library shell in a
   // non-ai-lens sub-view. Covers initial mount AND navigating back from
@@ -439,40 +559,55 @@ export default function Workspace() {
         )}
 
         {sidebarView === 'matrix' ? (
-          <CoverageView
-            outerFilter={effectiveFilter}
-            onToast={showToast}
-            onSelectSkill={setSelectedId}
-            selectedSkillId={selectedId}
-            onMutated={refreshMeta}
-            onOpenSettings={() => {
-              setSidebarView('settings');
-              setSelectedId(null);
-            }}
-          />
+          <div data-smoke-view="matrix" className="contents">
+            <CoverageView
+              outerFilter={effectiveFilter}
+              onToast={showToast}
+              onSelectSkill={setSelectedId}
+              selectedSkillId={selectedId}
+              onMutated={refreshMeta}
+              onOpenSettings={() => {
+                setSidebarView('settings');
+                setSelectedId(null);
+              }}
+            />
+          </div>
         ) : sidebarView === 'discover' ? (
-          <DiscoverView
-            query={search}
-            mode={discoverMode}
-            onModeChange={setDiscoverMode}
-            aiAvailable={aiSearchAvailable}
-            onToast={showToast}
-          />
+          <div data-smoke-view="discover" className="contents">
+            <DiscoverView
+              query={search}
+              mode={discoverMode}
+              onModeChange={setDiscoverMode}
+              aiAvailable={aiSearchAvailable}
+              onToast={showToast}
+            />
+          </div>
         ) : sidebarView === 'history' ? (
-          <HistoryView />
+          <div data-smoke-view="history" className="contents">
+            <HistoryView />
+          </div>
         ) : sidebarView === 'scenarios' ? (
-          <ScenariosView onChanged={refreshMeta} />
+          <div data-smoke-view="scenarios" className="contents">
+            <ScenariosView onChanged={refreshMeta} />
+          </div>
         ) : sidebarView === 'settings' ? (
-          <SettingsView onChanged={refreshMeta} />
+          <div data-smoke-view="settings" className="contents">
+            <SettingsView onChanged={refreshMeta} />
+          </div>
         ) : effectiveLibraryView === 'ai-lens' ? (
-          <LibraryMapView
-            onSelectSkill={setSelectedId}
-            llmConfigured={llmConfigured}
-            onScenariosChanged={refreshMeta}
-            onToast={showToast}
-          />
+          <div data-smoke-view="library-ai-lens" className="contents">
+            <LibraryMapView
+              onSelectSkill={setSelectedId}
+              llmConfigured={llmConfigured}
+              onScenariosChanged={refreshMeta}
+              onToast={showToast}
+            />
+          </div>
         ) : (
-          <>
+          <div
+            data-smoke-view={effectiveLibraryView === 'kanban' ? 'library-kanban' : 'library-list'}
+            className="contents"
+          >
             {showOverviewGuidance && (
               <LibraryOverviewGuidance
                 total={skills.length}
@@ -527,7 +662,7 @@ export default function Workspace() {
                 />
               </>
             )}
-          </>
+          </div>
         )}
       </div>
 

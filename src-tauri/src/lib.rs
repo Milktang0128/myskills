@@ -116,6 +116,21 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params!["smoke.frontend.view", ""],
             )?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params!["smoke.frontend.ui.ready", "0"],
+            )?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params!["smoke.frontend.ui.sequence", ""],
+            )?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params!["onboarding_completed_at", "internal-smoke"],
+            )?;
         }
         if let Some(scan) = apply_internal_smoke_fixture(&conn)? {
             last_scan = Some(scan);
