@@ -285,6 +285,10 @@ pub fn settings_set(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
 pub fn settings_stats(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
+    settings_stats_response(&db, &state.paths.db_path)
+}
+
+fn settings_stats_response(db: &Connection, db_path: &Path) -> AppResult<Value> {
     let total: i64 = db.query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))?;
     let scenarios: i64 = db.query_row("SELECT COUNT(*) FROM scenarios", [], |r| r.get(0))?;
     let broken: i64 = db.query_row(
@@ -326,7 +330,7 @@ pub fn settings_stats(payload: Option<Value>, state: State<'_, AppState>) -> App
         "duplicates": duplicates,
         "unscenarized": unscenarized,
         "disabledSkills": disabled,
-        "dbPath": state.paths.db_path.to_string_lossy(),
+        "dbPath": db_path.to_string_lossy(),
         "lastScanAt": last_scan,
     }))
 }
@@ -406,10 +410,13 @@ pub fn scan_last_result(payload: Option<Value>, state: State<'_, AppState>) -> A
 #[tauri::command]
 pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
+    skills_list_response(&db, payload.as_ref())
+}
+
+fn skills_list_response(db: &Connection, payload: Option<&Value>) -> AppResult<Value> {
     let mut where_sql = Vec::new();
     let mut bind_values: Vec<SqlValue> = Vec::new();
     if let Some(search) = payload
-        .as_ref()
         .and_then(|p| p.get("search"))
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
@@ -422,7 +429,6 @@ pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppRes
         bind_values.push(SqlValue::Text(like));
     }
     if let Some(platforms) = payload
-        .as_ref()
         .and_then(|p| p.get("platforms"))
         .and_then(Value::as_array)
         .filter(|a| !a.is_empty())
@@ -443,7 +449,6 @@ pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppRes
         }
     }
     if let Some(scenario_id) = payload
-        .as_ref()
         .and_then(|p| p.get("scenarioId"))
         .and_then(Value::as_i64)
     {
@@ -452,11 +457,7 @@ pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppRes
         );
         bind_values.push(SqlValue::Integer(scenario_id));
     }
-    if let Some(scope) = payload
-        .as_ref()
-        .and_then(|p| p.get("scope"))
-        .and_then(Value::as_str)
-    {
+    if let Some(scope) = payload.and_then(|p| p.get("scope")).and_then(Value::as_str) {
         match scope {
             "broken" => where_sql.push("s.id IN (SELECT skill_id FROM skill_locations WHERE is_broken_link = 1)".to_string()),
             "duplicate" => where_sql.push("s.content_hash IN (SELECT content_hash FROM skills GROUP BY content_hash HAVING COUNT(*) > 1)".to_string()),
@@ -470,7 +471,7 @@ pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppRes
     } else {
         format!("WHERE {}", where_sql.join(" AND "))
     };
-    let order = match payload.as_ref().and_then(|p| p.get("sort")).and_then(Value::as_str) {
+    let order = match payload.and_then(|p| p.get("sort")).and_then(Value::as_str) {
         Some("updated") => "ORDER BY s.updated_at DESC, s.name COLLATE NOCASE",
         Some("created") => "ORDER BY s.created_at DESC, s.name COLLATE NOCASE",
         Some("mtime") => "ORDER BY COALESCE((SELECT MAX(mtime) FROM skill_locations WHERE skill_id = s.id), 0) DESC, s.name COLLATE NOCASE",
@@ -483,7 +484,7 @@ pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppRes
             r.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    load_skills(&db, &ids)
+    load_skills(db, &ids)
 }
 
 #[tauri::command]
@@ -3425,6 +3426,120 @@ mod tests {
                 .and_then(Value::as_str),
             Some("target_exists_file")
         );
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn scanner_populates_library_list_and_settings_stats() {
+        let root = temp_dir("library-scan");
+        let db_path = root.join("myskills.db");
+        let shared_root = root.join("shared");
+        let claude_root = root.join("claude");
+        let codex_root = root.join("codex");
+        fs::create_dir_all(&shared_root).unwrap();
+        fs::create_dir_all(&claude_root).unwrap();
+        fs::create_dir_all(&codex_root).unwrap();
+        write_skill(&shared_root, "fixture-library-main", "fixture-library-main");
+        write_skill(
+            &shared_root.join(".disabled"),
+            "fixture-disabled",
+            "fixture-disabled",
+        );
+        write_skill(&claude_root, "fixture-claude-only", "fixture-claude-only");
+        let invalid = shared_root.join("fixture-missing-frontmatter");
+        fs::create_dir_all(&invalid).unwrap();
+        fs::write(invalid.join("SKILL.md"), "body without frontmatter\n").unwrap();
+
+        let pool = crate::db::init_pool(&db_path).unwrap();
+        let db = pool.get().unwrap();
+        db.execute(
+            "UPDATE platforms SET skills_dir = ?1 WHERE id = 'shared'",
+            params![shared_root.to_string_lossy()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE platforms SET skills_dir = ?1 WHERE id = 'claude'",
+            params![claude_root.to_string_lossy()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE platforms SET skills_dir = ?1 WHERE id = 'codex'",
+            params![codex_root.to_string_lossy()],
+        )
+        .unwrap();
+
+        let scan = scanner::scan_all(&db).unwrap();
+
+        assert_eq!(scan.get("totalFound").and_then(Value::as_i64), Some(3));
+        assert_eq!(scan.get("newSkills").and_then(Value::as_i64), Some(3));
+        assert_eq!(
+            scan.get("errors")
+                .and_then(Value::as_array)
+                .and_then(|errors| errors.first())
+                .and_then(|error| error.get("kind"))
+                .and_then(Value::as_str),
+            Some("missing_frontmatter")
+        );
+
+        let all = skills_list_response(&db, None).unwrap();
+        let names = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|skill| skill.get("name").and_then(Value::as_str).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "fixture-claude-only",
+                "fixture-disabled",
+                "fixture-library-main"
+            ]
+        );
+        assert_eq!(
+            all.as_array().unwrap()[1]["locations"][0]["isDisabled"].as_bool(),
+            Some(true)
+        );
+
+        let shared = skills_list_response(&db, Some(&json!({ "platforms": ["shared"] }))).unwrap();
+        let shared_names = shared
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|skill| skill.get("name").and_then(Value::as_str).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shared_names,
+            vec!["fixture-disabled", "fixture-library-main"]
+        );
+
+        let disabled = skills_list_response(&db, Some(&json!({ "scope": "disabled" }))).unwrap();
+        assert_eq!(disabled.as_array().unwrap().len(), 1);
+        assert_eq!(
+            disabled.as_array().unwrap()[0]
+                .get("name")
+                .and_then(Value::as_str),
+            Some("fixture-disabled")
+        );
+
+        let stats = settings_stats_response(&db, &db_path).unwrap();
+        assert_eq!(stats.get("totalSkills").and_then(Value::as_i64), Some(3));
+        assert_eq!(
+            stats.pointer("/byPlatform/shared").and_then(Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(
+            stats.pointer("/byPlatform/claude").and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(stats.get("disabledSkills").and_then(Value::as_i64), Some(1));
+        assert_eq!(stats.get("unscenarized").and_then(Value::as_i64), Some(3));
+        assert_eq!(
+            stats.get("dbPath").and_then(Value::as_str),
+            Some(db_path.to_string_lossy().as_ref())
+        );
+        assert!(stats.get("lastScanAt").and_then(Value::as_i64).is_some());
+        drop(db);
         fs::remove_dir_all(root).ok();
     }
 

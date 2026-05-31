@@ -22,6 +22,9 @@ Automated checks already available:
 - `npm run smoke:tauri:dmg` mounts the latest local macOS DMG, verifies the
   preview bundle id, launches the mounted app binary, and checks isolated DB
   initialization.
+- Rust fixture tests cover real scanner ingestion into the Library backend,
+  including platform filtering, disabled-scope listing, parser errors, scan
+  runs, and Settings stats.
 
 Manual desktop smoke performed on 2026-05-31:
 
@@ -52,7 +55,7 @@ Important caveat:
 | Preview identity | Packaged app uses `com.kanbenzhi.myskills.tauri-preview` | pass | Verified from app state and `Info.plist`. |
 | Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | partial | DB path observed in Settings; destructive sync backup paths still need workflow proof. |
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
-| Library | List/Kanban/Coverage render with real scanned skills | pending | Need real scan fixture or seeded skill dirs. |
+| Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test covers real scanner to Library list, platform filter, disabled scope, parser-error reporting, scan run, and stats; packaged List/Kanban UI smoke still pending. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
 | Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
