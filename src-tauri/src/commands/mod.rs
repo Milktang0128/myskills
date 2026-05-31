@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use arboard::Clipboard;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::Digest;
 use tauri::{AppHandle, Emitter, State};
@@ -40,6 +40,28 @@ fn optional_i64(payload: &Option<Value>, key: &str) -> Option<i64> {
 
 fn ok() -> Value {
     json!({ "ok": true })
+}
+
+#[derive(Clone)]
+struct LocRow {
+    id: i64,
+    skill_id: String,
+    platform_id: String,
+    install_path: String,
+    real_path: String,
+    is_symlink: bool,
+    is_broken_link: bool,
+    is_disabled: bool,
+    content_hash: Option<String>,
+    mtime: Option<i64>,
+}
+
+struct SuggestionActionRow {
+    id: i64,
+    skill_id: String,
+    scenario_key: String,
+    accepted_at: Option<i64>,
+    dismissed_at: Option<i64>,
 }
 
 #[tauri::command]
@@ -120,18 +142,31 @@ pub fn platforms_delete(payload: Option<Value>, state: State<'_, AppState>) -> A
             format!("cannot delete built-in platform {id}"),
         ));
     }
-    let count: i64 = db.query_row(
-        "SELECT COUNT(*) FROM skill_locations WHERE platform_id = ?1",
+    let tx = db.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM skill_locations WHERE platform_id = ?1",
         params![id],
-        |r| r.get(0),
     )?;
-    if count > 0 {
-        return Err(AppError::new(
-            "DELETE_FAILED",
-            format!("platform {id} still has {count} skill location(s)"),
-        ));
+    tx.execute(
+        "DELETE FROM skills WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_locations)",
+        [],
+    )?;
+    tx.execute("DELETE FROM platforms WHERE id = ?1", params![id])?;
+    let canonical: Option<String> = tx
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'canonical_platform'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if canonical.as_deref() == Some(id) {
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared')
+             ON CONFLICT(key) DO UPDATE SET value = 'shared'",
+            [],
+        )?;
     }
-    db.execute("DELETE FROM platforms WHERE id = ?1", params![id])?;
+    tx.commit()?;
     Ok(ok())
 }
 
@@ -343,7 +378,7 @@ pub fn scan_last_result(payload: Option<Value>, state: State<'_, AppState>) -> A
 pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
     let mut where_sql = Vec::new();
-    let mut bind_values: Vec<String> = Vec::new();
+    let mut bind_values: Vec<SqlValue> = Vec::new();
     if let Some(search) = payload
         .as_ref()
         .and_then(|p| p.get("search"))
@@ -353,9 +388,40 @@ pub fn skills_list(payload: Option<Value>, state: State<'_, AppState>) -> AppRes
         where_sql
             .push("(s.name LIKE ? OR s.description LIKE ? OR s.body_excerpt LIKE ?)".to_string());
         let like = format!("%{search}%");
-        bind_values.push(like.clone());
-        bind_values.push(like.clone());
-        bind_values.push(like);
+        bind_values.push(SqlValue::Text(like.clone()));
+        bind_values.push(SqlValue::Text(like.clone()));
+        bind_values.push(SqlValue::Text(like));
+    }
+    if let Some(platforms) = payload
+        .as_ref()
+        .and_then(|p| p.get("platforms"))
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+    {
+        let ids = platforms
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>();
+        if !ids.is_empty() {
+            let placeholders = std::iter::repeat_n("?", ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            where_sql.push(format!(
+                "s.id IN (SELECT skill_id FROM skill_locations WHERE platform_id IN ({placeholders}))"
+            ));
+            bind_values.extend(ids.into_iter().map(|id| SqlValue::Text(id.to_string())));
+        }
+    }
+    if let Some(scenario_id) = payload
+        .as_ref()
+        .and_then(|p| p.get("scenarioId"))
+        .and_then(Value::as_i64)
+    {
+        where_sql.push(
+            "s.id IN (SELECT skill_id FROM skill_scenarios WHERE scenario_id = ?)".to_string(),
+        );
+        bind_values.push(SqlValue::Integer(scenario_id));
     }
     if let Some(scope) = payload
         .as_ref()
@@ -466,18 +532,21 @@ pub fn scenarios_create(payload: Option<Value>, state: State<'_, AppState>) -> A
     let name = p
         .get("name")
         .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::new("INVALID_INPUT", "name required"))?;
     let key = p
         .get("key")
         .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| slugify(name));
+    if !valid_scenario_key(&key) {
+        return Err(AppError::new("INVALID_INPUT", "key must be kebab-case"));
+    }
     let db = conn(&state)?;
-    let next: i64 = db.query_row(
-        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM scenarios",
-        [],
-        |r| r.get(0),
-    )?;
+    let sort_order = p.get("sortOrder").and_then(Value::as_i64).unwrap_or(999);
     db.execute(
         "INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
@@ -487,7 +556,7 @@ pub fn scenarios_create(payload: Option<Value>, state: State<'_, AppState>) -> A
             p.get("description").and_then(Value::as_str),
             p.get("color").and_then(Value::as_str),
             p.get("icon").and_then(Value::as_str),
-            next,
+            sort_order,
             now_ms()
         ],
     )?;
@@ -569,17 +638,154 @@ pub fn scenarios_remove_skill(
 #[tauri::command]
 pub fn scenarios_export(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
-    let scenarios = scenarios_list(None, state)?;
+    let db = conn(&state)?;
+    let scenario_rows = db
+        .prepare("SELECT id, key, name, description, color, icon FROM scenarios ORDER BY sort_order, name")?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut scenarios = Vec::new();
+    for (id, key, name, description, color, icon) in scenario_rows {
+        let skills = db
+            .prepare(
+                "SELECT s.name, s.source_key
+                 FROM skill_scenarios ss
+                 JOIN skills s ON s.id = ss.skill_id
+                 WHERE ss.scenario_id = ?1
+                 ORDER BY s.name COLLATE NOCASE",
+            )?
+            .query_map(params![id], |r| {
+                Ok(json!({
+                    "name": r.get::<_, String>(0)?,
+                    "sourceKey": r.get::<_, String>(1)?,
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        scenarios.push(json!({
+            "key": key,
+            "name": name,
+            "description": description,
+            "color": color,
+            "icon": icon,
+            "skills": skills,
+        }));
+    }
     Ok(json!({ "version": "1", "exportedAt": now_ms(), "scenarios": scenarios }))
 }
 
 #[tauri::command]
-pub fn scenarios_import(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
-    Err(AppError::new(
-        "NOT_IMPLEMENTED",
-        "scenario import is not yet ported to Tauri",
-    ))
+pub fn scenarios_import(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let p = payload.ok_or_else(|| AppError::new("INVALID_INPUT", "export payload required"))?;
+    if p.get("version").and_then(Value::as_str) != Some("1") {
+        let version = p.get("version").cloned().unwrap_or(Value::Null);
+        return Err(AppError::new(
+            "UNSUPPORTED_VERSION",
+            format!("version {version}"),
+        ));
+    }
+    let scenarios = p
+        .get("scenarios")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "scenarios[] required"))?;
+    let mut db = conn(&state)?;
+    let tx = db.transaction()?;
+    let now = now_ms();
+    let mut created = 0;
+    let mut merged = 0;
+    let mut linked = 0;
+    let mut not_found = Vec::new();
+
+    for sc in scenarios {
+        let key = sc
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|s| valid_scenario_key(s))
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "scenario key must be kebab-case"))?;
+        let name = sc
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "scenario name required"))?;
+        let scenario_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM scenarios WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let scenario_id = if let Some(id) = scenario_id {
+            merged += 1;
+            id
+        } else {
+            tx.execute(
+                "INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 999, 0, ?6)",
+                params![
+                    key,
+                    name,
+                    sc.get("description").and_then(Value::as_str),
+                    sc.get("color").and_then(Value::as_str),
+                    sc.get("icon").and_then(Value::as_str),
+                    now
+                ],
+            )?;
+            created += 1;
+            tx.last_insert_rowid()
+        };
+
+        let skills = sc
+            .get("skills")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for sk in skills {
+            let Some(skill_name) = sk.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(source_key) = sk.get("sourceKey").and_then(Value::as_str) else {
+                continue;
+            };
+            let found: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM skills WHERE name = ?1 AND source_key = ?2",
+                    params![skill_name, source_key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(skill_id) = found {
+                let before = tx.changes();
+                tx.execute(
+                    "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?1, ?2, ?3)",
+                    params![skill_id, scenario_id, now],
+                )?;
+                if tx.changes() > before {
+                    linked += 1;
+                }
+            } else {
+                not_found.push(json!({
+                    "scenarioKey": key,
+                    "skillName": skill_name,
+                    "sourceKey": source_key,
+                }));
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(json!({
+        "scenariosCreated": created,
+        "scenariosMerged": merged,
+        "skillsLinked": linked,
+        "skillsNotFound": not_found,
+    }))
 }
 
 #[tauri::command]
@@ -597,9 +803,16 @@ pub fn scenarios_create_from_cluster(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let db = conn(&state)?;
+    let mut db = conn(&state)?;
     let key = slugify(name);
-    let existing: Option<i64> = db
+    if key.is_empty() {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            format!("cannot derive a key from \"{name}\""),
+        ));
+    }
+    let tx = db.transaction()?;
+    let existing: Option<i64> = tx
         .query_row(
             "SELECT id FROM scenarios WHERE key = ?1",
             params![key],
@@ -609,26 +822,40 @@ pub fn scenarios_create_from_cluster(
     let (scenario_id, created) = if let Some(id) = existing {
         (id, false)
     } else {
-        db.execute(
+        tx.execute(
             "INSERT INTO scenarios (key, name, color, sort_order, is_builtin, created_at) VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM scenarios), 0, ?4)",
             params![key, name, p.get("color").and_then(Value::as_str), now_ms()],
         )?;
-        (db.last_insert_rowid(), true)
+        (tx.last_insert_rowid(), true)
     };
+    let mut seen = std::collections::HashSet::new();
     let mut linked = 0;
     let mut skipped = 0;
     for id in skill_ids.iter().filter_map(Value::as_str) {
-        let before = db.changes();
-        db.execute(
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let exists: Option<i64> = tx
+            .query_row("SELECT 1 FROM skills WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if exists.is_none() {
+            skipped += 1;
+            continue;
+        }
+        let before = tx.changes();
+        tx.execute(
             "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?1, ?2, ?3)",
             params![id, scenario_id, now_ms()],
         )?;
-        if db.changes() > before {
+        if tx.changes() > before {
             linked += 1;
         } else {
             skipped += 1;
         }
     }
+    tx.commit()?;
     Ok(
         json!({ "scenarioId": scenario_id, "created": created, "skillsLinked": linked, "skillsSkipped": skipped }),
     )
@@ -638,57 +865,126 @@ pub fn scenarios_create_from_cluster(
 pub fn coverage_matrix(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
-    let platform_ids = db
+    let all_platform_ids = db
         .prepare("SELECT id FROM platforms WHERE enabled = 1 ORDER BY sort_order, id")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    let canonical = get_setting(&db, "canonical_platform")?.unwrap_or_else(|| "shared".to_string());
-    let skill_ids = db
-        .prepare("SELECT id FROM skills ORDER BY name COLLATE NOCASE")?
-        .query_map([], |r| r.get::<_, String>(0))?
+    let configured =
+        get_setting(&db, "canonical_platform")?.unwrap_or_else(|| "shared".to_string());
+    let canonical = if all_platform_ids.iter().any(|id| id == &configured) {
+        configured
+    } else {
+        all_platform_ids.first().cloned().unwrap_or(configured)
+    };
+    let mut platform_ids = Vec::new();
+    if !canonical.is_empty() {
+        platform_ids.push(canonical.clone());
+    }
+    platform_ids.extend(all_platform_ids.into_iter().filter(|id| id != &canonical));
+
+    let skill_rows = db
+        .prepare(
+            "SELECT id, name, source_key, description FROM skills ORDER BY name COLLATE NOCASE",
+        )?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
-    let skills = load_skills(&db, &skill_ids)?;
-    let empty = Vec::new();
-    let skill_array = skills.as_array().unwrap_or(&empty);
-    let rows = skill_array.iter().map(|s| {
+    let loc_rows = db
+        .prepare(
+            "SELECT id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
+             FROM skill_locations",
+        )?
+        .query_map([], |r| {
+            Ok(LocRow {
+                id: r.get(0)?,
+                skill_id: r.get(1)?,
+                platform_id: r.get(2)?,
+                install_path: r.get(3)?,
+                real_path: r.get(4)?,
+                is_symlink: r.get::<_, i64>(5)? != 0,
+                is_broken_link: r.get::<_, i64>(6)? != 0,
+                is_disabled: r.get::<_, i64>(7)? != 0,
+                content_hash: r.get(8)?,
+                mtime: r.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut locs_by_skill: std::collections::HashMap<String, Vec<LocRow>> =
+        std::collections::HashMap::new();
+    for loc in &loc_rows {
+        locs_by_skill
+            .entry(loc.skill_id.clone())
+            .or_default()
+            .push(loc.clone());
+    }
+    let mut owner_candidates = loc_rows.clone();
+    owner_candidates.sort_by_key(|loc| {
+        if loc.is_symlink {
+            30
+        } else if loc.platform_id == canonical {
+            0
+        } else {
+            10
+        }
+    });
+    let mut real_path_owner = std::collections::HashMap::new();
+    for loc in owner_candidates {
+        real_path_owner
+            .entry(loc.real_path)
+            .or_insert(loc.platform_id);
+    }
+
+    let rows = skill_rows.into_iter().map(|(skill_id, name, source_key, description)| {
+        let locs = locs_by_skill.get(&skill_id).cloned().unwrap_or_default();
         let mut cells = serde_json::Map::new();
         for p in &platform_ids {
-            cells.insert(p.clone(), json!({ "state": "missing", "drift": "in_sync" }));
+            cells.insert(p.clone(), json!({ "state": "missing" }));
         }
-        if let Some(locs) = s.get("locations").and_then(Value::as_array) {
-            for loc in locs {
-                if let Some(pid) = loc.get("platformId").and_then(Value::as_str) {
-                    let state = if loc.get("isDisabled").and_then(Value::as_bool).unwrap_or(false) {
-                        "disabled"
-                    } else if loc.get("isBrokenSymlink").and_then(Value::as_bool).unwrap_or(false) {
-                        "broken"
-                    } else if loc.get("isSymlink").and_then(Value::as_bool).unwrap_or(false) {
-                        "symlink"
-                    } else {
-                        "present"
-                    };
-                    cells.insert(pid.to_string(), json!({
-                        "state": state,
-                        "locationId": loc.get("id").cloned().unwrap_or(Value::Null),
-                        "installPath": loc.get("installPath").cloned().unwrap_or(Value::Null),
-                        "realPath": loc.get("realPath").cloned().unwrap_or(Value::Null),
-                        "contentHash": loc.get("contentHash").cloned().unwrap_or(Value::Null),
-                        "mtime": loc.get("mtime").cloned().unwrap_or(Value::Null),
-                        "drift": "in_sync"
-                    }));
-                }
+        let canonical_loc = locs
+            .iter()
+            .find(|loc| loc.platform_id == canonical && !loc.is_disabled);
+        let canonical_hash = canonical_loc.and_then(|loc| loc.content_hash.clone());
+        let has_canonical_source = canonical_loc.is_some();
+        for loc in locs {
+            let state = cell_state_for(&loc, &real_path_owner, &canonical);
+            let mut cell = json!({
+                "state": state,
+                "locationId": loc.id,
+                "installPath": loc.install_path,
+                "realPath": loc.real_path,
+                "contentHash": loc.content_hash,
+                "mtime": loc.mtime,
+                "drift": drift_for(&loc, state, &canonical, canonical_hash.as_deref(), has_canonical_source),
+            });
+            if (state == "symlink" || state == "symlink_other")
+                && real_path_owner.contains_key(cell["realPath"].as_str().unwrap_or_default())
+            {
+                cell["resolvesToPlatformId"] = json!(real_path_owner
+                    .get(cell["realPath"].as_str().unwrap_or_default())
+                    .cloned());
             }
+            cells.insert(loc.platform_id, cell);
         }
         let missing: Vec<String> = cells.iter().filter(|(_, c)| c.get("state").and_then(Value::as_str) == Some("missing")).map(|(k, _)| k.clone()).collect();
+        let has_drift = cells
+            .values()
+            .any(|cell| cell.get("drift").and_then(Value::as_str) == Some("stale"));
         json!({
-            "skillId": s["id"],
-            "skillName": s["name"],
-            "sourceKey": s["sourceKey"],
-            "description": s["description"],
+            "skillId": skill_id,
+            "skillName": name,
+            "sourceKey": source_key,
+            "description": description,
             "cells": cells,
             "missingOn": missing,
-            "hasCanonicalSource": s.get("locations").and_then(Value::as_array).is_some_and(|locs| locs.iter().any(|l| l.get("platformId").and_then(Value::as_str) == Some(canonical.as_str()))),
-            "hasDrift": false
+            "hasCanonicalSource": has_canonical_source,
+            "hasDrift": has_drift
         })
     }).collect::<Vec<_>>();
     Ok(json!({ "platforms": platform_ids, "canonicalPlatform": canonical, "rows": rows }))
@@ -779,13 +1075,31 @@ pub fn sync_history(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
         .and_then(|p| p.get("limit"))
         .and_then(Value::as_i64)
         .unwrap_or(50)
-        .clamp(1, 200);
+        .clamp(1, 500);
     let db = conn(&state)?;
-    let mut stmt = db.prepare(
-        "SELECT id, skill_id, action, from_path, to_path, platform_id, before_hash, after_hash, backup_path, conflict_resolution, rolled_back_at, success, message, created_at, op_group_id
-         FROM sync_history ORDER BY id DESC LIMIT ?1",
-    )?;
-    let rows = stmt.query_map(params![limit], |r| {
+    let skill_id = payload
+        .as_ref()
+        .and_then(|p| p.get("skillId"))
+        .and_then(Value::as_str);
+    let (sql, params): (&str, Vec<SqlValue>) = if let Some(skill_id) = skill_id {
+        (
+            "SELECT id, skill_id, action, from_path, to_path, platform_id, before_hash, after_hash, backup_path, conflict_resolution, rolled_back_at, success, message, created_at, op_group_id
+             FROM sync_history WHERE skill_id = ?1 ORDER BY id DESC LIMIT ?2",
+            vec![SqlValue::Text(skill_id.to_string()), SqlValue::Integer(limit)],
+        )
+    } else {
+        (
+            "SELECT id, skill_id, action, from_path, to_path, platform_id, before_hash, after_hash, backup_path, conflict_resolution, rolled_back_at, success, message, created_at, op_group_id
+             FROM sync_history ORDER BY id DESC LIMIT ?1",
+            vec![SqlValue::Integer(limit)],
+        )
+    };
+    let mut stmt = db.prepare(sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
+        let backup_path = r.get::<_, Option<String>>(8)?;
+        let backup_orphaned = backup_path
+            .as_ref()
+            .is_some_and(|path| !PathBuf::from(path).exists());
         Ok(json!({
             "id": r.get::<_, i64>(0)?,
             "skill_id": r.get::<_, String>(1)?,
@@ -795,14 +1109,14 @@ pub fn sync_history(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
             "platform_id": r.get::<_, Option<String>>(5)?,
             "before_hash": r.get::<_, Option<String>>(6)?,
             "after_hash": r.get::<_, Option<String>>(7)?,
-            "backup_path": r.get::<_, Option<String>>(8)?,
+            "backup_path": backup_path,
             "conflict_resolution": r.get::<_, Option<String>>(9)?,
             "rolled_back_at": r.get::<_, Option<i64>>(10)?,
             "success": r.get::<_, i64>(11)?,
             "message": r.get::<_, Option<String>>(12)?,
             "created_at": r.get::<_, i64>(13)?,
             "op_group_id": r.get::<_, Option<String>>(14)?,
-            "backup_orphaned": false
+            "backup_orphaned": backup_orphaned
         }))
     })?;
     Ok(Value::Array(rows.collect::<Result<Vec<_>, _>>()?))
@@ -978,18 +1292,127 @@ pub fn llm_set_features(payload: Option<Value>, state: State<'_, AppState>) -> A
 }
 
 #[tauri::command]
-pub fn ai_get_suggestions_for_skill(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
-    Ok(json!([]))
+pub fn ai_get_suggestions_for_skill(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let skill_id = required_str(&payload, "skillId")?;
+    let db = conn(&state)?;
+    let mut stmt = db.prepare(
+        "SELECT a.id, a.skill_id, a.scenario_key, a.reason, a.suggested_at, sc.name, sc.color
+         FROM ai_scenario_suggestions a
+         LEFT JOIN scenarios sc ON sc.key = a.scenario_key
+         WHERE a.skill_id = ?1
+           AND a.accepted_at IS NULL
+           AND a.dismissed_at IS NULL
+         ORDER BY a.suggested_at DESC, a.id DESC",
+    )?;
+    let rows = stmt.query_map(params![skill_id], |r| {
+        Ok(json!({
+            "id": r.get::<_, i64>(0)?,
+            "skillId": r.get::<_, String>(1)?,
+            "scenarioKey": r.get::<_, String>(2)?,
+            "reason": r.get::<_, Option<String>>(3)?,
+            "suggestedAt": r.get::<_, i64>(4)?,
+            "scenarioName": r.get::<_, Option<String>>(5)?,
+            "scenarioColor": r.get::<_, Option<String>>(6)?,
+        }))
+    })?;
+    Ok(Value::Array(rows.collect::<Result<Vec<_>, _>>()?))
 }
 #[tauri::command]
-pub fn ai_accept_suggestion(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
+pub fn ai_accept_suggestion(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let suggestion_id = optional_i64(&payload, "suggestionId")
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "suggestionId required"))?;
+    let mut db = conn(&state)?;
+    let row: Option<SuggestionActionRow> = db
+        .query_row(
+            "SELECT id, skill_id, scenario_key, accepted_at, dismissed_at
+             FROM ai_scenario_suggestions WHERE id = ?1",
+            params![suggestion_id],
+            |r| {
+                Ok(SuggestionActionRow {
+                    id: r.get(0)?,
+                    skill_id: r.get(1)?,
+                    scenario_key: r.get(2)?,
+                    accepted_at: r.get(3)?,
+                    dismissed_at: r.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            format!("suggestion {suggestion_id}"),
+        ));
+    };
+    if row.accepted_at.is_some() {
+        return Ok(ok());
+    }
+    if row.dismissed_at.is_some() {
+        return Err(AppError::new("CONFLICT", "suggestion already dismissed"));
+    }
+    let scenario_id: Option<i64> = db
+        .query_row(
+            "SELECT id FROM scenarios WHERE key = ?1",
+            params![row.scenario_key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(scenario_id) = scenario_id else {
+        db.execute(
+            "UPDATE ai_scenario_suggestions SET dismissed_at = ?1 WHERE id = ?2",
+            params![now_ms(), row.id],
+        )?;
+        return Err(AppError::new(
+            "NOT_FOUND",
+            format!("scenario \"{}\" no longer exists", row.scenario_key),
+        ));
+    };
+    let tx = db.transaction()?;
+    let now = now_ms();
+    tx.execute(
+        "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?1, ?2, ?3)",
+        params![row.skill_id, scenario_id, now],
+    )?;
+    tx.execute(
+        "UPDATE ai_scenario_suggestions SET accepted_at = ?1 WHERE id = ?2",
+        params![now, row.id],
+    )?;
+    tx.commit()?;
     Ok(ok())
 }
 #[tauri::command]
-pub fn ai_dismiss_suggestion(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
+pub fn ai_dismiss_suggestion(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let suggestion_id = optional_i64(&payload, "suggestionId")
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "suggestionId required"))?;
+    let db = conn(&state)?;
+    db.execute(
+        "UPDATE ai_scenario_suggestions
+         SET dismissed_at = ?1
+         WHERE id = ?2 AND dismissed_at IS NULL AND accepted_at IS NULL",
+        params![now_ms(), suggestion_id],
+    )?;
+    let exists: Option<i64> = db
+        .query_row(
+            "SELECT 1 FROM ai_scenario_suggestions WHERE id = ?1",
+            params![suggestion_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(AppError::new(
+            "NOT_FOUND",
+            format!("suggestion {suggestion_id}"),
+        ));
+    }
     Ok(ok())
 }
 #[tauri::command]
@@ -1088,6 +1511,83 @@ fn valid_platform_id(id: &str) -> bool {
         })
 }
 
+fn valid_scenario_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_alphanumeric()
+        && key.chars().count() <= 64
+        && chars.all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
+fn slugify(input: &str) -> String {
+    let mut out = String::new();
+    let mut previous_was_dash = false;
+    for c in input.trim().to_lowercase().chars() {
+        if c.is_whitespace() || c == '/' || c == '\\' {
+            if !previous_was_dash {
+                out.push('-');
+                previous_was_dash = true;
+            }
+        } else {
+            out.push(c);
+            previous_was_dash = false;
+        }
+    }
+    out.trim_matches(['-', '_']).chars().take(64).collect()
+}
+
+fn cell_state_for(
+    loc: &LocRow,
+    real_path_owner: &std::collections::HashMap<String, String>,
+    canonical: &str,
+) -> &'static str {
+    if loc.is_broken_link {
+        "broken"
+    } else if loc.is_disabled {
+        "disabled"
+    } else if !loc.is_symlink {
+        "present"
+    } else if real_path_owner
+        .get(&loc.real_path)
+        .is_some_and(|owner| owner == canonical)
+    {
+        "symlink"
+    } else {
+        "symlink_other"
+    }
+}
+
+fn drift_for(
+    loc: &LocRow,
+    state: &str,
+    canonical: &str,
+    canonical_hash: Option<&str>,
+    has_canonical_source: bool,
+) -> &'static str {
+    if loc.platform_id == canonical {
+        "in_sync"
+    } else if !has_canonical_source {
+        "only_here"
+    } else if state == "symlink" {
+        "in_sync"
+    } else if state == "present" {
+        if canonical_hash.is_some()
+            && loc.content_hash.as_deref().is_some()
+            && canonical_hash != loc.content_hash.as_deref()
+        {
+            "stale"
+        } else {
+            "in_sync"
+        }
+    } else if state == "symlink_other" || state == "broken" {
+        "stale"
+    } else {
+        "in_sync"
+    }
+}
+
 fn load_skills(db: &Connection, ids: &[String]) -> AppResult<Value> {
     let mut out = Vec::new();
     for id in ids {
@@ -1127,11 +1627,13 @@ fn load_skills(db: &Connection, ids: &[String]) -> AppResult<Value> {
 }
 
 fn locations_for_skill(db: &Connection, id: &str) -> AppResult<Value> {
+    let canonical = get_setting(db, "canonical_platform")?.unwrap_or_else(|| "shared".to_string());
     let mut stmt = db.prepare(
         "SELECT id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime, last_seen_at
-         FROM skill_locations WHERE skill_id = ?1 ORDER BY platform_id, install_path",
+         FROM skill_locations WHERE skill_id = ?1
+         ORDER BY CASE WHEN platform_id = ?2 THEN 0 ELSE 1 END, platform_id, install_path",
     )?;
-    let rows = stmt.query_map(params![id], |r| {
+    let rows = stmt.query_map(params![id, canonical], |r| {
         Ok(json!({
             "id": r.get::<_, i64>(0)?,
             "platformId": r.get::<_, String>(1)?,
@@ -1183,20 +1685,33 @@ fn location_action_path(db: &Connection, payload: &Option<Value>) -> AppResult<S
 }
 
 fn db_update_scenario(db: &Connection, id: i64, p: &Value) -> AppResult<()> {
+    let existing = scenario_by_id(db, id)?;
     db.execute(
         "UPDATE scenarios SET
-          name = COALESCE(?1, name),
+          name = ?1,
           description = ?2,
           color = ?3,
           icon = ?4,
-          sort_order = COALESCE(?5, sort_order)
+          sort_order = ?5
          WHERE id = ?6",
         params![
-            p.get("name").and_then(Value::as_str),
-            p.get("description").and_then(Value::as_str),
-            p.get("color").and_then(Value::as_str),
-            p.get("icon").and_then(Value::as_str),
-            p.get("sortOrder").and_then(Value::as_i64),
+            p.get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or_else(|| existing.get("name").and_then(Value::as_str)),
+            p.get("description")
+                .and_then(Value::as_str)
+                .or_else(|| existing.get("description").and_then(Value::as_str)),
+            p.get("color")
+                .and_then(Value::as_str)
+                .or_else(|| existing.get("color").and_then(Value::as_str)),
+            p.get("icon")
+                .and_then(Value::as_str)
+                .or_else(|| existing.get("icon").and_then(Value::as_str)),
+            p.get("sortOrder")
+                .and_then(Value::as_i64)
+                .or_else(|| existing.get("sortOrder").and_then(Value::as_i64)),
             id
         ],
     )?;
@@ -1205,31 +1720,25 @@ fn db_update_scenario(db: &Connection, id: i64, p: &Value) -> AppResult<()> {
 
 fn scenario_by_id(db: &Connection, id: i64) -> AppResult<Value> {
     db.query_row(
-        "SELECT id, key, name, description, color, icon, sort_order, is_builtin FROM scenarios WHERE id = ?1",
+        "SELECT id, key, name, description, color, icon, sort_order, is_builtin,
+                (SELECT COUNT(*) FROM skill_scenarios WHERE scenario_id = scenarios.id)
+         FROM scenarios WHERE id = ?1",
         params![id],
-        |r| Ok(json!({
-            "id": r.get::<_, i64>(0)?,
-            "key": r.get::<_, String>(1)?,
-            "name": r.get::<_, String>(2)?,
-            "description": r.get::<_, Option<String>>(3)?,
-            "color": r.get::<_, Option<String>>(4)?,
-            "icon": r.get::<_, Option<String>>(5)?,
-            "sortOrder": r.get::<_, i64>(6)?,
-            "isBuiltin": r.get::<_, i64>(7)? != 0,
-        })),
-    ).map_err(Into::into)
-}
-
-fn slugify(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.to_lowercase().chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.trim_matches('-').to_string()
+        |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "key": r.get::<_, String>(1)?,
+                "name": r.get::<_, String>(2)?,
+                "description": r.get::<_, Option<String>>(3)?,
+                "color": r.get::<_, Option<String>>(4)?,
+                "icon": r.get::<_, Option<String>>(5)?,
+                "sortOrder": r.get::<_, i64>(6)?,
+                "isBuiltin": r.get::<_, i64>(7)? != 0,
+                "skillCount": r.get::<_, i64>(8)?,
+            }))
+        },
+    )
+    .map_err(Into::into)
 }
 
 fn get_setting(db: &Connection, key: &str) -> AppResult<Option<String>> {
@@ -1259,7 +1768,7 @@ fn current_set_hash(db: &Connection) -> AppResult<String> {
     for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
         let (id, hash) = row?;
         joined.push_str(&id);
-        joined.push(':');
+        joined.push('|');
         joined.push_str(&hash);
         joined.push('\n');
     }
