@@ -1290,7 +1290,7 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
             continue;
         }
         let history_id = insert_pending_history(&db, &item, &plan_json)?;
-        match execute_sync_item(&db, &state.paths.backup_root, &item) {
+        match execute_sync_item(&db, history_id, &state.paths.backup_root, &item) {
             Ok(outcome) => {
                 db.execute(
                     "UPDATE sync_history SET success = 1, message = NULL, before_hash = ?1, after_hash = ?2, backup_path = ?3 WHERE id = ?4",
@@ -2113,6 +2113,7 @@ fn insert_pending_history(db: &Connection, item: &Value, plan_json: &str) -> App
 
 fn execute_sync_item(
     db: &Connection,
+    history_id: i64,
     backup_root: &Path,
     item: &Value,
 ) -> AppResult<ExecuteOutcome> {
@@ -2121,9 +2122,9 @@ fn execute_sync_item(
         .and_then(Value::as_str)
         .unwrap_or_default()
     {
-        "symlink_create" => do_symlink_item(db, backup_root, item, false),
-        "symlink_replace" => do_symlink_item(db, backup_root, item, true),
-        "copy_to_canonical" => do_copy_item(db, backup_root, item),
+        "symlink_create" => do_symlink_item(db, history_id, backup_root, item, false),
+        "symlink_replace" => do_symlink_item(db, history_id, backup_root, item, true),
+        "copy_to_canonical" => do_copy_item(db, history_id, backup_root, item),
         "disable" | "enable" => do_move_item(item),
         action => Err(AppError::new(
             "SYNC_EXECUTE_FAILED",
@@ -2168,6 +2169,7 @@ fn do_move_item(item: &Value) -> AppResult<ExecuteOutcome> {
 
 fn do_symlink_item(
     db: &Connection,
+    history_id: i64,
     backup_root: &Path,
     item: &Value,
     allow_replace: bool,
@@ -2234,7 +2236,7 @@ fn do_symlink_item(
                 "target already exists and replace was not authorized",
             ));
         }
-        let backup = create_sync_backup(backup_root, &target, item)?;
+        let backup = create_sync_backup(db, history_id, backup_root, &target, item)?;
         before_hash = hash_skill_md(Path::new(&backup)).ok();
         backup_path = Some(backup);
     }
@@ -2246,10 +2248,24 @@ fn do_symlink_item(
             .unwrap_or("skill"),
         Uuid::new_v4()
     ));
-    create_dir_symlink(&source_real, &tmp)?;
+    if let Err(err) = create_dir_symlink(&source_real, &tmp) {
+        return Err(restore_after_failed_replace(
+            db,
+            history_id,
+            &backup_path,
+            &target,
+            err,
+        ));
+    }
     if let Err(err) = fs::rename(&tmp, &target) {
         let _ = fs::remove_file(&tmp);
-        return Err(err.into());
+        return Err(restore_after_failed_replace(
+            db,
+            history_id,
+            &backup_path,
+            &target,
+            err.into(),
+        ));
     }
     Ok(ExecuteOutcome {
         before_hash,
@@ -2261,7 +2277,12 @@ fn do_symlink_item(
     })
 }
 
-fn do_copy_item(db: &Connection, backup_root: &Path, item: &Value) -> AppResult<ExecuteOutcome> {
+fn do_copy_item(
+    db: &Connection,
+    history_id: i64,
+    backup_root: &Path,
+    item: &Value,
+) -> AppResult<ExecuteOutcome> {
     let source = value_path(item, "sourceRealPath")?;
     let target = value_path(item, "targetPath")?;
     let source_real = fs::canonicalize(&source)?;
@@ -2282,7 +2303,7 @@ fn do_copy_item(db: &Connection, backup_root: &Path, item: &Value) -> AppResult<
     let mut backup_path = None;
     let mut before_hash = None;
     if target.exists() || is_broken_symlink(&target) {
-        let backup = create_sync_backup(backup_root, &target, item)?;
+        let backup = create_sync_backup(db, history_id, backup_root, &target, item)?;
         before_hash = hash_skill_md(Path::new(&backup)).ok();
         backup_path = Some(backup);
     }
@@ -2297,17 +2318,38 @@ fn do_copy_item(db: &Connection, backup_root: &Path, item: &Value) -> AppResult<
             .unwrap_or("skill"),
         Uuid::new_v4()
     ));
-    copy_tree(&source_real, &tmp)?;
+    if let Err(err) = copy_tree(&source_real, &tmp) {
+        let _ = fs::remove_dir_all(&tmp);
+        return Err(restore_after_failed_replace(
+            db,
+            history_id,
+            &backup_path,
+            &target,
+            err,
+        ));
+    }
     if let Some(expected) = item.get("sourceHash").and_then(Value::as_str) {
         let copied_hash = hash_skill_md(&tmp)?;
         if copied_hash != expected {
             let _ = fs::remove_dir_all(&tmp);
-            return Err(AppError::new("COPY_VERIFY_FAILED", "copy hash mismatch"));
+            return Err(restore_after_failed_replace(
+                db,
+                history_id,
+                &backup_path,
+                &target,
+                AppError::new("COPY_VERIFY_FAILED", "copy hash mismatch"),
+            ));
         }
     }
     if let Err(err) = fs::rename(&tmp, &target) {
         let _ = fs::remove_dir_all(&tmp);
-        return Err(err.into());
+        return Err(restore_after_failed_replace(
+            db,
+            history_id,
+            &backup_path,
+            &target,
+            err.into(),
+        ));
     }
     Ok(ExecuteOutcome {
         before_hash,
@@ -2427,7 +2469,41 @@ fn reassert_target_in_platform(db: &Connection, item: &Value) -> AppResult<()> {
     }
 }
 
-fn create_sync_backup(backup_root: &Path, src: &Path, item: &Value) -> AppResult<String> {
+fn restore_after_failed_replace(
+    db: &Connection,
+    history_id: i64,
+    backup_path: &Option<String>,
+    target: &Path,
+    original: AppError,
+) -> AppError {
+    let Some(backup) = backup_path else {
+        return original;
+    };
+    match restore_sync_backup(Path::new(backup), target) {
+        Ok(_) => {
+            let _ = db.execute(
+                "UPDATE sync_history SET backup_path = NULL WHERE id = ?1",
+                params![history_id],
+            );
+            original
+        }
+        Err(restore_err) => AppError::new(
+            "SYNC_RECOVERY_FAILED",
+            format!(
+                "{}; restoring backup failed: {}",
+                original.message, restore_err.message
+            ),
+        ),
+    }
+}
+
+fn create_sync_backup(
+    db: &Connection,
+    history_id: i64,
+    backup_root: &Path,
+    src: &Path,
+    item: &Value,
+) -> AppResult<String> {
     fs::create_dir_all(backup_root)?;
     let platform = item
         .get("targetPlatformId")
@@ -2447,24 +2523,41 @@ fn create_sync_backup(backup_root: &Path, src: &Path, item: &Value) -> AppResult
         })
         .collect::<String>();
     let dest = backup_root.join(format!("{}_{}_{}", now_ms(), platform, skill));
+    let dest_string = dest.to_string_lossy().to_string();
+    db.execute(
+        "UPDATE sync_history SET backup_path = ?1 WHERE id = ?2",
+        params![dest_string, history_id],
+    )?;
     match fs::rename(src, &dest) {
-        Ok(_) => return Ok(dest.to_string_lossy().to_string()),
+        Ok(_) => return Ok(dest_string),
         Err(_) => {
-            let meta = fs::symlink_metadata(src)?;
-            if meta.file_type().is_symlink() {
-                let link = fs::read_link(src)?;
-                create_dir_symlink(&link, &dest)?;
-                fs::remove_file(src)?;
-            } else if meta.is_dir() {
-                copy_tree(src, &dest)?;
-                fs::remove_dir_all(src)?;
-            } else {
-                fs::copy(src, &dest)?;
-                fs::remove_file(src)?;
+            let backup_result: AppResult<()> = (|| {
+                let meta = fs::symlink_metadata(src)?;
+                if meta.file_type().is_symlink() {
+                    let link = fs::read_link(src)?;
+                    create_dir_symlink(&link, &dest)?;
+                    fs::remove_file(src)?;
+                } else if meta.is_dir() {
+                    copy_tree(src, &dest)?;
+                    fs::remove_dir_all(src)?;
+                } else {
+                    fs::copy(src, &dest)?;
+                    fs::remove_file(src)?;
+                }
+                Ok(())
+            })();
+            if let Err(err) = backup_result {
+                if !path_exists_lstat(&dest) {
+                    let _ = db.execute(
+                        "UPDATE sync_history SET backup_path = NULL WHERE id = ?1",
+                        params![history_id],
+                    );
+                }
+                return Err(err);
             }
         }
     }
-    Ok(dest.to_string_lossy().to_string())
+    Ok(dest_string)
 }
 
 fn create_dir_symlink(source: &Path, link: &Path) -> AppResult<()> {
@@ -2535,6 +2628,44 @@ pub(crate) fn recover_pending_history(conn: &Connection) -> AppResult<usize> {
         params![cutoff],
     )?;
     Ok(changed)
+}
+
+pub(crate) fn recover_pending_backups(conn: &Connection) -> AppResult<usize> {
+    let cutoff = now_ms() - 30_000;
+    let mut stmt = conn.prepare(
+        "SELECT id, to_path, backup_path FROM sync_history
+         WHERE message = '_pending_'
+           AND success = 0
+           AND backup_path IS NOT NULL
+           AND to_path IS NOT NULL
+           AND created_at <= ?1",
+    )?;
+    let rows = stmt.query_map(params![cutoff], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let rows = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    let mut recovered = 0;
+    for row in rows {
+        let (id, target, backup) = row;
+        let target = PathBuf::from(target);
+        let backup = PathBuf::from(backup);
+        if path_exists_lstat(&backup) && !path_exists_lstat(&target) {
+            restore_sync_backup(&backup, &target)?;
+            conn.execute(
+                "UPDATE sync_history
+                 SET message = '_recovered_backup_', backup_path = NULL
+                 WHERE id = ?1",
+                params![id],
+            )?;
+            recovered += 1;
+        }
+    }
+    Ok(recovered)
 }
 
 pub(crate) fn backup_retention_days(conn: &Connection) -> AppResult<i64> {
@@ -2806,13 +2937,91 @@ mod tests {
             "targetPath": outside_root.join("copy-source").to_string_lossy(),
         });
 
-        let err = match do_copy_item(&conn, &root.join("backups"), &item) {
+        let err = match do_copy_item(&conn, 0, &root.join("backups"), &item) {
             Ok(_) => panic!("copy should reject a target outside the platform root"),
             Err(err) => err,
         };
 
         assert_eq!(err.code, "TARGET_OUTSIDE_ROOT");
         assert!(!outside_root.join("copy-source").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn copy_failure_restores_existing_target_and_clears_backup_path() {
+        let conn = sync_conn();
+        let root = temp_dir("copy-restore");
+        let platform_root = root.join("platform");
+        fs::create_dir_all(&platform_root).unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir) VALUES ('shared', 'Shared', ?1)",
+            params![platform_root.to_string_lossy()],
+        )
+        .unwrap();
+        let source = write_skill(&root, "source", "copy-source");
+        let target = write_skill(&platform_root, "target", "target-original");
+        let item = json!({
+            "skillName": "copy-source",
+            "skillId": "skill-1",
+            "sourceRealPath": source.to_string_lossy(),
+            "sourceDev": 0,
+            "sourceIno": 0,
+            "sourceHash": "deliberately-wrong-hash",
+            "targetPlatformId": "shared",
+            "targetPath": target.to_string_lossy(),
+        });
+        let history_id = insert_pending_history(&conn, &item, "{}").unwrap();
+
+        let err = match do_copy_item(&conn, history_id, &root.join("backups"), &item) {
+            Ok(_) => panic!("copy should fail hash verification"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code, "COPY_VERIFY_FAILED");
+        let restored = fs::read_to_string(target.join("SKILL.md")).unwrap();
+        assert!(restored.contains("name: target-original"));
+        let backup_path: Option<String> = conn
+            .query_row(
+                "SELECT backup_path FROM sync_history WHERE id = ?1",
+                params![history_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(backup_path.is_none());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn recover_pending_backups_restores_missing_target_before_marking_interrupted() {
+        let conn = sync_conn();
+        let root = temp_dir("pending-backup");
+        let target = root.join("target");
+        let backup = write_skill(&root, "backup", "pending-backup");
+        conn.execute(
+            "INSERT INTO sync_history
+             (skill_id, action, to_path, backup_path, success, message, created_at)
+             VALUES ('skill-1', 'symlink_replace', ?1, ?2, 0, '_pending_', ?3)",
+            params![
+                target.to_string_lossy(),
+                backup.to_string_lossy(),
+                now_ms() - 60_000
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(recover_pending_backups(&conn).unwrap(), 1);
+
+        assert!(target.join("SKILL.md").exists());
+        assert!(!backup.exists());
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT message, backup_path FROM sync_history WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "_recovered_backup_");
+        assert!(row.1.is_none());
         fs::remove_dir_all(root).ok();
     }
 

@@ -86,6 +86,7 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
     let paths = AppPaths::new(app_data)?;
     let db = db::init_pool(&paths.db_path)?;
     if let Ok(conn) = db.get() {
+        let _ = commands::recover_pending_backups(&conn);
         let _ = commands::recover_pending_history(&conn);
         if let Ok(days) = commands::backup_retention_days(&conn) {
             let _ = commands::cleanup_old_backups(&conn, &paths.backup_root, days);
