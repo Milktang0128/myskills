@@ -1277,7 +1277,7 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
     Ok(result)
 }
 
-fn execute_sync_items(
+pub(crate) fn execute_sync_items(
     db: &Connection,
     backup_root: &Path,
     items: Vec<Value>,

@@ -26,6 +26,11 @@ Automated checks already available:
   `npm run smoke:tauri:dmg -- --fixture-smoke` launch the packaged app with
   disposable platform fixtures, force an internal temporary app data directory,
   run a real startup scan, and verify the resulting SQLite rows.
+- `npm run smoke:tauri:launch -- --sync-smoke` and
+  `npm run smoke:tauri:dmg -- --sync-smoke` additionally execute a safe
+  copy-to-canonical replacement from the disposable fixtures and verify
+  `sync_history.backup_path` points inside the temporary
+  `myskills-tauri-preview/backups` directory.
 - `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
   Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
   build, and packaged fixture smoke across macOS, Linux, and Windows preview
@@ -69,18 +74,18 @@ Important caveat:
 |---|---|---:|---|
 | Electron freeze line | `release/electron-v0.1.x` remains separate from `tauri/refactor-v0.2` | pass | No Electron files need to change for this smoke. |
 | Preview identity | Packaged app uses `com.kanbenzhi.myskills.tauri-preview` | pass | Verified from app state and `Info.plist`. |
-| Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | partial | DB path observed in Settings; destructive sync backup paths still need workflow proof. |
+| Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | pass | Settings observed the preview DB path; packaged app/DMG sync smoke proves destructive backup writes land under temporary `myskills-tauri-preview/backups`; `AppPaths` creates `staging/` under the same preview data root. |
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
 | Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test and packaged app/DMG fixture smoke cover real scanner to Library DB, platform filter, disabled scope, parser-error reporting, scan run, and stats; visual List/Kanban UI smoke still pending. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
 | Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | partial | Rust fixture test covers symlink_create, skip/same_hash, symlink_replace, conflict/target_exists_file, token generation, and operation naming; packaged confirm dialog still pending. |
-| Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; symlink packaged UI workflow still pending. |
+| Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; packaged app/DMG sync smoke proves copy replacement backup path isolation; symlink packaged UI workflow still pending. |
 | History | Sync history and rollback flow work from packaged app | partial | Rust workflow test verifies success history rows and rollback marker update; packaged History UI still pending. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
-| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, and verifies SQLite results. |
+| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture/sync smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, executes a safe copy sync, and verifies SQLite/backup results. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |
 | Linux preview | Build and launch smoke on Linux runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke under `xvfb-run` on `ubuntu-24.04`; activation needs a token with `workflow` scope, then first green runner result. |
@@ -124,8 +129,10 @@ Useful commands:
 npm run smoke:tauri:fixtures
 npm run smoke:tauri:launch
 npm run smoke:tauri:launch -- --fixture-smoke
+npm run smoke:tauri:launch -- --sync-smoke
 npm run smoke:tauri:dmg
 npm run smoke:tauri:dmg -- --fixture-smoke
+npm run smoke:tauri:dmg -- --sync-smoke
 npm run smoke:tauri:migration
 ```
 

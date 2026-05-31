@@ -10,13 +10,16 @@ const previewDirName = 'myskills-tauri-preview';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 
 function parseArgs(argv) {
-  const args = { dmg: '', fixtureSmoke: false };
+  const args = { dmg: '', fixtureSmoke: false, syncSmoke: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--dmg') {
       args.dmg = argv[++i] ?? '';
     } else if (arg === '--fixture-smoke') {
       args.fixtureSmoke = true;
+    } else if (arg === '--sync-smoke') {
+      args.fixtureSmoke = true;
+      args.syncSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -89,7 +92,7 @@ function createFixtures(tempRoot) {
   return JSON.parse(result.stdout);
 }
 
-function inspectFixtureDb(dbPath, manifest) {
+function inspectFixtureDb(dbPath, manifest, options = {}) {
   if (!fs.existsSync(dbPath)) return null;
   try {
     const platformRows = queryJson(dbPath, 'SELECT id, skills_dir FROM platforms');
@@ -109,15 +112,29 @@ function inspectFixtureDb(dbPath, manifest) {
     if (!scan) return null;
     const errors = JSON.parse(scan.errorsJson || '[]');
     const errorKinds = new Set(errors.map((error) => error.kind));
+    const expectedNewSkills = options.syncSmoke ? 0 : 4;
     if (
       totalSkills !== 4 ||
       disabledLocations !== 1 ||
       scan.totalFound !== 7 ||
-      scan.newSkills !== 4 ||
+      scan.newSkills !== expectedNewSkills ||
       !errorKinds.has('missing_frontmatter') ||
       (manifest.expected.brokenLink.length > 0 && !errorKinds.has('broken_symlink'))
     ) {
       return null;
+    }
+    let syncBackupPath = null;
+    if (options.syncSmoke) {
+      const syncRow = queryJson(
+        dbPath,
+        "SELECT backup_path AS backupPath, success FROM sync_history WHERE op_group_id = 'internal-smoke-sync' ORDER BY id DESC LIMIT 1",
+      )[0];
+      if (!syncRow || syncRow.success !== 1 || !syncRow.backupPath) return null;
+      const expectedBackupRoot = path.join(path.dirname(dbPath), 'backups');
+      if (!syncRow.backupPath.startsWith(expectedBackupRoot) || !fs.existsSync(syncRow.backupPath)) {
+        return null;
+      }
+      syncBackupPath = syncRow.backupPath;
     }
     return {
       totalSkills,
@@ -126,6 +143,7 @@ function inspectFixtureDb(dbPath, manifest) {
       newSkills: scan.newSkills,
       updatedSkills: scan.updatedSkills,
       errorKinds: [...errorKinds].sort(),
+      ...(syncBackupPath ? { syncBackupPath } : {}),
     };
   } catch {
     return null;
@@ -188,6 +206,9 @@ try {
   if (manifest) {
     env.MYSKILLS_INTERNAL_SMOKE_FIXTURE_MANIFEST = path.join(manifest.root, 'manifest.json');
   }
+  if (args.syncSmoke) {
+    env.MYSKILLS_INTERNAL_SMOKE_SYNC = '1';
+  }
   const child = spawn(binary, [], {
     cwd: root,
     env,
@@ -209,7 +230,7 @@ try {
   let fixtureResult = null;
   const dbReady = waitFor(() => {
     if (!manifest) return fs.existsSync(dbPath);
-    fixtureResult = inspectFixtureDb(dbPath, manifest);
+    fixtureResult = inspectFixtureDb(dbPath, manifest, { syncSmoke: args.syncSmoke });
     return Boolean(fixtureResult);
   }, timeoutMs).then((ok) => (ok ? { dbReady: true } : { dbReady: false }));
   const result = await Promise.race([exitedEarly, dbReady]);

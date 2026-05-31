@@ -8,7 +8,8 @@ mod scanner;
 mod state;
 
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
+use sha2::Digest;
 use std::path::Path;
 use tauri::Manager;
 
@@ -102,6 +103,11 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         if let Some(scan) = apply_internal_smoke_fixture(&conn)? {
             last_scan = Some(scan);
         }
+        if std::env::var("MYSKILLS_INTERNAL_SMOKE_SYNC").is_ok() {
+            run_internal_smoke_sync(&conn, &paths.backup_root)?;
+            let scan = scanner::scan_all(&conn)?;
+            last_scan = Some(scan);
+        }
     }
     let _manager = SqliteConnectionManager::file(&paths.db_path);
     Ok(AppState {
@@ -159,4 +165,79 @@ fn apply_internal_smoke_fixture(
         )?;
     }
     scanner::scan_all(conn).map(Some)
+}
+
+fn run_internal_smoke_sync(conn: &rusqlite::Connection, backup_root: &Path) -> AppResult<()> {
+    let Some((skill_id, source_path, target_path, source_hash)) = conn
+        .query_row(
+            "SELECT s.id, source.real_path, target.install_path, source.content_hash
+             FROM skills s
+             JOIN skill_locations source ON source.skill_id = s.id AND source.platform_id = 'claude' AND source.is_disabled = 0
+             JOIN skill_locations target ON target.skill_id = s.id AND target.platform_id = 'shared' AND target.is_disabled = 0
+             WHERE s.name = 'fixture-stale'
+             LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Err(crate::error::AppError::new(
+            "SMOKE_SYNC_FAILED",
+            "fixture-stale shared/claude locations were not found",
+        ));
+    };
+    let source_hash = source_hash.unwrap_or_else(|| hash_skill_md(Path::new(&source_path)));
+    let item = serde_json::json!({
+        "skillName": "fixture-stale",
+        "skillId": skill_id,
+        "opGroupId": "internal-smoke-sync",
+        "targetBasename": "fixture-stale",
+        "sourcePlatformId": "claude",
+        "sourceLocationId": -1,
+        "sourceRealPath": source_path,
+        "sourceDev": 0,
+        "sourceIno": 0,
+        "sourceHash": source_hash,
+        "targetPlatformId": "shared",
+        "targetPath": target_path,
+        "targetHash": serde_json::Value::Null,
+        "mode": "copy",
+        "action": "copy_to_canonical"
+    });
+    let result = commands::execute_sync_items(
+        conn,
+        backup_root,
+        vec![item],
+        "{\"operation\":\"internal_smoke_sync\"}",
+    )?;
+    let applied = result
+        .get("applied")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let failed = result
+        .get("failed")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if applied != 1 || failed != 0 {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_SYNC_FAILED",
+            "internal smoke sync did not apply exactly one copy operation",
+            result,
+        ));
+    }
+    Ok(())
+}
+
+fn hash_skill_md(skill_dir: &Path) -> String {
+    let raw = std::fs::read(skill_dir.join("SKILL.md")).unwrap_or_default();
+    hex::encode(sha2::Sha256::digest(raw))
 }
