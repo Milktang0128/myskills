@@ -13,6 +13,7 @@ import {
   History as HistoryIcon,
   Grid3x3,
   Globe,
+  EyeOff,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -87,10 +88,15 @@ export function Sidebar({
       // because it keys rows by skill name. Keep until consolidation tooling exists.
       { scope: 'duplicate', label: t('sidebar.duplicates'), count: stats?.duplicates, icon: <CopyIcon className="h-4 w-4" />, tone: 'warn' },
       { scope: 'unscenarized', label: t('sidebar.unscenarized'), count: stats?.unscenarized, icon: <HelpCircle className="h-4 w-4" />, tone: 'muted' },
-      // Removed:
-      //   - 'broken': redundant with matrix's Broken chip + detail drawer's location list.
-      //   - 'disabled': there is no enable/disable action yet, so the row is read-only dead UI.
-      //     Re-add when the action is implemented.
+      // Only show the Disabled bucket when something's actually in it —
+      // an always-on row reading "Disabled 0" is noise for the common case
+      // where the user has never disabled anything. The per-location toggle
+      // lives in the skill-detail drawer; this is the find-them-again view.
+      ...(stats?.disabledSkills
+        ? [{ scope: 'disabled' as const, label: t('sidebar.disabled'), count: stats.disabledSkills, icon: <EyeOff className="h-4 w-4" />, tone: 'muted' as const }]
+        : []),
+      // 'broken' intentionally omitted: redundant with matrix's Broken chip
+      // + detail drawer's per-location list.
     ],
     [stats, t],
   );

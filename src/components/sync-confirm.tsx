@@ -8,6 +8,8 @@ import {
   Copy as CopyIcon,
   Replace,
   Undo2,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import type {
   PlatformId,
@@ -57,7 +59,12 @@ export function SyncConfirm({
   if (!plan) return null;
 
   const writeItems = plan.items.filter(
-    (i) => i.action === 'symlink_create' || i.action === 'symlink_replace' || i.action === 'copy_to_canonical',
+    (i) =>
+      i.action === 'symlink_create' ||
+      i.action === 'symlink_replace' ||
+      i.action === 'copy_to_canonical' ||
+      i.action === 'disable' ||
+      i.action === 'enable',
   );
   const skipItems = plan.items.filter((i) => i.action === 'skip');
   const conflictItems = plan.items.filter((i) => i.action === 'conflict');
@@ -70,10 +77,18 @@ export function SyncConfirm({
   const title =
     plan.operation === 'promote_to_canonical'
       ? t('syncConfirm.title.promote')
+      : plan.operation === 'disable'
+      ? t('syncConfirm.title.disable')
+      : plan.operation === 'enable'
+      ? t('syncConfirm.title.enable')
       : t('syncConfirm.title.fromCanonical');
   const subtitle =
     plan.operation === 'promote_to_canonical'
       ? t('syncConfirm.subtitle.promoteFull', { platform: canonicalPlatform })
+      : plan.operation === 'disable'
+      ? t('syncConfirm.subtitle.disable')
+      : plan.operation === 'enable'
+      ? t('syncConfirm.subtitle.enable')
       : t('syncConfirm.subtitle.fromCanonical', { platform: canonicalPlatform });
 
   async function apply() {
@@ -201,13 +216,20 @@ function ItemRow({ item }: { item: SyncPlanItem }) {
   const t = useT();
   const Icon = iconFor(item);
   const tone = toneFor(item);
+  // A disable/enable move stays on one platform — show a single badge instead
+  // of the "source → target" pair that would read as "claude → claude".
+  const isMove = item.action === 'disable' || item.action === 'enable';
   return (
     <div>
       <div className="flex items-center gap-2 text-xs">
         <Icon className={cn('h-3.5 w-3.5 shrink-0', tone)} />
         <PlatformBadge platformId={item.sourcePlatformId} />
-        <span className="text-muted-foreground">→</span>
-        <PlatformBadge platformId={item.targetPlatformId} />
+        {!isMove && (
+          <>
+            <span className="text-muted-foreground">→</span>
+            <PlatformBadge platformId={item.targetPlatformId} />
+          </>
+        )}
         <span className={cn('text-[11px]', tone)}>{labelFor(item, t)}</span>
       </div>
       {(item.action === 'symlink_create' ||
@@ -215,6 +237,11 @@ function ItemRow({ item }: { item: SyncPlanItem }) {
         item.action === 'copy_to_canonical') && (
         <div className="mt-0.5 font-mono text-[10px] text-muted-foreground break-all pl-5">
           {item.targetPath} ← {item.sourceRealPath}
+        </div>
+      )}
+      {isMove && (
+        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground break-all pl-5">
+          {item.sourceRealPath} → {item.targetPath}
         </div>
       )}
       {item.action === 'conflict' && item.reason && (
@@ -232,6 +259,10 @@ function iconFor(item: SyncPlanItem) {
       return Replace;
     case 'copy_to_canonical':
       return CopyIcon;
+    case 'disable':
+      return EyeOff;
+    case 'enable':
+      return Eye;
     case 'skip':
       return Check;
     case 'conflict':
@@ -248,6 +279,10 @@ function toneFor(item: SyncPlanItem): string {
       return 'text-amber-600';
     case 'copy_to_canonical':
       return 'text-purple-600';
+    case 'disable':
+      return 'text-muted-foreground';
+    case 'enable':
+      return 'text-emerald-600';
     case 'skip':
       return 'text-emerald-600';
     case 'conflict':
@@ -264,6 +299,10 @@ function labelFor(item: SyncPlanItem, t: ReturnType<typeof useT>): string {
       return t('syncConfirm.action.backupSymlink');
     case 'copy_to_canonical':
       return t('syncConfirm.action.copyToCanonical');
+    case 'disable':
+      return t('syncConfirm.action.disable');
+    case 'enable':
+      return t('syncConfirm.action.enable');
     case 'skip':
       return item.reason === 'already_linked'
         ? t('syncConfirm.action.alreadyLinked')
@@ -299,6 +338,12 @@ function reasonExplain(reason: string, t: ReturnType<typeof useT>): string {
       return t('syncConfirm.reason.source_has_symlink');
     case 'case_collision':
       return t('syncConfirm.reason.case_collision');
+    case 'canonical_has_dependents':
+      return t('syncConfirm.reason.canonical_has_dependents');
+    case 'already_disabled':
+      return t('syncConfirm.reason.already_disabled');
+    case 'already_enabled':
+      return t('syncConfirm.reason.already_enabled');
     default:
       return reason;
   }

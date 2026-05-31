@@ -123,6 +123,9 @@ export interface AppStats {
   brokenSymlinks: number;
   duplicates: number;
   unscenarized: number;
+  /** Skills with at least one location but zero *live* (non-disabled) ones —
+   *  i.e. fully hidden from every agent. Drives the sidebar "Disabled" badge. */
+  disabledSkills: number;
   dbPath: string;
   lastScanAt: number | null;
 }
@@ -271,6 +274,13 @@ export type SyncAction =
   | 'symlink_create'           // create a symlink at target (target is absent or broken)
   | 'symlink_replace'          // backup existing target dir, then symlink_create
   | 'copy_to_canonical'        // copy source dir into canonical (promote step 1)
+  // Enable/disable a single location by moving its folder between the
+  // platform's live dir and its `.disabled/` subdir. The agent tool reads
+  // only the live dir, so this is how a skill is hidden from / restored to
+  // an agent without deleting it. Pure rename — no content change, fully
+  // reversible (the move itself is the "backup").
+  | 'disable'                  // move <platform>/<name>/ → <platform>/.disabled/<name>/
+  | 'enable'                   // move <platform>/.disabled/<name>/ → <platform>/<name>/
   | 'skip'                     // already in sync — no FS change
   | 'conflict';                // user must resolve manually before execute
 
@@ -300,7 +310,18 @@ export type SyncConflictReason =
    * create would case-fold onto the existing inode and clobber it without
    * a backup. We refuse the plan instead.
    */
-  | 'case_collision';
+  | 'case_collision'
+  /**
+   * Disable target is a *real directory* that one or more live symlinks on
+   * other platforms point at. Moving it into `.disabled/` would orphan those
+   * symlinks (the scanner drops broken links, even inside `.disabled/`). The
+   * user must disable the dependent platforms first, then this one.
+   */
+  | 'canonical_has_dependents'
+  /** Disable requested but the location is already in `.disabled/`. */
+  | 'already_disabled'
+  /** Enable requested but the location is already live. */
+  | 'already_enabled';
 
 export type SyncSkipReason = 'already_linked' | 'same_hash';
 
@@ -346,7 +367,7 @@ export interface SyncPlan {
   /** Used to drop expired plans. */
   expiresAt: number;
   /** The intended high-level user operation, for telemetry/UI. */
-  operation: 'sync_from_canonical' | 'promote_to_canonical';
+  operation: 'sync_from_canonical' | 'promote_to_canonical' | 'disable' | 'enable';
   items: SyncPlanItem[];
 }
 

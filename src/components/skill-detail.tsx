@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Crown, Link2, AlertTriangle, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
+import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
   Scenario,
@@ -108,6 +108,17 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
     setBusy(true);
     try {
       const plan = await api.sync.planPromote([{ skillId, sourceLocationId: loc.id }]);
+      setPendingPlan(plan);
+      setPlanOpen(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggleDisabled(loc: SkillLocation, disable: boolean) {
+    setBusy(true);
+    try {
+      const plan = await api.sync.planToggleDisabled([{ skillId, locationId: loc.id, disable }]);
       setPendingPlan(plan);
       setPlanOpen(true);
     } finally {
@@ -294,16 +305,34 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
               {/* Canonical-first ordering comes from the backend
                   (electron/ipc/skills.ts ORDER BY clause), so we render the
                   array as-is — no client-side sort needed here. */}
-              {skill.locations.map((loc) => (
-                <LocationRow
-                  key={loc.id}
-                  loc={loc}
-                  isCanonical={loc.platformId === canonicalPlatform}
-                  canonicalHash={canonicalHash}
-                  onAdopt={() => handleAdopt(loc)}
-                  busy={busy}
-                />
-              ))}
+              {skill.locations.map((loc) => {
+                // A live real-dir location is "depended on" when some other
+                // live location is a symlink resolving to the same realpath.
+                // Disabling it would orphan those links, so the button is
+                // blocked client-side (the backend refuses too, as a backstop).
+                const hasDependents =
+                  !loc.isSymlink &&
+                  !loc.isDisabled &&
+                  skill.locations.some(
+                    (o) =>
+                      o.id !== loc.id &&
+                      !o.isDisabled &&
+                      o.isSymlink &&
+                      o.realPath === loc.realPath,
+                  );
+                return (
+                  <LocationRow
+                    key={loc.id}
+                    loc={loc}
+                    isCanonical={loc.platformId === canonicalPlatform}
+                    canonicalHash={canonicalHash}
+                    onAdopt={() => handleAdopt(loc)}
+                    onToggleDisabled={(disable) => handleToggleDisabled(loc, disable)}
+                    hasDependents={hasDependents}
+                    busy={busy}
+                  />
+                );
+              })}
             </div>
           </section>
 
@@ -355,12 +384,16 @@ function LocationRow({
   isCanonical,
   canonicalHash,
   onAdopt,
+  onToggleDisabled,
+  hasDependents,
   busy,
 }: {
   loc: SkillLocation;
   isCanonical: boolean;
   canonicalHash: string | null;
   onAdopt: () => void;
+  onToggleDisabled: (disable: boolean) => void;
+  hasDependents: boolean;
   busy: boolean;
 }) {
   const t = useT();
@@ -511,6 +544,34 @@ function LocationRow({
               {t('detail.loc.adoptBtn')}
             </Button>
           )}
+          {/* Enable/disable toggle. Broken-symlink rows are skipped — there's
+              nothing meaningful to hide/restore. */}
+          {!loc.isBrokenSymlink &&
+            (loc.isDisabled ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => onToggleDisabled(false)}
+                disabled={busy}
+                title={t('detail.loc.enableTitle')}
+              >
+                <Eye className="mr-1 h-3 w-3" />
+                {t('detail.loc.enableBtn')}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-2 text-[11px]"
+                onClick={() => onToggleDisabled(true)}
+                disabled={busy || hasDependents}
+                title={hasDependents ? t('detail.loc.disableBlockedTitle') : t('detail.loc.disableTitle')}
+              >
+                <EyeOff className="mr-1 h-3 w-3" />
+                {t('detail.loc.disableBtn')}
+              </Button>
+            ))}
         </div>
       </div>
       <div className="mt-2 space-y-0.5 font-mono text-[10px] text-muted-foreground">

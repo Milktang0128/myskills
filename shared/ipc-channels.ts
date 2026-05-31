@@ -47,6 +47,12 @@ export const IPC = {
   },
   sync: {
     plan: 'sync:plan',
+    /**
+     * Plan an enable/disable toggle for one or more skill locations. Produces
+     * a SyncPlan of move items (folder ⇄ `.disabled/`) that the user confirms
+     * and runs through the same sync:execute / sync:rollback path as sync.
+     */
+    planToggleDisabled: 'sync:planToggleDisabled',
     execute: 'sync:execute',
     history: 'sync:history',
     rollback: 'sync:rollback',

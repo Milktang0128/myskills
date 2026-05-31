@@ -60,6 +60,14 @@ function stats(): AppStats {
   const unscenarized = (db
     .prepare('SELECT COUNT(*) AS c FROM skills WHERE id NOT IN (SELECT skill_id FROM skill_scenarios)')
     .get() as { c: number }).c;
+  // Fully-disabled skills: have at least one location, but none of them live.
+  const disabledSkills = (db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM skills s
+       WHERE EXISTS (SELECT 1 FROM skill_locations WHERE skill_id = s.id)
+         AND NOT EXISTS (SELECT 1 FROM skill_locations WHERE skill_id = s.id AND is_disabled = 0)`,
+    )
+    .get() as { c: number }).c;
   const lastScanRow = db
     .prepare('SELECT finished_at FROM scan_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1')
     .get() as { finished_at: number } | undefined;
@@ -71,6 +79,7 @@ function stats(): AppStats {
     brokenSymlinks,
     duplicates,
     unscenarized,
+    disabledSkills,
     dbPath: getDbPath(),
     lastScanAt: lastScanRow?.finished_at ?? null,
   };
