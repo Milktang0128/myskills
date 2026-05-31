@@ -668,6 +668,10 @@ pub fn scenarios_remove_skill(
 pub fn scenarios_export(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
+    scenarios_export_response(&db)
+}
+
+fn scenarios_export_response(db: &Connection) -> AppResult<Value> {
     let scenario_rows = db
         .prepare("SELECT id, key, name, description, color, icon FROM scenarios ORDER BY sort_order, name")?
         .query_map([], |r| {
@@ -713,18 +717,22 @@ pub fn scenarios_export(payload: Option<Value>, state: State<'_, AppState>) -> A
 #[tauri::command]
 pub fn scenarios_import(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let p = payload.ok_or_else(|| AppError::new("INVALID_INPUT", "export payload required"))?;
-    if p.get("version").and_then(Value::as_str) != Some("1") {
-        let version = p.get("version").cloned().unwrap_or(Value::Null);
+    let mut db = conn(&state)?;
+    scenarios_import_payload(&mut db, &p)
+}
+
+fn scenarios_import_payload(db: &mut Connection, payload: &Value) -> AppResult<Value> {
+    if payload.get("version").and_then(Value::as_str) != Some("1") {
+        let version = payload.get("version").cloned().unwrap_or(Value::Null);
         return Err(AppError::new(
             "UNSUPPORTED_VERSION",
             format!("version {version}"),
         ));
     }
-    let scenarios = p
+    let scenarios = payload
         .get("scenarios")
         .and_then(Value::as_array)
         .ok_or_else(|| AppError::new("INVALID_INPUT", "scenarios[] required"))?;
-    let mut db = conn(&state)?;
     let tx = db.transaction()?;
     let now = now_ms();
     let mut created = 0;
@@ -791,12 +799,11 @@ pub fn scenarios_import(payload: Option<Value>, state: State<'_, AppState>) -> A
                 )
                 .optional()?;
             if let Some(skill_id) = found {
-                let before = tx.changes();
-                tx.execute(
+                let inserted = tx.execute(
                     "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?1, ?2, ?3)",
                     params![skill_id, scenario_id, now],
                 )?;
-                if tx.changes() > before {
+                if inserted > 0 {
                     linked += 1;
                 }
             } else {
@@ -873,12 +880,11 @@ pub fn scenarios_create_from_cluster(
             skipped += 1;
             continue;
         }
-        let before = tx.changes();
-        tx.execute(
+        let inserted = tx.execute(
             "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?1, ?2, ?3)",
             params![id, scenario_id, now_ms()],
         )?;
-        if tx.changes() > before {
+        if inserted > 0 {
             linked += 1;
         } else {
             skipped += 1;
@@ -2914,6 +2920,12 @@ mod tests {
               mtime INTEGER,
               last_seen_at INTEGER NOT NULL
             );
+            CREATE TABLE skill_scenarios (
+              skill_id TEXT NOT NULL,
+              scenario_id INTEGER NOT NULL,
+              added_at INTEGER NOT NULL,
+              PRIMARY KEY (skill_id, scenario_id)
+            );
             INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared');
             INSERT INTO platforms (id, label, skills_dir, enabled, sort_order) VALUES
               ('shared', 'User Agents Folder', '/tmp/shared', 1, 0),
@@ -2933,6 +2945,17 @@ mod tests {
             params![id, name, format!("{id}-hash")],
         )
         .unwrap();
+    }
+
+    fn insert_test_scenario(conn: &Connection, key: &str, name: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO scenarios
+             (key, name, description, color, icon, sort_order, is_builtin, created_at)
+             VALUES (?1, ?2, 'desc', '#111111', 'tag', 10, 0, 1)",
+            params![key, name],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3307,6 +3330,87 @@ mod tests {
         assert_eq!(
             by_id["skill-disabled"]["hasCanonicalSource"].as_bool(),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn scenarios_export_import_round_trips_skill_links() {
+        let mut conn = coverage_conn();
+        insert_coverage_skill(&conn, "skill-1", "fixture-in-sync");
+        insert_coverage_skill(&conn, "skill-2", "fixture-stale");
+        let scenario_id = insert_test_scenario(&conn, "daily-work", "Daily Work");
+        conn.execute(
+            "INSERT INTO skill_scenarios (skill_id, scenario_id, added_at)
+             VALUES ('skill-1', ?1, 1)",
+            params![scenario_id],
+        )
+        .unwrap();
+
+        let exported = scenarios_export_response(&conn).unwrap();
+        assert_eq!(exported.get("version").and_then(Value::as_str), Some("1"));
+        assert_eq!(
+            exported["scenarios"][0]["skills"][0]["name"].as_str(),
+            Some("fixture-in-sync")
+        );
+
+        conn.execute("DELETE FROM skill_scenarios", []).unwrap();
+        conn.execute("DELETE FROM scenarios", []).unwrap();
+        let imported = scenarios_import_payload(&mut conn, &exported).unwrap();
+
+        assert_eq!(
+            imported.get("scenariosCreated").and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            imported.get("skillsLinked").and_then(Value::as_i64),
+            Some(1)
+        );
+        let restored_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM skill_scenarios", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(restored_count, 1);
+
+        let imported_again = scenarios_import_payload(&mut conn, &exported).unwrap();
+        assert_eq!(
+            imported_again
+                .get("scenariosMerged")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            imported_again.get("skillsLinked").and_then(Value::as_i64),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn scenarios_import_reports_missing_skills_without_failing() {
+        let mut conn = coverage_conn();
+        let payload = json!({
+            "version": "1",
+            "scenarios": [{
+                "key": "missing-skill",
+                "name": "Missing Skill",
+                "skills": [{ "name": "does-not-exist", "sourceKey": "local" }]
+            }]
+        });
+
+        let imported = scenarios_import_payload(&mut conn, &payload).unwrap();
+
+        assert_eq!(
+            imported.get("scenariosCreated").and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            imported.get("skillsLinked").and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(
+            imported
+                .get("skillsNotFound")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
         );
     }
 

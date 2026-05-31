@@ -55,7 +55,7 @@ Important caveat:
 | Library | List/Kanban/Coverage render with real scanned skills | pending | Need real scan fixture or seeded skill dirs. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
-| Scenarios | Create/edit/delete/import/export round trip | pending | Needs non-destructive fixture DB or temporary skill dirs. |
+| Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | pending | Must run against temporary platform dirs. |
 | Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | pending | Backend tests exist; packaged UI workflow not yet exercised. |
 | History | Sync history and rollback flow work from packaged app | pending | Depends on sync execute smoke. |
