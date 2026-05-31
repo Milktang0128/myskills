@@ -1351,12 +1351,261 @@ pub fn sync_history(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
 }
 
 #[tauri::command]
-pub fn sync_rollback(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
-    Err(AppError::new(
-        "NOT_IMPLEMENTED",
-        "sync rollback is not yet ported to Tauri",
-    ))
+pub fn sync_rollback(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let history_id = optional_i64(&payload, "historyId")
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "historyId required"))?;
+    let db = conn(&state)?;
+    let target: Option<(i64, Option<String>, i64, Option<i64>)> = db
+        .query_row(
+            "SELECT id, op_group_id, success, rolled_back_at FROM sync_history WHERE id = ?1",
+            params![history_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((id, op_group_id, success, rolled_back_at)) = target else {
+        return Err(AppError::new("NOT_FOUND", format!("history {history_id}")));
+    };
+    if success == 0 {
+        return Err(AppError::new(
+            "INVALID_STATE",
+            "cannot rollback a failed write",
+        ));
+    }
+    if rolled_back_at.is_some() {
+        return Err(AppError::new("INVALID_STATE", "already rolled back"));
+    }
+
+    let rows = rollback_rows(&db, id, op_group_id.as_deref())?;
+    let mark_time = now_ms();
+    let mut rolled_back = 0;
+    for row in &rows {
+        if let Err(err) = rollback_one_row(row) {
+            let _ = scanner::scan_all(&db).map(|scan| {
+                if let Ok(mut last) = state.last_scan.lock() {
+                    *last = Some(scan);
+                }
+            });
+            return Err(AppError::new(
+                err.code,
+                format!("Row {}: {}", row.id, err.message),
+            ));
+        }
+        db.execute(
+            "UPDATE sync_history SET rolled_back_at = ?1 WHERE id = ?2",
+            params![mark_time, row.id],
+        )?;
+        rolled_back += 1;
+    }
+    let scan = scanner::scan_all(&db)?;
+    if let Ok(mut last) = state.last_scan.lock() {
+        *last = Some(scan);
+    }
+    Ok(json!({ "ok": true, "rolledBack": rolled_back }))
+}
+
+struct RollbackRow {
+    id: i64,
+    action: String,
+    from_path: Option<String>,
+    to_path: Option<String>,
+    backup_path: Option<String>,
+}
+
+fn rollback_rows(
+    db: &Connection,
+    history_id: i64,
+    op_group_id: Option<&str>,
+) -> AppResult<Vec<RollbackRow>> {
+    if let Some(group) = op_group_id {
+        let mut stmt = db.prepare(
+            "SELECT id, action, from_path, to_path, backup_path
+             FROM sync_history
+             WHERE op_group_id = ?1 AND success = 1 AND rolled_back_at IS NULL
+             ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![group], rollback_row_from_sql)?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    } else {
+        let row = db.query_row(
+            "SELECT id, action, from_path, to_path, backup_path
+             FROM sync_history WHERE id = ?1",
+            params![history_id],
+            rollback_row_from_sql,
+        )?;
+        Ok(vec![row])
+    }
+}
+
+fn rollback_row_from_sql(r: &rusqlite::Row<'_>) -> rusqlite::Result<RollbackRow> {
+    Ok(RollbackRow {
+        id: r.get(0)?,
+        action: r.get(1)?,
+        from_path: r.get(2)?,
+        to_path: r.get(3)?,
+        backup_path: r.get(4)?,
+    })
+}
+
+fn rollback_one_row(row: &RollbackRow) -> AppResult<()> {
+    match row.action.as_str() {
+        "symlink_create" | "symlink_replace" => rollback_symlink_row(row),
+        "disable" | "enable" => rollback_move_row(row),
+        "copy_to_canonical" => rollback_copy_row(row),
+        action => Err(AppError::new(
+            "UNSUPPORTED",
+            format!("rollback for action={action} not implemented"),
+        )),
+    }
+}
+
+fn rollback_symlink_row(row: &RollbackRow) -> AppResult<()> {
+    let to = required_history_path(row.to_path.as_deref(), "to_path")?;
+    match fs::symlink_metadata(&to) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            if let Some(from) = &row.from_path {
+                let resolved = fs::canonicalize(&to).map_err(|_| {
+                    AppError::new(
+                        "UNSAFE",
+                        format!(
+                            "{} is a broken symlink - refusing to rollback",
+                            to.display()
+                        ),
+                    )
+                })?;
+                let expected = fs::canonicalize(from).unwrap_or_else(|_| PathBuf::from(from));
+                if resolved != expected {
+                    return Err(AppError::new(
+                        "UNSAFE",
+                        format!(
+                            "{} now points to {}, not {} - refusing to rollback",
+                            to.display(),
+                            resolved.display(),
+                            expected.display()
+                        ),
+                    ));
+                }
+            }
+            fs::remove_file(&to)?;
+        }
+        Ok(_) => {
+            return Err(AppError::new(
+                "UNSAFE",
+                format!(
+                    "{} is no longer a symlink - refusing to rollback",
+                    to.display()
+                ),
+            ));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    if let Some(backup) = &row.backup_path {
+        restore_sync_backup(Path::new(backup), &to)?;
+    }
+    Ok(())
+}
+
+fn rollback_move_row(row: &RollbackRow) -> AppResult<()> {
+    let from = required_history_path(row.from_path.as_deref(), "from_path")?;
+    let to = required_history_path(row.to_path.as_deref(), "to_path")?;
+    match fs::symlink_metadata(&to) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    }
+    if path_exists_lstat(&from) {
+        return Err(AppError::new(
+            "UNSAFE",
+            format!(
+                "{} already exists - refusing to reverse the move",
+                from.display()
+            ),
+        ));
+    }
+    if let Some(parent) = from.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(&to, &from)?;
+    Ok(())
+}
+
+fn rollback_copy_row(row: &RollbackRow) -> AppResult<()> {
+    let to = required_history_path(row.to_path.as_deref(), "to_path")?;
+    match fs::symlink_metadata(&to) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(AppError::new(
+                "UNSAFE",
+                format!(
+                    "{} is unexpectedly a symlink - refusing to rollback",
+                    to.display()
+                ),
+            ));
+        }
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(&to)?,
+        Ok(_) => fs::remove_file(&to)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    if let Some(backup) = &row.backup_path {
+        restore_sync_backup(Path::new(backup), &to)?;
+    }
+    Ok(())
+}
+
+fn required_history_path(value: Option<&str>, field: &str) -> AppResult<PathBuf> {
+    value
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| AppError::new("UNSAFE", format!("history row missing {field}")))
+}
+
+fn restore_sync_backup(backup: &Path, target: &Path) -> AppResult<()> {
+    if !path_exists_lstat(backup) {
+        return Err(AppError::new(
+            "BACKUP_MISSING",
+            format!("backup not found: {}", backup.display()),
+        ));
+    }
+    if path_exists_lstat(target) {
+        let conflict = target.with_file_name(format!(
+            "{}.myskills-conflict-{}",
+            target
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("target"),
+            Uuid::new_v4()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>()
+        ));
+        fs::rename(target, conflict)?;
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::rename(backup, target) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let meta = fs::symlink_metadata(backup)?;
+            if meta.file_type().is_symlink() {
+                let link = fs::read_link(backup)?;
+                create_dir_symlink(&link, target)?;
+                fs::remove_file(backup)?;
+            } else if meta.is_dir() {
+                copy_tree(backup, target)?;
+                fs::remove_dir_all(backup)?;
+            } else {
+                fs::copy(backup, target)?;
+                fs::remove_file(backup)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn path_exists_lstat(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 struct ExecuteOutcome {
