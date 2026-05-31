@@ -119,6 +119,8 @@ npm run smoke:tauri:dmg # mount the macOS DMG and verify preview DB init
 npm run smoke:tauri:fixtures # create temporary skill fixtures for desktop parity smoke
 npm run build       # Next.js static export
 npm run build:tauri # Tauri desktop bundle
+npm run build:tauri:mac:signed # local Developer ID signed macOS Tauri preview
+npm run notarize:tauri:mac # notarize, staple, and Gatekeeper-check the signed Tauri DMG
 ```
 
 Legacy Electron commands are kept under `*:electron:legacy` for the frozen `v0.1.x` line.

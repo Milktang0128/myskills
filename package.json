@@ -12,6 +12,8 @@
     "dev:electron": "wait-on tcp:4477 && cross-env NODE_ENV=development tsx electron/dev.ts",
     "build": "next build",
     "build:tauri": "tauri build",
+    "build:tauri:mac:signed": "tauri build --config src-tauri/tauri.macos.signing.conf.json",
+    "notarize:tauri:mac": "node scripts/notarize-tauri-macos.mjs",
     "check:commands": "node scripts/audit-tauri-commands.mjs",
     "check:rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
     "check:rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",

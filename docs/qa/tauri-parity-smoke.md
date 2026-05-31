@@ -1,6 +1,6 @@
 # MySkills Tauri Parity Smoke Matrix
 
-Date: 2026-05-31
+Date: 2026-06-01
 Branch: `tauri/refactor-v0.2`
 Scope: Tauri `v0.2.0-tauri.0` preview candidate
 
@@ -69,6 +69,11 @@ Automated checks already available:
   copied Electron DB import, backup path rewrite, rollback to
   `myskills.db.failed-*`, source DB immutability, and migration backup
   preservation.
+- `npm run build:tauri:mac:signed` signs the local macOS Tauri preview with
+  `Developer ID Application: Zhi Tang (LB8ZBRDP63)` and hardened runtime.
+- `npm run notarize:tauri:mac` submits the signed DMG through the
+  `myskills-notary` keychain profile, staples the ticket, validates it with
+  `xcrun stapler validate`, and checks Gatekeeper with `spctl`.
 - Rust fixture tests cover real scanner ingestion into the Library backend,
   including platform filtering, disabled-scope listing, parser errors, scan
   runs, and Settings stats.
@@ -114,7 +119,7 @@ Important caveat:
 | Discover | Keyword search, preview, staged install plan render | partial | Packaged frontend smoke clicks into Discover inside the real packaged WebView; workbench UI smoke verifies keyword results, installed badge, preview drawer, install target selection, staged install plan dialog, and offline fail-closed banner. Live network/catalog and OS-level external click automation are still pending. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; workbench UI smoke verifies provider/model save, API key write-only placeholder, feature toggles, connection-test result, AI settings surface, and Discover offline gate. Packaged UI smoke still pending. |
 | macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture/history smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, executes and rolls back a safe copy sync, and verifies SQLite/backup results. |
-| macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
+| macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pass | `build:tauri:mac:signed` produced a Developer ID signed app with hardened runtime; `notarize:tauri:mac` stapled the DMG; `spctl` accepted it as `source=Notarized Developer ID`; the notarized DMG then passed fixture/history/workflow/coverage/frontend smoke. |
 | Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |
 | Linux preview | Build and launch smoke on Linux runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke under `xvfb-run` on `ubuntu-24.04`; activation needs a token with `workflow` scope, then first green runner result. |
 | Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests and `smoke:tauri:migration` cover DB copy, markers, backup path rewrite, existing target refusal, invalid source schema rejection, rollback file moves, source immutability, and backup preservation. Stable first-launch enablement remains disabled for preview builds. |
@@ -173,6 +178,8 @@ npm run smoke:tauri:dmg -- --frontend-smoke
 npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
 npm run smoke:tauri:migration
 npm run smoke:ui:workbench
+npm run build:tauri:mac:signed
+npm run notarize:tauri:mac
 ```
 
 ## Release Decision
@@ -180,5 +187,5 @@ npm run smoke:ui:workbench
 Current state: `preview parity candidate`.
 
 Do not label the Tauri package as a stable replacement for Electron until all
-stable-gate rows are `pass`, including signed/notarized macOS validation and
-Windows/Linux runner validation if cross-platform support is advertised.
+stable-gate rows are `pass`, including Windows/Linux runner validation if
+cross-platform support is advertised.
