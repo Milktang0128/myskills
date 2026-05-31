@@ -2851,6 +2851,31 @@ mod tests {
         conn
     }
 
+    fn settings_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL
+            );
+            CREATE TABLE scenarios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              key TEXT NOT NULL UNIQUE,
+              name TEXT NOT NULL UNIQUE,
+              description TEXT,
+              color TEXT,
+              icon TEXT,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              is_builtin INTEGER NOT NULL DEFAULT 0,
+              created_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .expect("settings schema");
+        conn
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("myskills-commands-test-{name}-{}", Uuid::new_v4()));
@@ -3059,6 +3084,73 @@ mod tests {
         assert_eq!(item["action"].as_str(), Some("conflict"));
         assert_eq!(item["reason"].as_str(), Some("canonical_has_dependents"));
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn network_gate_fails_closed_when_disabled_or_missing() {
+        let conn = settings_conn();
+        let missing = require_network(&conn).unwrap_err();
+        assert_eq!(missing.code, "EXTERNAL_NETWORK_DISABLED");
+
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('allow_external_network', '0')",
+            [],
+        )
+        .unwrap();
+        let disabled = require_network(&conn).unwrap_err();
+        assert_eq!(disabled.code, "EXTERNAL_NETWORK_DISABLED");
+
+        conn.execute(
+            "UPDATE settings SET value = '1' WHERE key = 'allow_external_network'",
+            [],
+        )
+        .unwrap();
+        assert!(require_network(&conn).is_ok());
+    }
+
+    #[test]
+    fn llm_config_response_never_returns_legacy_api_key_secret() {
+        let conn = settings_conn();
+        conn.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES
+              ('llm.provider', 'openai'),
+              ('llm.model', 'gpt-test'),
+              ('llm.baseUrl', 'https://example.invalid/v1'),
+              ('secret:llm.apiKey', 'plaintext-legacy-secret');
+            "#,
+        )
+        .unwrap();
+
+        let response = llm_config_response(&conn).unwrap();
+
+        assert_eq!(
+            response.get("hasApiKey").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(response.get("apiKey").is_none());
+        assert!(response.get("key").is_none());
+        assert!(!response.to_string().contains("plaintext-legacy-secret"));
+    }
+
+    #[test]
+    fn ai_queue_waits_without_touching_llm_when_network_is_disabled() {
+        let conn = settings_conn();
+        conn.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES
+              ('allow_external_network', '0'),
+              ('llm.feature.autoCategorize', '1'),
+              ('llm.model', 'gpt-test'),
+              ('secret:llm.apiKey', 'plaintext-legacy-secret');
+            "#,
+        )
+        .unwrap();
+
+        match ai_queue_can_process(&conn).unwrap() {
+            AiQueueDecision::Wait => {}
+            _ => panic!("AI queue should wait when external network is disabled"),
+        }
     }
 }
 
@@ -3835,10 +3927,14 @@ fn clamp_i64(n: i64, lo: i64, hi: i64) -> i64 {
 pub fn llm_get_config(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
-    let provider = get_setting(&db, "llm.provider")?.unwrap_or_else(|| "deepseek".to_string());
-    let model = get_setting(&db, "llm.model")?.unwrap_or_else(|| "deepseek-v4-flash".to_string());
-    let base_url = get_setting(&db, "llm.baseUrl")?.unwrap_or_default();
-    let has_api_key = llm_has_api_key(&db)?;
+    llm_config_response(&db)
+}
+
+fn llm_config_response(db: &Connection) -> AppResult<Value> {
+    let provider = get_setting(db, "llm.provider")?.unwrap_or_else(|| "deepseek".to_string());
+    let model = get_setting(db, "llm.model")?.unwrap_or_else(|| "deepseek-v4-flash".to_string());
+    let base_url = get_setting(db, "llm.baseUrl")?.unwrap_or_default();
+    let has_api_key = llm_has_api_key(db)?;
     Ok(
         json!({ "provider": provider, "model": model, "baseUrl": base_url, "hasApiKey": has_api_key }),
     )

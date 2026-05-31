@@ -57,7 +57,7 @@ Important caveat:
 | Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | pending | Backend tests exist; packaged UI workflow not yet exercised. |
 | History | Sync history and rollback flow work from packaged app | pending | Depends on sync execute smoke. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
-| AI / LLM | Provider config, key write-only behavior, network gate, AI features | pending | Needs fake/disabled-provider smoke and secret-store assertion. |
+| AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
 | macOS unsigned preview | DMG installs, app launches, basic workflows pass | partial | DMG exists and app launches from bundle; DMG mount/install smoke pending. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | pending | Required before claiming Windows support. |
