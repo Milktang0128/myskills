@@ -714,6 +714,7 @@ rollback(history_id):
 - [x] Catalog search / GitHub raw preview / staged install
 - [x] LLM provider config / network gate / system credential store
 - [x] AI Lens / bulk categorization / passive suggestion queue
+- [x] 打包 app 首屏 smoke：macOS bundle 能启动到 MySkills 工作台，preview app id 与 preview DB 目录已验证
 - [ ] 逐项桌面 smoke：Library、Coverage、Discover、Sync、History、Settings、AI
 - [ ] macOS unsigned preview smoke；签名/公证 preview 前不得对外发布
 - [ ] Windows/Linux preview build 验证；缺平台 runner 时不得宣称稳定跨平台 release
@@ -727,6 +728,7 @@ rollback(history_id):
 - `npm run build`
 - `npm run build:tauri`
 - `npm run smoke:tauri:launch`（本机桌面环境；验证 preview 数据目录隔离和 DB 初始化）
+- `docs/qa/tauri-parity-smoke.md` 中 Stable Gate 全部为 `pass`
 - CI matrix：启用 `docs/ci/tauri-preview.github-actions.yml` 后，macOS / Ubuntu / Windows 基础检查通过；macOS preview bundle 通过
 - macOS preview 手动 smoke 通过
 - Windows/Linux 构建和启动 smoke 通过
