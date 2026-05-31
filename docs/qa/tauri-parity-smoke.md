@@ -57,8 +57,8 @@ Important caveat:
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
 | Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | pending | Must run against temporary platform dirs. |
-| Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | pending | Backend tests exist; packaged UI workflow not yet exercised. |
-| History | Sync history and rollback flow work from packaged app | pending | Depends on sync execute smoke. |
+| Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; symlink packaged UI workflow still pending. |
+| History | Sync history and rollback flow work from packaged app | partial | Rust workflow test verifies success history rows and rollback marker update; packaged History UI still pending. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
 | macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | partial | Automated DMG mount/launch smoke exists; full UI workflow smoke from DMG still pending. |

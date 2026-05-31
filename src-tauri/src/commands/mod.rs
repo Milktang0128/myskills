@@ -1275,6 +1275,21 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let result = execute_sync_items(&db, &state.paths.backup_root, items, &plan_json)?;
+    let scan = scanner::scan_all(&db)?;
+    if let Ok(mut last) = state.last_scan.lock() {
+        *last = Some(scan.clone());
+    }
+    enqueue_ai_suggestions(&state, scan_added_skill_ids(&scan));
+    Ok(result)
+}
+
+fn execute_sync_items(
+    db: &Connection,
+    backup_root: &Path,
+    items: Vec<Value>,
+    plan_json: &str,
+) -> AppResult<Value> {
     let mut applied = Vec::new();
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
@@ -1298,8 +1313,8 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
             skipped.push(item);
             continue;
         }
-        let history_id = insert_pending_history(&db, &item, &plan_json)?;
-        match execute_sync_item(&db, history_id, &state.paths.backup_root, &item) {
+        let history_id = insert_pending_history(db, &item, plan_json)?;
+        match execute_sync_item(db, history_id, backup_root, &item) {
             Ok(outcome) => {
                 db.execute(
                     "UPDATE sync_history SET success = 1, message = NULL, before_hash = ?1, after_hash = ?2, backup_path = ?3 WHERE id = ?4",
@@ -1318,11 +1333,6 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
             }
         }
     }
-    let result = scanner::scan_all(&db)?;
-    if let Ok(mut last) = state.last_scan.lock() {
-        *last = Some(result.clone());
-    }
-    enqueue_ai_suggestions(&state, scan_added_skill_ids(&result));
     Ok(json!({ "applied": applied, "skipped": skipped, "failed": failed }))
 }
 
@@ -2841,6 +2851,16 @@ mod tests {
               enabled INTEGER NOT NULL DEFAULT 1,
               sort_order INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE skills (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              source_key TEXT NOT NULL DEFAULT 'local',
+              description TEXT,
+              content_hash TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              last_scanned_at INTEGER NOT NULL
+            );
             CREATE TABLE skill_locations (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               skill_id TEXT NOT NULL,
@@ -3195,6 +3215,94 @@ mod tests {
 
         assert_eq!(item["action"].as_str(), Some("conflict"));
         assert_eq!(item["reason"].as_str(), Some("canonical_has_dependents"));
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn sync_execute_records_history_and_rollback_restores_copy_target() {
+        let conn = sync_conn();
+        let root = temp_dir("sync-copy-workflow");
+        let shared_root = root.join("shared");
+        let claude_root = root.join("claude");
+        let backup_root = root.join("backups");
+        fs::create_dir_all(&shared_root).unwrap();
+        fs::create_dir_all(&claude_root).unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir, enabled, sort_order) VALUES
+             ('shared', 'User Agents Folder', ?1, 1, 0),
+             ('claude', 'Claude Code', ?2, 1, 1)",
+            params![shared_root.to_string_lossy(), claude_root.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO skills
+             (id, name, source_key, description, content_hash, created_at, updated_at, last_scanned_at)
+             VALUES ('skill-1', 'copy-source', 'local', 'fixture', 'unused', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let source = write_skill(&claude_root, "copy-source", "copy-source");
+        let source_hash = hash_skill_md(&source).unwrap();
+        let meta = fs::metadata(&source).unwrap();
+        let (dev, ino) = metadata_dev_ino(&meta);
+        let target = shared_root.join("copy-source");
+        let item = json!({
+            "skillName": "copy-source",
+            "skillId": "skill-1",
+            "opGroupId": "group-1",
+            "targetBasename": "copy-source",
+            "sourcePlatformId": "claude",
+            "sourceLocationId": 1,
+            "sourceRealPath": source.to_string_lossy(),
+            "sourceDev": dev,
+            "sourceIno": ino,
+            "sourceHash": source_hash,
+            "targetPlatformId": "shared",
+            "targetPath": target.to_string_lossy(),
+            "targetHash": Value::Null,
+            "mode": "copy",
+            "action": "copy_to_canonical"
+        });
+
+        let result = execute_sync_items(&conn, &backup_root, vec![item], "{}").unwrap();
+
+        assert_eq!(
+            result
+                .get("applied")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            result.get("failed").and_then(Value::as_array).map(Vec::len),
+            Some(0)
+        );
+        assert!(target.join("SKILL.md").exists());
+        let history_id: i64 = conn
+            .query_row(
+                "SELECT id FROM sync_history WHERE skill_id = 'skill-1' AND success = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let rows = rollback_rows(&conn, history_id, Some("group-1")).unwrap();
+        assert_eq!(rows.len(), 1);
+        rollback_one_row(&rows[0]).unwrap();
+        conn.execute(
+            "UPDATE sync_history SET rolled_back_at = ?1 WHERE id = ?2",
+            params![now_ms(), history_id],
+        )
+        .unwrap();
+
+        assert!(!target.exists());
+        let rolled_back: Option<i64> = conn
+            .query_row(
+                "SELECT rolled_back_at FROM sync_history WHERE id = ?1",
+                params![history_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(rolled_back.is_some());
         fs::remove_dir_all(root).ok();
     }
 
