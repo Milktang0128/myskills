@@ -330,9 +330,14 @@ pub fn settings_stats(payload: Option<Value>, state: State<'_, AppState>) -> App
 }
 
 #[tauri::command]
-pub fn settings_cleanup_backups(payload: Option<Value>) -> AppResult<Value> {
+pub fn settings_cleanup_backups(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
     let _ = payload;
-    Ok(json!({ "deletedDirs": 0, "deletedBytes": 0, "nulledRows": 0, "remainingBytes": 0 }))
+    let db = conn(&state)?;
+    let days = backup_retention_days(&db)?;
+    cleanup_old_backups(&db, &state.paths.backup_root, days)
 }
 
 #[tauri::command]
@@ -2465,6 +2470,212 @@ fn has_symlink_in_tree(root: &Path) -> AppResult<bool> {
 fn hash_skill_md(dir: &Path) -> AppResult<String> {
     let bytes = fs::read(dir.join("SKILL.md"))?;
     Ok(hex::encode(sha2::Sha256::digest(bytes)))
+}
+
+pub(crate) fn recover_pending_history(conn: &Connection) -> AppResult<usize> {
+    let cutoff = now_ms() - 30_000;
+    let changed = conn.execute(
+        "UPDATE sync_history
+         SET success = 0, message = '_interrupted_'
+         WHERE message = '_pending_' AND created_at <= ?1",
+        params![cutoff],
+    )?;
+    Ok(changed)
+}
+
+pub(crate) fn backup_retention_days(conn: &Connection) -> AppResult<i64> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'backup_retention_days'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(value.and_then(|v| v.parse::<i64>().ok()).unwrap_or(30))
+}
+
+pub(crate) fn cleanup_old_backups(
+    conn: &Connection,
+    backup_root: &Path,
+    retention_days: i64,
+) -> AppResult<Value> {
+    if retention_days <= 0 {
+        return Ok(json!({
+            "deletedDirs": 0,
+            "deletedBytes": 0,
+            "nulledRows": 0,
+            "remainingBytes": backup_disk_usage(backup_root)
+        }));
+    }
+
+    let cutoff = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            retention_days as u64 * 24 * 60 * 60,
+        ))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut to_delete = Vec::new();
+    if let Ok(entries) = fs::read_dir(backup_root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(".pending-") {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !(meta.is_dir() || meta.file_type().is_symlink()) {
+                continue;
+            }
+            let Ok(mtime) = meta.modified() else {
+                continue;
+            };
+            if mtime <= cutoff {
+                to_delete.push(path);
+            }
+        }
+    }
+
+    let mut deleted_dirs = 0;
+    let mut deleted_bytes = 0;
+    let mut deleted_paths = Vec::new();
+    for path in to_delete {
+        deleted_bytes += path_size(&path);
+        let result = if fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            fs::remove_file(&path)
+        } else {
+            fs::remove_dir_all(&path)
+        };
+        if result.is_ok() {
+            deleted_dirs += 1;
+            deleted_paths.push(path.to_string_lossy().to_string());
+        }
+    }
+
+    let mut nulled_rows = 0;
+    for path in deleted_paths {
+        nulled_rows += conn.execute(
+            "UPDATE sync_history SET backup_path = NULL WHERE backup_path = ?1",
+            params![path],
+        )?;
+    }
+
+    Ok(json!({
+        "deletedDirs": deleted_dirs,
+        "deletedBytes": deleted_bytes,
+        "nulledRows": nulled_rows,
+        "remainingBytes": backup_disk_usage(backup_root)
+    }))
+}
+
+fn backup_disk_usage(root: &Path) -> i64 {
+    if !root.exists() {
+        return 0;
+    }
+    path_size(root)
+}
+
+fn path_size(path: &Path) -> i64 {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if meta.file_type().is_symlink() {
+        return 0;
+    }
+    if meta.is_file() {
+        return meta.len() as i64;
+    }
+    if !meta.is_dir() {
+        return 0;
+    }
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            total += path_size(&entry.path());
+        }
+    }
+    total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn history_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE sync_history (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              skill_id TEXT NOT NULL,
+              action TEXT NOT NULL,
+              from_path TEXT,
+              to_path TEXT,
+              platform_id TEXT,
+              before_hash TEXT,
+              after_hash TEXT,
+              backup_path TEXT,
+              dry_run_plan TEXT,
+              conflict_resolution TEXT,
+              rolled_back_at INTEGER,
+              success INTEGER NOT NULL,
+              message TEXT,
+              created_at INTEGER NOT NULL,
+              installed_from_source TEXT,
+              installed_from_skill_id TEXT,
+              op_group_id TEXT
+            );
+            "#,
+        )
+        .expect("schema");
+        conn
+    }
+
+    #[test]
+    fn recover_pending_history_marks_only_old_pending_rows() {
+        let conn = history_conn();
+        let now = now_ms();
+        conn.execute(
+            "INSERT INTO sync_history (skill_id, action, success, message, created_at)
+             VALUES ('a', 'symlink_create', 0, '_pending_', ?1)",
+            params![now - 60_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_history (skill_id, action, success, message, created_at)
+             VALUES ('b', 'symlink_create', 0, '_pending_', ?1)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_history (skill_id, action, success, message, created_at)
+             VALUES ('c', 'symlink_create', 0, 'failed', ?1)",
+            params![now - 60_000],
+        )
+        .unwrap();
+
+        assert_eq!(recover_pending_history(&conn).unwrap(), 1);
+        let interrupted: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_history WHERE message = '_interrupted_'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(interrupted, 1);
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_history WHERE message = '_pending_'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
+    }
 }
 
 #[tauri::command]

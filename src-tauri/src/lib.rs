@@ -85,6 +85,12 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         .map_err(|err| crate::error::AppError::new("PATH_ERROR", err.to_string()))?;
     let paths = AppPaths::new(app_data)?;
     let db = db::init_pool(&paths.db_path)?;
+    if let Ok(conn) = db.get() {
+        let _ = commands::recover_pending_history(&conn);
+        if let Ok(days) = commands::backup_retention_days(&conn) {
+            let _ = commands::cleanup_old_backups(&conn, &paths.backup_root, days);
+        }
+    }
     let _manager = SqliteConnectionManager::file(&paths.db_path);
     Ok(AppState {
         paths,
