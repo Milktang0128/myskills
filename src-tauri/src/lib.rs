@@ -181,12 +181,21 @@ fn is_preview_runtime(app: &tauri::AppHandle) -> bool {
 }
 
 fn maybe_prepare_stable_migration(paths: &AppPaths, preview: bool) -> AppResult<()> {
-    let Ok(source_db) = std::env::var("MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB") else {
+    let confirmation_file = std::env::var("MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE")
+        .ok()
+        .filter(|path| !path.trim().is_empty());
+    let legacy_source_db = std::env::var("MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB")
+        .ok()
+        .filter(|path| !path.trim().is_empty());
+    let Some(confirmation_file) = confirmation_file else {
+        if legacy_source_db.is_some() {
+            return Err(crate::error::AppError::new(
+                "MIGRATION_CONFIRMATION_REQUIRED",
+                "Stable migration requires MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE with a confirmed source hash",
+            ));
+        }
         return Ok(());
     };
-    if source_db.trim().is_empty() {
-        return Ok(());
-    }
     if preview {
         return Err(crate::error::AppError::new(
             "MIGRATION_PREVIEW_DISABLED",
@@ -196,14 +205,9 @@ fn maybe_prepare_stable_migration(paths: &AppPaths, preview: bool) -> AppResult<
     if paths.db_path.exists() {
         return Ok(());
     }
-    let backup_root = std::env::var("MYSKILLS_STABLE_MIGRATE_ELECTRON_BACKUPS")
-        .ok()
-        .filter(|path| !path.trim().is_empty())
-        .map(std::path::PathBuf::from);
     let timestamp = db::now_ms();
-    migration::prepare_stable_import(
-        std::path::Path::new(&source_db),
-        backup_root.as_deref(),
+    migration::prepare_confirmed_stable_import(
+        std::path::Path::new(&confirmation_file),
         &paths.user_data_dir,
         timestamp,
     )?;

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 use crate::db::{init_pool, now_ms};
@@ -43,6 +43,39 @@ pub struct StableMigrationReport {
 pub struct StableRollbackReport {
     pub failed_db: Option<PathBuf>,
     pub restored_db: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StableMigrationConfirmation {
+    pub source_db: PathBuf,
+    pub backup_root: Option<PathBuf>,
+    pub source_sha256: String,
+    pub confirmed_at: Option<i64>,
+}
+
+pub fn prepare_confirmed_stable_import(
+    confirmation_file: &Path,
+    target_data_dir: &Path,
+    timestamp_ms: i64,
+) -> AppResult<StableMigrationReport> {
+    let confirmation = read_stable_confirmation(confirmation_file)?;
+    let actual_sha256 = sha256_file(&confirmation.source_db)?;
+    if !actual_sha256.eq_ignore_ascii_case(&confirmation.source_sha256) {
+        return Err(AppError::new(
+            "MIGRATION_SOURCE_CHANGED",
+            format!(
+                "Electron DB hash changed after confirmation: expected {}, got {}",
+                confirmation.source_sha256, actual_sha256
+            ),
+        ));
+    }
+    prepare_stable_import(
+        &confirmation.source_db,
+        confirmation.backup_root.as_deref(),
+        target_data_dir,
+        timestamp_ms,
+    )
 }
 
 pub fn prepare_stable_import(
@@ -203,6 +236,53 @@ pub fn discover_electron_candidates(
         });
     }
     Ok(candidates)
+}
+
+fn read_stable_confirmation(path: &Path) -> AppResult<StableMigrationConfirmation> {
+    let raw = fs::read_to_string(path).map_err(|err| {
+        AppError::new(
+            "MIGRATION_CONFIRMATION_MISSING",
+            format!(
+                "Could not read migration confirmation {}: {err}",
+                path.display()
+            ),
+        )
+    })?;
+    let confirmation: StableMigrationConfirmation = serde_json::from_str(&raw).map_err(|err| {
+        AppError::new(
+            "MIGRATION_CONFIRMATION_INVALID",
+            format!("Invalid migration confirmation {}: {err}", path.display()),
+        )
+    })?;
+    if confirmation.source_db.as_os_str().is_empty() {
+        return Err(AppError::new(
+            "MIGRATION_CONFIRMATION_INVALID",
+            "Migration confirmation is missing sourceDb",
+        ));
+    }
+    if !confirmation.source_db.is_absolute() {
+        return Err(AppError::new(
+            "MIGRATION_CONFIRMATION_INVALID",
+            "Migration confirmation sourceDb must be absolute",
+        ));
+    }
+    if !is_sha256_hex(&confirmation.source_sha256) {
+        return Err(AppError::new(
+            "MIGRATION_CONFIRMATION_INVALID",
+            "Migration confirmation sourceSha256 must be a SHA-256 hex digest",
+        ));
+    }
+    if confirmation.confirmed_at.unwrap_or_default() <= 0 {
+        return Err(AppError::new(
+            "MIGRATION_CONFIRMATION_INVALID",
+            "Migration confirmation must include confirmedAt",
+        ));
+    }
+    Ok(confirmation)
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn default_electron_user_data_dirs(home_dir: &Path) -> Vec<PathBuf> {
@@ -418,6 +498,26 @@ mod tests {
         .expect("insert history");
     }
 
+    fn write_confirmation(
+        confirmation_file: &Path,
+        source_db: &Path,
+        backup_root: Option<&Path>,
+        source_sha256: &str,
+    ) {
+        let backup_root_json = backup_root.map(|path| path.to_string_lossy().to_string());
+        fs::write(
+            confirmation_file,
+            serde_json::json!({
+                "sourceDb": source_db.to_string_lossy(),
+                "backupRoot": backup_root_json,
+                "sourceSha256": source_sha256,
+                "confirmedAt": 123
+            })
+            .to_string(),
+        )
+        .expect("write confirmation");
+    }
+
     #[test]
     fn stable_import_copies_db_marks_source_and_rewrites_backup_paths() {
         let root = temp_dir("happy");
@@ -474,6 +574,51 @@ mod tests {
                 .as_ref()
         ));
         assert!(Path::new(&backup_path).join("SKILL.md").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn confirmed_stable_import_requires_matching_source_hash() {
+        let root = temp_dir("confirmed-hash");
+        let electron_dir = root.join("electron");
+        let target_dir = root.join("tauri-stable");
+        fs::create_dir_all(&electron_dir).unwrap();
+        let source_db = electron_dir.join("myskills.db");
+        create_source_db(&source_db);
+        let confirmation = root.join("confirmation.json");
+        write_confirmation(
+            &confirmation,
+            &source_db,
+            None,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+
+        let err = prepare_confirmed_stable_import(&confirmation, &target_dir, 123).unwrap_err();
+
+        assert_eq!(err.code, "MIGRATION_SOURCE_CHANGED");
+        assert!(!target_dir.join("myskills.db").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn confirmed_stable_import_uses_confirmation_manifest() {
+        let root = temp_dir("confirmed-import");
+        let electron_dir = root.join("electron");
+        let target_dir = root.join("tauri-stable");
+        let backup_root = electron_dir.join("backups");
+        fs::create_dir_all(&backup_root).unwrap();
+        fs::create_dir_all(&electron_dir).unwrap();
+        let source_db = electron_dir.join("myskills.db");
+        create_source_db(&source_db);
+        let source_hash = sha256_file(&source_db).unwrap();
+        let confirmation = root.join("confirmation.json");
+        write_confirmation(&confirmation, &source_db, Some(&backup_root), &source_hash);
+
+        let report = prepare_confirmed_stable_import(&confirmation, &target_dir, 123).unwrap();
+
+        assert_eq!(report.source_db, source_db);
+        assert_eq!(report.source_sha256, source_hash);
+        assert!(target_dir.join("myskills.db").exists());
         fs::remove_dir_all(root).ok();
     }
 

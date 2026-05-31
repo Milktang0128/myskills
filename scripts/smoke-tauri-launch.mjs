@@ -220,10 +220,26 @@ function createStableMigrationFixture(tempRoot) {
     const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
     throw new Error(`stable migration fixture creation failed\n${output}`);
   }
+  const sourceHash = sha256File(sourceDb);
+  const confirmationFile = path.join(tempRoot, 'stable-migration-confirmation.json');
+  fs.writeFileSync(
+    confirmationFile,
+    JSON.stringify(
+      {
+        sourceDb,
+        backupRoot,
+        sourceSha256: sourceHash,
+        confirmedAt: now,
+      },
+      null,
+      2,
+    ),
+  );
   return {
     sourceDb,
     backupRoot,
-    sourceHash: sha256File(sourceDb),
+    sourceHash,
+    confirmationFile,
     backupItem,
   };
 }
@@ -490,8 +506,7 @@ if (args.stableSmoke) {
   env.MYSKILLS_INTERNAL_STABLE_APP = '1';
 }
 if (stableMigrationFixture) {
-  env.MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB = stableMigrationFixture.sourceDb;
-  env.MYSKILLS_STABLE_MIGRATE_ELECTRON_BACKUPS = stableMigrationFixture.backupRoot;
+  env.MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE = stableMigrationFixture.confirmationFile;
 }
 
 const child = spawn(binary, [], {
