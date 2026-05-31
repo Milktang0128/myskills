@@ -728,6 +728,7 @@ rollback(history_id):
 - `npm run build`
 - `npm run build:tauri`
 - `npm run build:tauri:stable`（验证正式 app id / app data dir 候选配置）
+- `npm run smoke:tauri:launch -- --stable-migration-smoke --frontend-smoke`（验证 stable 启动导入 Electron DB 候选流程）
 - `npm run build:tauri:mac:signed` + `npm run notarize:tauri:mac`（macOS preview 对外分发前）
 - `npm run smoke:tauri:launch`（本机桌面环境；验证 preview 数据目录隔离和 DB 初始化）
 - `docs/qa/tauri-parity-smoke.md` 中 Stable Gate 全部为 `pass`

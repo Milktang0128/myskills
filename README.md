@@ -120,6 +120,7 @@ npm run smoke:tauri:fixtures # create temporary skill fixtures for desktop parit
 npm run build       # Next.js static export
 npm run build:tauri # Tauri desktop bundle
 npm run build:tauri:stable # Tauri bundle with the future stable app id
+npm run smoke:tauri:launch -- --stable-migration-smoke --frontend-smoke # stable startup migration drill
 npm run build:tauri:mac:signed # local Developer ID signed macOS Tauri preview
 npm run notarize:tauri:mac # notarize, staple, and Gatekeeper-check the signed Tauri DMG
 ```

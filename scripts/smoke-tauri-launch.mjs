@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 
 const root = process.cwd();
@@ -29,6 +30,7 @@ function parseArgs(argv) {
     coverageSmoke: false,
     frontendSmoke: false,
     stableSmoke: false,
+    stableMigrationSmoke: false,
   };
   for (const arg of argv) {
     if (arg === '--fixture-smoke') {
@@ -50,6 +52,9 @@ function parseArgs(argv) {
       args.frontendSmoke = true;
     } else if (arg === '--stable-smoke') {
       args.stableSmoke = true;
+    } else if (arg === '--stable-migration-smoke') {
+      args.stableSmoke = true;
+      args.stableMigrationSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -116,6 +121,111 @@ function createFixtures(tempRoot) {
     throw new Error(`fixture creation failed\n${output}`);
   }
   return JSON.parse(result.stdout);
+}
+
+function createStableMigrationFixture(tempRoot) {
+  const electronDir = path.join(tempRoot, 'electron-user-data');
+  const backupRoot = path.join(electronDir, 'backups');
+  const backupItem = path.join(backupRoot, 'skill-1');
+  fs.mkdirSync(backupItem, { recursive: true });
+  fs.writeFileSync(path.join(backupItem, 'SKILL.md'), 'stable migration backup fixture\n');
+  const sourceDb = path.join(electronDir, 'myskills.db');
+  const now = Date.now();
+  const sql = `
+    CREATE TABLE platforms (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      skills_dir TEXT NOT NULL,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE skills (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      source_key TEXT NOT NULL DEFAULT 'local',
+      description TEXT,
+      version TEXT,
+      author TEXT,
+      license TEXT,
+      body_excerpt TEXT,
+      content_hash TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      file_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_scanned_at INTEGER NOT NULL,
+      UNIQUE(name, source_key)
+    );
+    CREATE TABLE skill_locations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      skill_id TEXT NOT NULL,
+      platform_id TEXT NOT NULL,
+      install_path TEXT NOT NULL,
+      real_path TEXT NOT NULL,
+      is_symlink INTEGER NOT NULL DEFAULT 0,
+      is_broken_link INTEGER NOT NULL DEFAULT 0,
+      is_disabled INTEGER NOT NULL DEFAULT 0,
+      content_hash TEXT,
+      mtime INTEGER,
+      last_seen_at INTEGER NOT NULL,
+      UNIQUE(platform_id, install_path)
+    );
+    CREATE TABLE scenarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      color TEXT,
+      icon TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE skill_scenarios (
+      skill_id TEXT NOT NULL,
+      scenario_id INTEGER NOT NULL,
+      added_at INTEGER NOT NULL,
+      PRIMARY KEY (skill_id, scenario_id)
+    );
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE sync_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      skill_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      from_path TEXT,
+      to_path TEXT,
+      platform_id TEXT,
+      before_hash TEXT,
+      after_hash TEXT,
+      backup_path TEXT,
+      dry_run_plan TEXT,
+      conflict_resolution TEXT,
+      rolled_back_at INTEGER,
+      success INTEGER NOT NULL,
+      message TEXT,
+      created_at INTEGER NOT NULL,
+      installed_from_source TEXT,
+      installed_from_skill_id TEXT,
+      op_group_id TEXT
+    );
+    INSERT INTO platforms (id, label, skills_dir, is_builtin, enabled, sort_order)
+    VALUES ('shared', 'Shared Pool', '${path.join(electronDir, 'skills').replaceAll("'", "''")}', 1, 1, 0);
+    INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared');
+    INSERT INTO sync_history (skill_id, action, backup_path, success, message, created_at)
+    VALUES ('skill-1', 'symlink_replace', '${backupItem.replaceAll("'", "''")}', 1, 'ok', ${now});
+  `;
+  const result = spawnSync('sqlite3', [sourceDb], { input: sql, encoding: 'utf8' });
+  if (result.status !== 0) {
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    throw new Error(`stable migration fixture creation failed\n${output}`);
+  }
+  return {
+    sourceDb,
+    backupRoot,
+    sourceHash: sha256File(sourceDb),
+    backupItem,
+  };
 }
 
 function inspectFixtureDb(dbPath, manifest, options = {}) {
@@ -267,6 +377,43 @@ function queryJson(dbPath, sql) {
   return JSON.parse(result.stdout || '[]');
 }
 
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function inspectStableMigrationDb(dbPath, fixture) {
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const settings = Object.fromEntries(
+      queryJson(
+        dbPath,
+        "SELECT key, value FROM settings WHERE key IN ('migration.electron_v0_1.source_path', 'migration.electron_v0_1.source_sha256', 'migration.electron_v0_1.migrated_at')",
+      ).map((row) => [row.key, row.value]),
+    );
+    if (settings['migration.electron_v0_1.source_path'] !== fixture.sourceDb) return null;
+    if (settings['migration.electron_v0_1.source_sha256'] !== fixture.sourceHash) return null;
+    if (!settings['migration.electron_v0_1.migrated_at']) return null;
+    if (sha256File(fixture.sourceDb) !== fixture.sourceHash) return null;
+    if (!fs.existsSync(path.join(fixture.backupItem, 'SKILL.md'))) return null;
+
+    const history = queryJson(
+      dbPath,
+      "SELECT backup_path AS backupPath FROM sync_history WHERE skill_id = 'skill-1' LIMIT 1",
+    )[0];
+    if (!history?.backupPath) return null;
+    const expectedPrefix = path.join(path.dirname(dbPath), 'migration-backups');
+    if (!history.backupPath.startsWith(expectedPrefix)) return null;
+    if (!fs.existsSync(path.join(history.backupPath, 'SKILL.md'))) return null;
+    return {
+      stableMigrationReady: true,
+      migrationSourceHash: settings['migration.electron_v0_1.source_sha256'],
+      migrationBackupRewritten: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function inspectFrontendReady(dbPath) {
   if (!fs.existsSync(dbPath)) return null;
   try {
@@ -310,6 +457,9 @@ fs.mkdirSync(home, { recursive: true });
 const dbPath = expectedDbPath(home, args.stableSmoke);
 const smokeDataDir = path.dirname(dbPath);
 const manifest = args.fixtureSmoke ? createFixtures(tempRoot) : null;
+const stableMigrationFixture = args.stableMigrationSmoke
+  ? createStableMigrationFixture(tempRoot)
+  : null;
 
 const env = {
   ...process.env,
@@ -339,6 +489,10 @@ if (args.frontendSmoke) {
 if (args.stableSmoke) {
   env.MYSKILLS_INTERNAL_STABLE_APP = '1';
 }
+if (stableMigrationFixture) {
+  env.MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB = stableMigrationFixture.sourceDb;
+  env.MYSKILLS_STABLE_MIGRATE_ELECTRON_BACKUPS = stableMigrationFixture.backupRoot;
+}
 
 const child = spawn(binary, [], {
   cwd: root,
@@ -360,7 +514,12 @@ const exitedEarly = new Promise((resolve) => {
 });
 let fixtureResult = null;
 let frontendResult = null;
+let stableMigrationResult = null;
 const dbReady = waitFor(() => {
+  if (stableMigrationFixture) {
+    stableMigrationResult = inspectStableMigrationDb(dbPath, stableMigrationFixture);
+    if (!stableMigrationResult) return false;
+  }
   if (args.frontendSmoke) {
     frontendResult = inspectFrontendReady(dbPath);
     if (!frontendResult) return false;
@@ -392,10 +551,12 @@ if (!result.dbReady) {
 fs.rmSync(tempRoot, { recursive: true, force: true });
 if (fixtureResult) {
   console.log(
-    `tauri launch fixture smoke passed: ${JSON.stringify({ ...fixtureResult, ...frontendResult })}`,
+    `tauri launch fixture smoke passed: ${JSON.stringify({ ...fixtureResult, ...frontendResult, ...stableMigrationResult })}`,
   );
-} else if (frontendResult) {
-  console.log(`tauri launch frontend smoke passed: ${JSON.stringify(frontendResult)}`);
+} else if (stableMigrationResult || frontendResult) {
+  console.log(
+    `tauri launch smoke passed: ${JSON.stringify({ ...stableMigrationResult, ...frontendResult })}`,
+  );
 } else {
   console.log(`tauri launch smoke passed: created isolated preview DB at ${dbPath}`);
 }

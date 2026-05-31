@@ -128,6 +128,12 @@ Before enabling this migration in a stable build:
   `npm run smoke:tauri:launch -- --stable-smoke --frontend-smoke` must prove the
   stable app id uses the stable app data directory instead of
   `myskills-tauri-preview`.
+- `npm run smoke:tauri:launch -- --stable-migration-smoke --frontend-smoke`
+  must prove a packaged stable app startup can import a disposable Electron DB,
+  write migration markers, rewrite copied backup paths, and leave the source DB
+  and original Electron backup tree unchanged. On macOS, repeat the same check
+  from the mounted DMG with `npm run smoke:tauri:dmg -- --stable-migration-smoke
+  --frontend-smoke`.
 
 ## Release Rule
 
