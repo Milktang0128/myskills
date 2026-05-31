@@ -75,8 +75,10 @@ Run only on first stable Tauri launch, before any scanner or sync write:
     `migration.electron_v0_1.source_sha256`,
     `migration.electron_v0_1.migrated_at`.
 11. Run `PRAGMA integrity_check` again on the importing DB.
-12. Atomically rename any existing target DB to `myskills.db.pre-migration-*`,
-    then rename `myskills.db.importing` to `myskills.db`.
+12. Atomically rename `myskills.db.importing` to `myskills.db`. Automatic
+    migration refuses to run when a stable Tauri DB already exists; any future
+    manual replace mode must first preserve the existing target as
+    `myskills.db.pre-migration-*`.
 13. Start normal Tauri recovery steps: pending backup recovery, pending history
     recovery, staging GC, and backup retention sweep.
 
@@ -86,7 +88,8 @@ Rollback must be available without opening Electron:
 
 1. Tauri stable never edits the Electron DB, so the Electron app remains a
    fallback as long as the user launches the frozen Electron release.
-2. Before replacing any existing Tauri stable DB, keep
+2. Automatic migration refuses to replace an existing Tauri stable DB. If a
+   future manual replace mode is added, it must first keep
    `myskills.db.pre-migration-*`.
 3. Provide a recovery command or UI action that:
    - closes active DB connections,
@@ -100,13 +103,16 @@ Rollback must be available without opening Electron:
 
 Before enabling this migration in a stable build:
 
-- Add Rust tests for empty target, existing target, corrupt source DB,
-  missing source DB, copied Electron DB, backup path rewrite, and rollback.
+- Rust migration foundation tests must cover copied Electron DB, marker writes,
+  backup path rewrite, existing target refusal, invalid source schema rejection,
+  and unknown external backup path preservation.
 - Run migration against a copied Electron production DB, not the live source.
 - Verify old Electron sync history rows are either rollbackable through copied
   backups or clearly marked non-rollbackable.
 - Verify API keys are not returned or silently migrated to the renderer.
 - Verify preview DBs are not imported unless explicitly selected.
+- Add stable enablement tests for first-launch gating and rollback drill before
+  switching away from the preview app id.
 
 ## Release Rule
 

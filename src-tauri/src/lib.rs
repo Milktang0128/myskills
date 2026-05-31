@@ -1,6 +1,8 @@
 mod commands;
 mod db;
 mod error;
+#[allow(dead_code)]
+mod migration;
 mod paths;
 mod scanner;
 mod state;
