@@ -206,83 +206,58 @@ export default function Workspace() {
     frontendSmokeRanRef.current = true;
     let cancelled = false;
     const nextCommit = () => new Promise<void>((resolve) => window.setTimeout(resolve, 100));
+    const clickSmokeAction = (action: string) => {
+      const el = document.querySelector<HTMLButtonElement>(`[data-smoke-action="${action}"]`);
+      if (!el) throw new Error(`missing [data-smoke-action="${action}"]`);
+      el.click();
+    };
     const steps: Array<{
       name: string;
-      select: () => void;
+      click: () => void;
       selector: string;
     }> = [
       {
         name: 'matrix',
-        select: () => {
-          setSidebarView('matrix');
-          setFilter({ scope: 'all' });
-          setLibraryView('list');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('nav-matrix'),
         selector: '[data-smoke-view="matrix"]',
       },
       {
         name: 'library-list',
-        select: () => {
-          setSidebarView('library');
-          setFilter({ scope: 'all' });
-          setLibraryView('list');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('nav-library'),
         selector: '[data-smoke-view="library-list"]',
       },
       {
         name: 'library-kanban',
-        select: () => {
-          setSidebarView('library');
-          setFilter({ scope: 'all' });
-          setLibraryView('kanban');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('library-kanban'),
         selector: '[data-smoke-view="library-kanban"]',
       },
       {
         name: 'library-ai-lens',
-        select: () => {
-          setSidebarView('library');
-          setFilter({ scope: 'all' });
-          setLibraryView('ai-lens');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('library-ai-lens'),
         selector: '[data-smoke-view="library-ai-lens"]',
       },
       {
         name: 'discover',
-        select: () => {
-          setSidebarView('discover');
+        click: () => {
           setSearch('catalog');
           setDiscoverMode('keyword');
-          setSelectedId(null);
+          clickSmokeAction('nav-discover');
         },
         selector: '[data-smoke-view="discover"]',
       },
       {
         name: 'scenarios',
-        select: () => {
-          setSidebarView('scenarios');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('nav-scenarios'),
         selector: '[data-smoke-view="scenarios"]',
       },
       {
         name: 'history',
-        select: () => {
-          setSidebarView('history');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('nav-history'),
         selector: '[data-smoke-view="history"]',
       },
       {
         name: 'settings',
-        select: () => {
-          setSidebarView('settings');
-          setSelectedId(null);
-        },
+        click: () => clickSmokeAction('nav-settings'),
         selector: '[data-smoke-view="settings"]',
       },
     ];
@@ -291,7 +266,7 @@ export default function Workspace() {
       try {
         for (const step of steps) {
           if (cancelled) return;
-          step.select();
+          step.click();
           await nextCommit();
           if (cancelled) return;
           if (!document.querySelector(step.selector)) {
@@ -758,6 +733,7 @@ function LibrarySubToolbar({
             key={it.id}
             type="button"
             onClick={() => onChange(it.id)}
+            data-smoke-action={`library-${it.id}`}
             className={cn(
               'inline-flex h-6 items-center gap-1 whitespace-nowrap px-2.5 text-[11.5px] transition-colors',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',

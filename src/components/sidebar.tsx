@@ -140,6 +140,7 @@ export function Sidebar({
             onClick={onSelectAllSkills}
             icon={<Layers className="h-4 w-4" />}
             count={stats?.totalSkills}
+            smokeAction="nav-library"
           >
             {t('sidebar.allSkills')}
           </SidebarRow>
@@ -147,6 +148,7 @@ export function Sidebar({
             active={view === 'matrix'}
             onClick={onSelectCoverage}
             icon={<Grid3x3 className="h-4 w-4" />}
+            smokeAction="nav-matrix"
           >
             {t('sidebar.coverage')}
           </SidebarRow>
@@ -154,6 +156,7 @@ export function Sidebar({
             active={view === 'discover'}
             onClick={onSelectDiscover}
             icon={<Globe className="h-4 w-4" />}
+            smokeAction="nav-discover"
           >
             {t('sidebar.discover')}
           </SidebarRow>
@@ -234,6 +237,7 @@ export function Sidebar({
                 aria-pressed={view === 'scenarios'}
                 aria-label={t('sidebar.manageScenarios')}
                 title={t('sidebar.manageScenarios')}
+                data-smoke-action="nav-scenarios"
                 className={cn(
                   'p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
                   view === 'scenarios'
@@ -284,6 +288,7 @@ export function Sidebar({
           type="button"
           onClick={onSelectHistory}
           aria-pressed={view === 'history'}
+          data-smoke-action="nav-history"
           className={cn(
             'flex w-full items-center gap-2 px-2 py-1.5 text-sm',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
@@ -299,6 +304,7 @@ export function Sidebar({
           type="button"
           onClick={onSelectSettings}
           aria-pressed={view === 'settings'}
+          data-smoke-action="nav-settings"
           className={cn(
             'flex w-full items-center gap-2 px-2 py-1.5 text-sm',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
@@ -344,6 +350,7 @@ function SidebarRow({
   count,
   children,
   tone,
+  smokeAction,
 }: {
   active: boolean;
   onClick: () => void;
@@ -351,6 +358,7 @@ function SidebarRow({
   count?: number | null;
   children: React.ReactNode;
   tone?: 'warn' | 'danger' | 'muted';
+  smokeAction?: string;
 }) {
   const countCls =
     tone === 'danger' && count && count > 0
@@ -363,6 +371,7 @@ function SidebarRow({
       onClick={onClick}
       aria-pressed={active}
       title={typeof children === 'string' ? children : undefined}
+      data-smoke-action={smokeAction}
       className={cn(
         'group flex w-full items-center gap-2 px-2 py-1.5 text-sm',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
