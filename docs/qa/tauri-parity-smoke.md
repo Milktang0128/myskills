@@ -26,6 +26,12 @@ Automated checks already available:
   `npm run smoke:tauri:dmg -- --fixture-smoke` launch the packaged app with
   disposable platform fixtures, force an internal temporary app data directory,
   run a real startup scan, and verify the resulting SQLite rows.
+- `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
+  Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
+  build, and packaged fixture smoke across macOS, Linux, and Windows preview
+  runners; macOS additionally runs mounted DMG fixture smoke. Activating it
+  requires pushing `.github/workflows/tauri-preview.yml` with a GitHub token
+  that has the `workflow` scope.
 - Rust fixture tests cover real scanner ingestion into the Library backend,
   including platform filtering, disabled-scope listing, parser errors, scan
   runs, and Settings stats.
@@ -72,8 +78,8 @@ Important caveat:
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
 | macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, and verifies SQLite results. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
-| Windows preview | Build and launch smoke on Windows runner | pending | Required before claiming Windows support. |
-| Linux preview | Build and launch smoke on Linux runner | pending | Required before claiming Linux support. |
+| Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |
+| Linux preview | Build and launch smoke on Linux runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke under `xvfb-run` on `ubuntu-24.04`; activation needs a token with `workflow` scope, then first green runner result. |
 | Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests cover DB copy, markers, backup path rewrite, existing target refusal, invalid schema rejection, and rollback file moves. Stable enablement drill pending. |
 
 ## Manual Smoke Script

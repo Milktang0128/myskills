@@ -1,3 +1,10 @@
+# GitHub Actions template.
+#
+# To activate this workflow, copy this file to
+# `.github/workflows/tauri-preview.yml` and push with a GitHub token that has
+# the `workflow` scope. The current repository push token cannot create or
+# update workflow files.
+
 name: Tauri Preview
 
 on:
@@ -29,7 +36,13 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            sqlite3 \
+            xvfb
+
+      - name: Install Windows SQLite CLI
+        if: runner.os == 'Windows'
+        run: choco install sqlite --no-progress
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -62,9 +75,17 @@ jobs:
       - name: Rust tests
         run: npm run test:rust
 
-      - name: Frontend static build
-        run: npm run build
-
-      - name: macOS preview bundle
-        if: runner.os == 'macOS'
+      - name: Tauri build
         run: npm run build:tauri
+
+      - name: Packaged fixture smoke
+        if: runner.os != 'Linux'
+        run: npm run smoke:tauri:launch -- --fixture-smoke
+
+      - name: Packaged fixture smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run smoke:tauri:launch -- --fixture-smoke
+
+      - name: Mounted DMG fixture smoke
+        if: runner.os == 'macOS'
+        run: npm run smoke:tauri:dmg -- --fixture-smoke
