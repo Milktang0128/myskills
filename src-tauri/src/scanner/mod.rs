@@ -444,10 +444,46 @@ mod tests {
               added_at INTEGER NOT NULL,
               PRIMARY KEY (skill_id, scenario_id)
             );
+            CREATE TABLE platforms (
+              id TEXT PRIMARY KEY,
+              label TEXT NOT NULL,
+              skills_dir TEXT NOT NULL,
+              is_builtin INTEGER NOT NULL DEFAULT 0,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE scan_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              started_at INTEGER NOT NULL,
+              finished_at INTEGER,
+              total_found INTEGER NOT NULL DEFAULT 0,
+              new_count INTEGER NOT NULL DEFAULT 0,
+              updated_count INTEGER NOT NULL DEFAULT 0,
+              removed_count INTEGER NOT NULL DEFAULT 0,
+              duration_ms INTEGER,
+              errors_json TEXT NOT NULL DEFAULT '[]'
+            );
             "#,
         )
         .expect("schema");
         conn
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("myskills-scanner-test-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_skill(root: &Path, dirname: &str, skill_name: &str) {
+        let skill_dir = root.join(dirname);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {skill_name}\ndescription: test skill\n---\nbody\n"),
+        )
+        .expect("write SKILL.md");
     }
 
     fn discovered(name: &str, hash: &str, platform: &str, path: &str) -> Discovered {
@@ -515,5 +551,45 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))
             .unwrap();
         assert_eq!(skill_count, 1);
+    }
+
+    #[test]
+    fn scan_all_reports_platform_progress_for_scanned_and_skipped_platforms() {
+        let conn = test_conn();
+        let root = temp_dir("progress");
+        let missing = root.join("missing");
+        let present = root.join("present");
+        fs::create_dir_all(&present).expect("create present root");
+        write_skill(&present, "alpha", "alpha");
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir, enabled, sort_order)
+             VALUES ('present', 'Present', ?1, 1, 0)",
+            params![present.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir, enabled, sort_order)
+             VALUES ('missing', 'Missing', ?1, 1, 1)",
+            params![missing.to_string_lossy()],
+        )
+        .unwrap();
+
+        let mut progress = Vec::new();
+        let result = scan_all_with_progress(&conn, |event| progress.push(event)).unwrap();
+
+        assert_eq!(result["totalFound"].as_u64(), Some(1));
+        assert_eq!(progress.len(), 2);
+        assert_eq!(progress[0].platform_id, "present");
+        assert_eq!(progress[0].index, 1);
+        assert_eq!(progress[0].total, 2);
+        assert_eq!(progress[0].found, 1);
+        assert!(!progress[0].skipped);
+        assert_eq!(progress[1].platform_id, "missing");
+        assert_eq!(progress[1].index, 2);
+        assert_eq!(progress[1].total, 2);
+        assert_eq!(progress[1].found, 0);
+        assert!(progress[1].skipped);
+
+        fs::remove_dir_all(root).ok();
     }
 }

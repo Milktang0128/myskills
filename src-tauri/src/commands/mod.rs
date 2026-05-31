@@ -2689,6 +2689,55 @@ mod tests {
         conn
     }
 
+    fn sync_conn() -> Connection {
+        let conn = history_conn();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE platforms (
+              id TEXT PRIMARY KEY,
+              label TEXT NOT NULL,
+              skills_dir TEXT NOT NULL,
+              is_builtin INTEGER NOT NULL DEFAULT 0,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE skill_locations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              skill_id TEXT NOT NULL,
+              platform_id TEXT NOT NULL,
+              install_path TEXT NOT NULL,
+              real_path TEXT NOT NULL,
+              is_symlink INTEGER NOT NULL DEFAULT 0,
+              is_broken_link INTEGER NOT NULL DEFAULT 0,
+              is_disabled INTEGER NOT NULL DEFAULT 0,
+              content_hash TEXT,
+              mtime INTEGER,
+              last_seen_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .expect("sync schema");
+        conn
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("myskills-commands-test-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_skill(root: &Path, dirname: &str, skill_name: &str) -> PathBuf {
+        let skill_dir = root.join(dirname);
+        fs::create_dir_all(&skill_dir).expect("create skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {skill_name}\ndescription: test skill\n---\nbody\n"),
+        )
+        .expect("write SKILL.md");
+        skill_dir
+    }
+
     #[test]
     fn recover_pending_history_marks_only_old_pending_rows() {
         let conn = history_conn();
@@ -2730,9 +2779,82 @@ mod tests {
             .unwrap();
         assert_eq!(pending, 1);
     }
+
+    #[test]
+    fn copy_execute_reasserts_target_inside_platform_root() {
+        let conn = sync_conn();
+        let root = temp_dir("copy-root");
+        let platform_root = root.join("platform");
+        let outside_root = root.join("outside");
+        fs::create_dir_all(&platform_root).unwrap();
+        fs::create_dir_all(&outside_root).unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir) VALUES ('shared', 'Shared', ?1)",
+            params![platform_root.to_string_lossy()],
+        )
+        .unwrap();
+        let source = write_skill(&root, "source", "copy-source");
+        let source_hash = hash_skill_md(&source).unwrap();
+        let item = json!({
+            "skillName": "copy-source",
+            "skillId": "skill-1",
+            "sourceRealPath": source.to_string_lossy(),
+            "sourceDev": 0,
+            "sourceIno": 0,
+            "sourceHash": source_hash,
+            "targetPlatformId": "shared",
+            "targetPath": outside_root.join("copy-source").to_string_lossy(),
+        });
+
+        let err = match do_copy_item(&conn, &root.join("backups"), &item) {
+            Ok(_) => panic!("copy should reject a target outside the platform root"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code, "TARGET_OUTSIDE_ROOT");
+        assert!(!outside_root.join("copy-source").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn disable_plan_blocks_real_source_with_live_symlink_dependents() {
+        let conn = sync_conn();
+        let root = temp_dir("dependents");
+        let source = write_skill(&root, "source", "shared-source");
+        conn.execute(
+            "INSERT INTO skill_locations
+             (id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, last_seen_at)
+             VALUES (2, 'skill-1', 'codex', '/virtual/codex/source', ?1, 1, 0, 0, 100)",
+            params![source.to_string_lossy()],
+        )
+        .unwrap();
+        let skill = SyncSkillRow {
+            id: "skill-1".to_string(),
+            name: "shared-source".to_string(),
+        };
+        let loc = LocRow {
+            id: 1,
+            skill_id: "skill-1".to_string(),
+            platform_id: "shared".to_string(),
+            install_path: source.to_string_lossy().to_string(),
+            real_path: source.to_string_lossy().to_string(),
+            is_symlink: false,
+            is_broken_link: false,
+            is_disabled: false,
+            content_hash: None,
+            mtime: None,
+        };
+
+        let item = build_toggle_item(&conn, &skill, &loc, &root.to_string_lossy(), true).unwrap();
+
+        assert_eq!(item["action"].as_str(), Some("conflict"));
+        assert_eq!(item["reason"].as_str(), Some("canonical_has_dependents"));
+        fs::remove_dir_all(root).ok();
+    }
 }
 
-const CATALOG_USER_AGENT: &str = "MySkills/0.1 (+https://github.com/Milktang0128/myskills)";
+const CATALOG_USER_AGENT: &str =
+    "MySkills/0.2.0-tauri.0 (+https://github.com/Milktang0128/myskills)";
 const CATALOG_SEARCH_BASE: &str = "https://skills.sh/api/search";
 const CATALOG_GH_REPO_API: &str = "https://api.github.com/repos";
 const CATALOG_GH_RAW: &str = "https://raw.githubusercontent.com";
