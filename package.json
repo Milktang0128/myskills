@@ -12,6 +12,7 @@
     "dev:electron": "wait-on tcp:4477 && cross-env NODE_ENV=development tsx electron/dev.ts",
     "build": "next build",
     "build:tauri": "tauri build",
+    "check:commands": "node scripts/audit-tauri-commands.mjs",
     "build:electron:legacy": "next build && npm run build:electron",
     "build:electron": "tsc -p electron/tsconfig.json && node electron/build-preload.mjs",
     "package:electron:legacy": "npm run build:electron:legacy && electron-builder --mac",
