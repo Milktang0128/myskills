@@ -98,5 +98,7 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         last_scan: std::sync::Mutex::new(None),
         plan_store: std::sync::Mutex::new(std::collections::HashMap::new()),
         sync_lock: std::sync::Mutex::new(()),
+        ai_queue: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+        ai_worker_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
 }

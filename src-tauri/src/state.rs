@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use r2d2::Pool;
@@ -19,6 +19,8 @@ pub struct AppState {
     pub last_scan: Mutex<Option<Value>>,
     pub plan_store: Mutex<HashMap<String, StoredPlan>>,
     pub sync_lock: Mutex<()>,
+    pub ai_queue: Arc<Mutex<VecDeque<String>>>,
+    pub ai_worker_running: Arc<AtomicBool>,
 }
 
 impl AppState {

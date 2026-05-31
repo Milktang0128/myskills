@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime};
 
 use arboard::Clipboard;
@@ -355,6 +356,7 @@ pub fn scan_run(
     if let Ok(mut last) = state.last_scan.lock() {
         *last = Some(result.clone());
     }
+    enqueue_ai_suggestions(&state, scan_added_skill_ids(&result));
     let _ = app.emit("event:scanFinished", result.clone());
     Ok(result)
 }
@@ -1297,8 +1299,9 @@ pub fn sync_execute(payload: Option<Value>, state: State<'_, AppState>) -> AppRe
     }
     let result = scanner::scan_all(&db)?;
     if let Ok(mut last) = state.last_scan.lock() {
-        *last = Some(result);
+        *last = Some(result.clone());
     }
+    enqueue_ai_suggestions(&state, scan_added_skill_ids(&result));
     Ok(json!({ "applied": applied, "skipped": skipped, "failed": failed }))
 }
 
@@ -1388,8 +1391,9 @@ pub fn sync_rollback(payload: Option<Value>, state: State<'_, AppState>) -> AppR
         if let Err(err) = rollback_one_row(row) {
             let _ = scanner::scan_all(&db).map(|scan| {
                 if let Ok(mut last) = state.last_scan.lock() {
-                    *last = Some(scan);
+                    *last = Some(scan.clone());
                 }
+                enqueue_ai_suggestions(&state, scan_added_skill_ids(&scan));
             });
             return Err(AppError::new(
                 err.code,
@@ -1404,8 +1408,9 @@ pub fn sync_rollback(payload: Option<Value>, state: State<'_, AppState>) -> AppR
     }
     let scan = scanner::scan_all(&db)?;
     if let Ok(mut last) = state.last_scan.lock() {
-        *last = Some(scan);
+        *last = Some(scan.clone());
     }
+    enqueue_ai_suggestions(&state, scan_added_skill_ids(&scan));
     Ok(json!({ "ok": true, "rolledBack": rolled_back }))
 }
 
@@ -3490,6 +3495,7 @@ pub fn llm_set_api_key(payload: Option<Value>, state: State<'_, AppState>) -> Ap
         "INSERT INTO settings (key, value) VALUES ('secret:llm.apiKey', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![encoded],
     )?;
+    maybe_start_ai_worker(&state);
     Ok(json!({ "ok": true, "hasApiKey": true }))
 }
 
@@ -3578,6 +3584,7 @@ pub fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -
     }
 }
 
+#[derive(Clone)]
 struct LlmRuntimeConfig {
     provider: String,
     model: String,
@@ -3925,6 +3932,7 @@ pub fn llm_set_features(payload: Option<Value>, state: State<'_, AppState>) -> A
             db.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![setting_key, if v { "1" } else { "0" }])?;
         }
     }
+    maybe_start_ai_worker(&state);
     llm_get_features(None, state)
 }
 
@@ -4053,10 +4061,280 @@ pub fn ai_dismiss_suggestion(
     Ok(ok())
 }
 #[tauri::command]
-pub fn ai_queue_status(payload: Option<Value>) -> AppResult<Value> {
+pub fn ai_queue_status(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
-    Ok(json!({ "pending": 0, "schedulerRunning": false }))
+    maybe_start_ai_worker(&state);
+    let pending = state.ai_queue.lock().map(|q| q.len()).unwrap_or(0);
+    Ok(json!({
+        "pending": pending,
+        "schedulerRunning": state.ai_worker_running.load(Ordering::SeqCst)
+    }))
 }
+
+fn scan_added_skill_ids(scan: &Value) -> Vec<String> {
+    scan.get("addedSkillIds")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn enqueue_ai_suggestions(state: &State<'_, AppState>, skill_ids: Vec<String>) {
+    if skill_ids.is_empty() {
+        return;
+    }
+    if let Ok(mut queue) = state.ai_queue.lock() {
+        for skill_id in skill_ids {
+            if !queue.iter().any(|queued| queued == &skill_id) {
+                queue.push_back(skill_id);
+            }
+        }
+    }
+    maybe_start_ai_worker(state);
+}
+
+fn maybe_start_ai_worker(state: &State<'_, AppState>) {
+    let has_pending = state
+        .ai_queue
+        .lock()
+        .map(|queue| !queue.is_empty())
+        .unwrap_or(false);
+    if !has_pending {
+        return;
+    }
+    if state
+        .ai_worker_running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    let db = state.db.clone();
+    let queue = state.ai_queue.clone();
+    let running = state.ai_worker_running.clone();
+    std::thread::spawn(move || {
+        ai_queue_worker(db, queue, running);
+    });
+}
+
+fn ai_queue_worker(
+    db: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    loop {
+        let Ok(conn) = db.get() else {
+            break;
+        };
+        match ai_queue_can_process(&conn) {
+            Ok(AiQueueDecision::Ready) => {}
+            Ok(AiQueueDecision::DrainNoScenarios) => {
+                if let Ok(mut queue) = queue.lock() {
+                    queue.clear();
+                }
+                break;
+            }
+            Ok(AiQueueDecision::Wait) | Err(_) => break,
+        }
+        let batch = {
+            let Ok(mut queue) = queue.lock() else {
+                break;
+            };
+            let mut batch = Vec::new();
+            while batch.len() < 5 {
+                let Some(skill_id) = queue.pop_front() else {
+                    break;
+                };
+                batch.push(skill_id);
+            }
+            batch
+        };
+        if batch.is_empty() {
+            break;
+        }
+        if ai_process_suggestion_batch(&conn, &batch).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(ai_queue_interval_ms(&conn)));
+    }
+    running.store(false, Ordering::SeqCst);
+}
+
+enum AiQueueDecision {
+    Ready,
+    Wait,
+    DrainNoScenarios,
+}
+
+fn ai_queue_can_process(db: &Connection) -> AppResult<AiQueueDecision> {
+    if get_setting(db, "llm.feature.autoCategorize")?.as_deref() != Some("1") {
+        return Ok(AiQueueDecision::Wait);
+    }
+    if get_setting(db, "allow_external_network")?.as_deref() != Some("1") {
+        return Ok(AiQueueDecision::Wait);
+    }
+    let config = llm_read_config(db)?;
+    if config.model.trim().is_empty() {
+        return Ok(AiQueueDecision::Wait);
+    }
+    let api_key = llm_read_api_key(db)?;
+    if api_key.is_none() && config.provider != "ollama" {
+        return Ok(AiQueueDecision::Wait);
+    }
+    let scenario_count: i64 = db.query_row("SELECT COUNT(*) FROM scenarios", [], |r| r.get(0))?;
+    if scenario_count == 0 {
+        return Ok(AiQueueDecision::DrainNoScenarios);
+    }
+    Ok(AiQueueDecision::Ready)
+}
+
+fn ai_queue_interval_ms(db: &Connection) -> u64 {
+    get_setting(db, "ai.categorize.minIntervalMs")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v >= 1_000)
+        .unwrap_or(10_000)
+}
+
+fn ai_process_suggestion_batch(db: &Connection, skill_ids: &[String]) -> AppResult<()> {
+    let config = llm_read_config(db)?;
+    let api_key = llm_read_api_key(db)?;
+    let scenarios = ai_bulk_read_scenarios(db)?;
+    if scenarios.is_empty() {
+        return Ok(());
+    }
+    let skills = ai_bulk_read_skills(db, skill_ids)?;
+    if skills.is_empty() {
+        return Ok(());
+    }
+    let (system, user) = ai_suggestion_prompt(&scenarios, &skills);
+    let response = llm_chat_with_config(
+        &config,
+        api_key.as_deref(),
+        &json!({
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user }
+            ],
+            "temperature": 0.2,
+            "jsonMode": true,
+            "maxTokens": 4096
+        }),
+    )?;
+    let parsed =
+        ai_suggestion_parse_response(response.get("text").and_then(Value::as_str).unwrap_or(""));
+    let valid_keys = scenarios
+        .iter()
+        .map(|scenario| scenario.key.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let known_skill_ids = skills
+        .iter()
+        .map(|skill| skill.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let now = now_ms();
+    for result in parsed {
+        let skill_id = result.get("skillId").and_then(Value::as_str).unwrap_or("");
+        if !known_skill_ids.contains(skill_id) {
+            continue;
+        }
+        let reason = result.get("reason").and_then(Value::as_str);
+        for key in result
+            .get("scenarios")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .take(3)
+        {
+            if !valid_keys.contains(key) {
+                continue;
+            }
+            db.execute(
+                "INSERT OR IGNORE INTO ai_scenario_suggestions
+                   (skill_id, scenario_key, reason, suggested_at, accepted_at, dismissed_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL, NULL)",
+                params![skill_id, key, reason, now],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn ai_suggestion_prompt(
+    scenarios: &[BulkScenarioRow],
+    skills: &[BulkSkillRow],
+) -> (String, String) {
+    let system =
+        "You are a skill classifier. For each skill, suggest 0-3 scenarios from the provided list that best match. \
+         Echo each skillId exactly as given. Use scenario keys verbatim. \
+         Return strict JSON: {\"results\":[{\"skillId\":string,\"scenarios\":[scenarioKey],\"reason\":string}]}";
+    let scenario_block = scenarios
+        .iter()
+        .map(|s| {
+            format!(
+                "- {}: {} ({})",
+                s.key,
+                s.name,
+                compact_for_prompt(s.description.as_deref().unwrap_or(""), 100)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let skill_block = skills
+        .iter()
+        .map(|s| {
+            format!(
+                "- skillId={}, name=\"{}\", description=\"{}\"\nbody excerpt:\n{}\n---",
+                s.id,
+                s.name,
+                compact_for_prompt(s.description.as_deref().unwrap_or(""), 250),
+                compact_for_prompt(s.body_excerpt.as_deref().unwrap_or(""), 500)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (
+        system.to_string(),
+        format!(
+            "Scenarios (use the key before the colon):\n{scenario_block}\n\nSkills:\n{skill_block}"
+        ),
+    )
+}
+
+fn ai_suggestion_parse_response(text: &str) -> Vec<Value> {
+    ai_parse_json_object(text)
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn ai_parse_json_object(text: &str) -> Value {
+    serde_json::from_str::<Value>(text)
+        .or_else(|_| {
+            let Some(start) = text.find('{') else {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no json object",
+                )));
+            };
+            let Some(end) = text.rfind('}') else {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no json object",
+                )));
+            };
+            serde_json::from_str::<Value>(&text[start..=end])
+        })
+        .unwrap_or(Value::Null)
+}
+
 #[tauri::command]
 pub fn ai_bulk_categorize(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let raw_ids = payload

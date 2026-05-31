@@ -30,13 +30,14 @@ pub fn scan_all(conn: &Connection) -> AppResult<Value> {
         }
     }
 
-    let (new_skills, updated_skills, removed_skills) = reconcile(conn, &discovered, started)?;
+    let reconcile = reconcile(conn, &discovered, started)?;
     let finished = now_ms();
     let result = json!({
         "totalFound": discovered.len(),
-        "newSkills": new_skills,
-        "updatedSkills": updated_skills,
-        "removedSkills": removed_skills,
+        "newSkills": reconcile.new_count,
+        "updatedSkills": reconcile.updated_count,
+        "removedSkills": reconcile.removed_count,
+        "addedSkillIds": reconcile.added_skill_ids,
         "errors": errors,
         "durationMs": finished - started,
         "scannedAt": finished
@@ -48,9 +49,9 @@ pub fn scan_all(conn: &Connection) -> AppResult<Value> {
             started,
             finished,
             discovered.len() as i64,
-            new_skills,
-            updated_skills,
-            removed_skills,
+            reconcile.new_count,
+            reconcile.updated_count,
+            reconcile.removed_count,
             finished - started,
             serde_json::to_string(result["errors"].as_array().unwrap()).unwrap_or_else(|_| "[]".to_string())
         ],
@@ -71,6 +72,14 @@ struct Discovered {
     is_broken: bool,
     is_disabled: bool,
     parsed: parser::ParsedSkill,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ReconcileResult {
+    new_count: i64,
+    updated_count: i64,
+    removed_count: i64,
+    added_skill_ids: Vec<String>,
 }
 
 fn list_enabled_platforms(conn: &Connection) -> AppResult<Vec<PlatformRow>> {
@@ -166,9 +175,10 @@ fn reconcile(
     conn: &Connection,
     discovered: &[Discovered],
     scanned_at: i64,
-) -> AppResult<(i64, i64, i64)> {
+) -> AppResult<ReconcileResult> {
     let mut new_count = 0;
     let mut updated_count = 0;
+    let mut added_skill_ids = Vec::new();
     let mut seen_location_ids = std::collections::HashSet::new();
     let mut seen_skill_ids = std::collections::HashSet::new();
 
@@ -264,6 +274,7 @@ fn reconcile(
                     scanned_at
                 ])?;
                 new_count += 1;
+                added_skill_ids.push(skill_id.clone());
                 skill_id
             };
             seen_skill_ids.insert(skill_id.clone());
@@ -338,7 +349,12 @@ fn reconcile(
             removed += 1;
         }
     }
-    Ok((new_count, updated_count, removed))
+    Ok(ReconcileResult {
+        new_count,
+        updated_count,
+        removed_count: removed,
+        added_skill_ids,
+    })
 }
 
 fn icloud_evicted_name(name: &str) -> Option<&str> {
@@ -350,6 +366,10 @@ fn icloud_evicted_name(name: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn counts(result: ReconcileResult) -> (i64, i64, i64) {
+        (result.new_count, result.updated_count, result.removed_count)
+    }
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -428,24 +448,24 @@ mod tests {
             discovered("Alpha", "hash-a", "claude", "/tmp/claude/alpha"),
             discovered("Alpha", "hash-a", "codex", "/tmp/codex/alpha"),
         ];
-        assert_eq!(reconcile(&conn, &first, 100).unwrap(), (1, 0, 0));
+        assert_eq!(counts(reconcile(&conn, &first, 100).unwrap()), (1, 0, 0));
 
         let second = vec![discovered("Alpha", "hash-a", "claude", "/tmp/claude/alpha")];
-        assert_eq!(reconcile(&conn, &second, 200).unwrap(), (0, 0, 0));
+        assert_eq!(counts(reconcile(&conn, &second, 200).unwrap()), (0, 0, 0));
         let location_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM skill_locations", [], |r| r.get(0))
             .unwrap();
         assert_eq!(location_count, 1);
 
         let third: Vec<Discovered> = Vec::new();
-        assert_eq!(reconcile(&conn, &third, 300).unwrap(), (0, 0, 1));
+        assert_eq!(counts(reconcile(&conn, &third, 300).unwrap()), (0, 0, 1));
     }
 
     #[test]
     fn reconcile_preserves_scenario_orphans_without_counting_removed() {
         let conn = test_conn();
         let first = vec![discovered("Alpha", "hash-a", "claude", "/tmp/claude/alpha")];
-        assert_eq!(reconcile(&conn, &first, 100).unwrap(), (1, 0, 0));
+        assert_eq!(counts(reconcile(&conn, &first, 100).unwrap()), (1, 0, 0));
         let skill_id: String = conn
             .query_row("SELECT id FROM skills WHERE name = 'Alpha'", [], |r| {
                 r.get(0)
@@ -458,7 +478,7 @@ mod tests {
         .unwrap();
 
         let empty: Vec<Discovered> = Vec::new();
-        assert_eq!(reconcile(&conn, &empty, 200).unwrap(), (0, 0, 0));
+        assert_eq!(counts(reconcile(&conn, &empty, 200).unwrap()), (0, 0, 0));
         let skill_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))
             .unwrap();
