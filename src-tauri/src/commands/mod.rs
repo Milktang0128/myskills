@@ -904,7 +904,7 @@ pub fn coverage_matrix(payload: Option<Value>, state: State<'_, AppState>) -> Ap
     coverage_matrix_response(&db)
 }
 
-fn coverage_matrix_response(db: &Connection) -> AppResult<Value> {
+pub(crate) fn coverage_matrix_response(db: &Connection) -> AppResult<Value> {
     let all_platform_ids = db
         .prepare("SELECT id FROM platforms WHERE enabled = 1 ORDER BY sort_order, id")?
         .query_map([], |r| r.get::<_, String>(0))?

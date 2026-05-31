@@ -40,6 +40,11 @@ Automated checks already available:
   Scenarios backend workflows by writing theme/language/network settings,
   importing a scenario, linking a fixture skill, updating it, deleting a
   transient scenario, exporting scenarios, and verifying the resulting DB rows.
+- `npm run smoke:tauri:launch -- --coverage-smoke` and
+  `npm run smoke:tauri:dmg -- --coverage-smoke` launch packaged app artifacts
+  with disposable platform fixtures, run the real Rust Coverage Matrix helper,
+  and verify in-sync, stale drift, only-here orphan, disabled, canonical
+  platform ordering, and broken symlink scan diagnostics.
 - `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
   Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
   build, and packaged fixture smoke across macOS, Linux, and Windows preview
@@ -86,7 +91,7 @@ Important caveat:
 | Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | pass | Settings observed the preview DB path; packaged app/DMG sync smoke proves destructive backup writes land under temporary `myskills-tauri-preview/backups`; `AppPaths` creates `staging/` under the same preview data root. |
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
 | Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test and packaged app/DMG fixture smoke cover real scanner to Library DB, platform filter, disabled scope, parser-error reporting, scan run, and stats; visual List/Kanban UI smoke still pending. |
-| Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
+| Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged app/DMG coverage smoke now runs the real Rust matrix helper against disposable fixtures and verifies in-sync, stale, only-here orphan, disabled, canonical ordering, and broken symlink diagnostics; visual UI fixture smoke still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; packaged workflow smoke verifies language/theme/network setting writes; Settings UI toggles still pending visual smoke. |
 | Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests and packaged app/DMG workflow smoke cover import, export, link, update, and delete semantics; packaged UI file workflow still pending. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | partial | Rust fixture test covers symlink_create, skip/same_hash, symlink_replace, conflict/target_exists_file, token generation, and operation naming; packaged confirm dialog still pending. |
@@ -141,11 +146,15 @@ npm run smoke:tauri:launch -- --fixture-smoke
 npm run smoke:tauri:launch -- --sync-smoke
 npm run smoke:tauri:launch -- --history-smoke
 npm run smoke:tauri:launch -- --workflow-smoke
+npm run smoke:tauri:launch -- --coverage-smoke
+npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke
 npm run smoke:tauri:dmg
 npm run smoke:tauri:dmg -- --fixture-smoke
 npm run smoke:tauri:dmg -- --sync-smoke
 npm run smoke:tauri:dmg -- --history-smoke
 npm run smoke:tauri:dmg -- --workflow-smoke
+npm run smoke:tauri:dmg -- --coverage-smoke
+npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke
 npm run smoke:tauri:migration
 ```
 

@@ -103,6 +103,9 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         if let Some(scan) = apply_internal_smoke_fixture(&conn)? {
             last_scan = Some(scan);
         }
+        if std::env::var("MYSKILLS_INTERNAL_SMOKE_COVERAGE").is_ok() {
+            run_internal_smoke_coverage(&conn)?;
+        }
         if std::env::var("MYSKILLS_INTERNAL_SMOKE_WORKFLOWS").is_ok() {
             run_internal_smoke_workflows(&mut conn)?;
         }
@@ -245,6 +248,132 @@ fn run_internal_smoke_sync(conn: &rusqlite::Connection, backup_root: &Path) -> A
             "internal smoke sync did not apply exactly one copy operation",
             result,
         ));
+    }
+    Ok(())
+}
+
+fn run_internal_smoke_coverage(conn: &rusqlite::Connection) -> AppResult<()> {
+    let matrix = commands::coverage_matrix_response(conn)?;
+    if matrix
+        .get("canonicalPlatform")
+        .and_then(serde_json::Value::as_str)
+        != Some("shared")
+    {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix did not use shared as canonical platform",
+            matrix,
+        ));
+    }
+    let platforms = matrix
+        .get("platforms")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if platforms != ["shared", "claude", "codex"] {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix platform ordering did not match packaged fixture",
+            matrix,
+        ));
+    }
+    let rows = matrix
+        .get("rows")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            crate::error::AppError::detail(
+                "SMOKE_COVERAGE_FAILED",
+                "coverage matrix missing rows",
+                matrix.clone(),
+            )
+        })?;
+    let row_by_name = |name: &str| {
+        rows.iter()
+            .find(|row| row.get("skillName").and_then(serde_json::Value::as_str) == Some(name))
+    };
+    let Some(in_sync) = row_by_name("fixture-in-sync") else {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix missing fixture-in-sync row",
+            matrix.clone(),
+        ));
+    };
+    for platform_id in ["shared", "claude", "codex"] {
+        if in_sync["cells"][platform_id]["state"].as_str() != Some("present")
+            || in_sync["cells"][platform_id]["drift"].as_str() != Some("in_sync")
+        {
+            return Err(crate::error::AppError::detail(
+                "SMOKE_COVERAGE_FAILED",
+                "coverage matrix did not mark fixture-in-sync as present and in-sync everywhere",
+                matrix.clone(),
+            ));
+        }
+    }
+    let Some(stale) = row_by_name("fixture-stale") else {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix missing fixture-stale row",
+            matrix.clone(),
+        ));
+    };
+    if stale["hasDrift"].as_bool() != Some(true)
+        || stale["cells"]["claude"]["state"].as_str() != Some("present")
+        || stale["cells"]["claude"]["drift"].as_str() != Some("stale")
+    {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix did not mark fixture-stale as stale drift",
+            matrix.clone(),
+        ));
+    }
+    let Some(orphan) = row_by_name("fixture-claude-only") else {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix missing fixture-claude-only row",
+            matrix.clone(),
+        ));
+    };
+    if orphan["hasCanonicalSource"].as_bool() != Some(false)
+        || orphan["cells"]["shared"]["state"].as_str() != Some("missing")
+        || orphan["cells"]["claude"]["drift"].as_str() != Some("only_here")
+    {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix did not mark fixture-claude-only as only-here orphan",
+            matrix.clone(),
+        ));
+    }
+    let Some(disabled) = row_by_name("fixture-disabled") else {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix missing fixture-disabled row",
+            matrix.clone(),
+        ));
+    };
+    if disabled["hasCanonicalSource"].as_bool() != Some(false)
+        || disabled["cells"]["shared"]["state"].as_str() != Some("disabled")
+    {
+        return Err(crate::error::AppError::detail(
+            "SMOKE_COVERAGE_FAILED",
+            "coverage matrix did not mark fixture-disabled as disabled",
+            matrix.clone(),
+        ));
+    }
+    let rows_len = rows.len().to_string();
+    for (key, value) in [
+        ("smoke.coverage.matrix", "1"),
+        ("smoke.coverage.rows", rows_len.as_str()),
+    ] {
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
     }
     Ok(())
 }

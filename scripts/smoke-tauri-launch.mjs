@@ -10,7 +10,13 @@ const previewDirName = 'myskills-tauri-preview';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 
 function parseArgs(argv) {
-  const args = { fixtureSmoke: false, syncSmoke: false, historySmoke: false, workflowSmoke: false };
+  const args = {
+    fixtureSmoke: false,
+    syncSmoke: false,
+    historySmoke: false,
+    workflowSmoke: false,
+    coverageSmoke: false,
+  };
   for (const arg of argv) {
     if (arg === '--fixture-smoke') {
       args.fixtureSmoke = true;
@@ -24,6 +30,9 @@ function parseArgs(argv) {
     } else if (arg === '--workflow-smoke') {
       args.fixtureSmoke = true;
       args.workflowSmoke = true;
+    } else if (arg === '--coverage-smoke') {
+      args.fixtureSmoke = true;
+      args.coverageSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -180,6 +189,41 @@ function inspectFixtureDb(dbPath, manifest, options = {}) {
       if (deletedCount !== 0) return null;
       workflowScenario = scenario.name;
     }
+    let coverageRows = null;
+    if (options.coverageSmoke) {
+      const settings = Object.fromEntries(
+        queryJson(
+          dbPath,
+          "SELECT key, value FROM settings WHERE key IN ('smoke.coverage.matrix', 'smoke.coverage.rows')",
+        ).map((row) => [row.key, row.value]),
+      );
+      if (settings['smoke.coverage.matrix'] !== '1') return null;
+      coverageRows = Number(settings['smoke.coverage.rows']);
+      if (coverageRows !== 4) return null;
+
+      const coverageFacts = queryJson(
+        dbPath,
+        `SELECT
+           SUM(CASE WHEN s.name = 'fixture-in-sync' AND l.platform_id IN ('shared', 'claude', 'codex') AND l.is_disabled = 0 AND l.is_broken_link = 0 THEN 1 ELSE 0 END) AS inSyncLocations,
+           COUNT(DISTINCT CASE WHEN s.name = 'fixture-in-sync' THEN l.content_hash END) AS inSyncHashes,
+           COUNT(DISTINCT CASE WHEN s.name = 'fixture-stale' THEN l.content_hash END) AS staleHashes,
+           SUM(CASE WHEN s.name = 'fixture-claude-only' AND l.platform_id = 'claude' THEN 1 ELSE 0 END) AS orphanClaudeLocations,
+           SUM(CASE WHEN s.name = 'fixture-claude-only' AND l.platform_id = 'shared' THEN 1 ELSE 0 END) AS orphanSharedLocations,
+           SUM(CASE WHEN s.name = 'fixture-disabled' AND l.platform_id = 'shared' AND l.is_disabled = 1 THEN 1 ELSE 0 END) AS disabledSharedLocations
+         FROM skills s
+         LEFT JOIN skill_locations l ON l.skill_id = s.id`,
+      )[0];
+      if (
+        coverageFacts.inSyncLocations !== 3 ||
+        coverageFacts.inSyncHashes !== 1 ||
+        coverageFacts.staleHashes !== 2 ||
+        coverageFacts.orphanClaudeLocations !== 1 ||
+        coverageFacts.orphanSharedLocations !== 0 ||
+        coverageFacts.disabledSharedLocations !== 1
+      ) {
+        return null;
+      }
+    }
     return {
       totalSkills,
       disabledLocations,
@@ -190,6 +234,7 @@ function inspectFixtureDb(dbPath, manifest, options = {}) {
       ...(syncBackupPath ? { syncBackupPath } : {}),
       ...(rolledBackAt ? { rolledBackAt } : {}),
       ...(workflowScenario ? { workflowScenario } : {}),
+      ...(coverageRows ? { coverageRows } : {}),
     };
   } catch {
     return null;
@@ -238,6 +283,9 @@ if (args.historySmoke) {
 if (args.workflowSmoke) {
   env.MYSKILLS_INTERNAL_SMOKE_WORKFLOWS = '1';
 }
+if (args.coverageSmoke) {
+  env.MYSKILLS_INTERNAL_SMOKE_COVERAGE = '1';
+}
 
 const child = spawn(binary, [], {
   cwd: root,
@@ -264,6 +312,7 @@ const dbReady = waitFor(() => {
     syncSmoke: args.syncSmoke,
     historySmoke: args.historySmoke,
     workflowSmoke: args.workflowSmoke,
+    coverageSmoke: args.coverageSmoke,
   });
   return Boolean(fixtureResult);
 }, timeoutMs).then((ok) => (ok ? { dbReady: true } : { dbReady: false }));
