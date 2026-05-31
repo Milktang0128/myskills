@@ -65,7 +65,7 @@ Important caveat:
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | pending | Required before claiming Windows support. |
 | Linux preview | Build and launch smoke on Linux runner | pending | Required before claiming Linux support. |
-| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests cover DB copy, markers, backup path rewrite, existing target refusal, and invalid schema rejection. Stable enablement and rollback drill pending. |
+| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests cover DB copy, markers, backup path rewrite, existing target refusal, invalid schema rejection, and rollback file moves. Stable enablement drill pending. |
 
 ## Manual Smoke Script
 

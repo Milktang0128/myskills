@@ -26,6 +26,12 @@ pub struct StableMigrationReport {
     pub migrated_at: i64,
 }
 
+#[derive(Debug)]
+pub struct StableRollbackReport {
+    pub failed_db: Option<PathBuf>,
+    pub restored_db: Option<PathBuf>,
+}
+
 pub fn prepare_stable_import(
     source_db: &Path,
     electron_backup_root: Option<&Path>,
@@ -94,6 +100,42 @@ pub fn prepare_stable_import(
         backup_db,
         source_sha256,
         migrated_at,
+    })
+}
+
+pub fn rollback_stable_import(
+    target_data_dir: &Path,
+    timestamp_ms: i64,
+) -> AppResult<StableRollbackReport> {
+    let current_db = target_data_dir.join("myskills.db");
+    let failed_db = if current_db.exists() {
+        let failed = target_data_dir.join(format!("myskills.db.failed-{timestamp_ms}"));
+        if failed.exists() {
+            fs::remove_file(&failed)?;
+        }
+        fs::rename(&current_db, &failed)?;
+        Some(failed)
+    } else {
+        None
+    };
+
+    let restored_db = if let Some(pre_migration) = latest_pre_migration_db(target_data_dir)? {
+        fs::rename(&pre_migration, &current_db)?;
+        Some(current_db)
+    } else {
+        None
+    };
+
+    if failed_db.is_none() && restored_db.is_none() {
+        return Err(AppError::new(
+            "MIGRATION_ROLLBACK_EMPTY",
+            format!("No Tauri stable DB found in {}", target_data_dir.display()),
+        ));
+    }
+
+    Ok(StableRollbackReport {
+        failed_db,
+        restored_db,
     })
 }
 
@@ -218,6 +260,25 @@ fn copy_dir_recursive(source: &Path, dest: &Path) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+fn latest_pre_migration_db(target_data_dir: &Path) -> AppResult<Option<PathBuf>> {
+    if !target_data_dir.is_dir() {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(target_data_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("myskills.db.pre-migration-") && path.is_file() {
+            candidates.push(path);
+        }
+    }
+    candidates.sort();
+    Ok(candidates.pop())
 }
 
 #[cfg(unix)]
@@ -383,5 +444,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(backup_path, "/external/backup/skill");
+    }
+
+    #[test]
+    fn rollback_stable_import_moves_current_db_to_failed_backup() {
+        let root = temp_dir("rollback-current");
+        let target_dir = root.join("tauri-stable");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("myskills.db"), "current").unwrap();
+
+        let report = rollback_stable_import(&target_dir, 456).unwrap();
+
+        let failed = target_dir.join("myskills.db.failed-456");
+        assert_eq!(report.failed_db.as_deref(), Some(failed.as_path()));
+        assert!(report.restored_db.is_none());
+        assert_eq!(fs::read_to_string(failed).unwrap(), "current");
+        assert!(!target_dir.join("myskills.db").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rollback_stable_import_restores_latest_pre_migration_db() {
+        let root = temp_dir("rollback-restore");
+        let target_dir = root.join("tauri-stable");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("myskills.db"), "current").unwrap();
+        fs::write(target_dir.join("myskills.db.pre-migration-001"), "old").unwrap();
+        fs::write(target_dir.join("myskills.db.pre-migration-999"), "newest").unwrap();
+
+        let report = rollback_stable_import(&target_dir, 456).unwrap();
+
+        assert!(report.failed_db.is_some());
+        assert_eq!(
+            report.restored_db.as_deref(),
+            Some(target_dir.join("myskills.db").as_path())
+        );
+        assert_eq!(
+            fs::read_to_string(target_dir.join("myskills.db")).unwrap(),
+            "newest"
+        );
+        assert_eq!(
+            fs::read_to_string(target_dir.join("myskills.db.failed-456")).unwrap(),
+            "current"
+        );
+        assert!(target_dir.join("myskills.db.pre-migration-001").exists());
+        assert!(!target_dir.join("myskills.db.pre-migration-999").exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rollback_stable_import_reports_empty_target() {
+        let root = temp_dir("rollback-empty");
+        let err = rollback_stable_import(&root.join("missing"), 456).unwrap_err();
+
+        assert_eq!(err.code, "MIGRATION_ROLLBACK_EMPTY");
+        fs::remove_dir_all(root).ok();
     }
 }

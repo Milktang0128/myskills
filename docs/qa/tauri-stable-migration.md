@@ -105,14 +105,15 @@ Before enabling this migration in a stable build:
 
 - Rust migration foundation tests must cover copied Electron DB, marker writes,
   backup path rewrite, existing target refusal, invalid source schema rejection,
-  and unknown external backup path preservation.
+  unknown external backup path preservation, current DB failure preservation,
+  pre-migration DB restore, and empty rollback target rejection.
 - Run migration against a copied Electron production DB, not the live source.
 - Verify old Electron sync history rows are either rollbackable through copied
   backups or clearly marked non-rollbackable.
 - Verify API keys are not returned or silently migrated to the renderer.
 - Verify preview DBs are not imported unless explicitly selected.
-- Add stable enablement tests for first-launch gating and rollback drill before
-  switching away from the preview app id.
+- Add stable enablement tests for first-launch gating and an end-to-end rollback
+  drill before switching away from the preview app id.
 
 ## Release Rule
 
