@@ -3468,6 +3468,12 @@ pub fn llm_set_config(payload: Option<Value>, state: State<'_, AppState>) -> App
         ("baseUrl", "llm.baseUrl"),
     ] {
         if let Some(v) = p.get(json_key).and_then(Value::as_str) {
+            if json_key == "provider" && !is_valid_llm_provider(v) {
+                return Err(AppError::new(
+                    "INVALID_INPUT",
+                    format!("unknown provider \"{v}\""),
+                ));
+            }
             db.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![setting_key, v])?;
         }
     }
@@ -3496,21 +3502,403 @@ pub fn llm_delete_api_key(payload: Option<Value>, state: State<'_, AppState>) ->
 
 #[tauri::command]
 pub fn llm_chat(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
-    let _ = payload;
     let db = conn(&state)?;
     require_network(&db)?;
-    Err(AppError::new(
-        "NOT_IMPLEMENTED",
-        "LLM transport is not yet ported to Tauri",
-    ))
+    let req = payload
+        .as_ref()
+        .and_then(|p| p.get("req"))
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "req.messages required"))?;
+    let messages = req
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "req.messages required"))?;
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "message.role required"))?;
+        if !matches!(role, "system" | "user" | "assistant") {
+            return Err(AppError::new(
+                "INVALID_INPUT",
+                format!("unsupported message role \"{role}\""),
+            ));
+        }
+        if message.get("content").and_then(Value::as_str).is_none() {
+            return Err(AppError::new("INVALID_INPUT", "message.content required"));
+        }
+    }
+    let config = llm_read_config(&db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new(
+            "LLM_NO_MODEL",
+            "No model configured. Set one in Settings -> AI.",
+        ));
+    }
+    let api_key = llm_read_api_key(&db)?;
+    llm_chat_with_config(&config, api_key.as_deref(), req)
 }
 
 #[tauri::command]
 pub fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
-    require_network(&db)?;
-    Ok(json!({ "ok": false, "message": "LLM transport is not yet ported to Tauri" }))
+    if get_setting(&db, "allow_external_network")?.as_deref() != Some("1") {
+        return Ok(json!({
+            "ok": false,
+            "message": "External network is disabled in Settings. Toggle \"Allow external network requests\" to enable LLM calls."
+        }));
+    }
+    let config = llm_read_config(&db)?;
+    if config.model.trim().is_empty() {
+        return Ok(json!({ "ok": false, "message": "No model configured." }));
+    }
+    let api_key = llm_read_api_key(&db)?;
+    let req = if config.provider == "anthropic" {
+        json!({
+            "messages": [{ "role": "user", "content": "ping" }],
+            "maxTokens": 8,
+            "temperature": 0
+        })
+    } else {
+        json!({
+            "messages": [{ "role": "user", "content": "Reply with exactly: PONG" }],
+            "maxTokens": 512,
+            "temperature": 0
+        })
+    };
+    match llm_chat_with_config(&config, api_key.as_deref(), &req) {
+        Ok(response) => {
+            let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+            Ok(
+                json!({ "ok": true, "message": if text.is_empty() { "OK".to_string() } else { format!("OK ({})", truncate(text, 60)) } }),
+            )
+        }
+        Err(err) => Ok(json!({ "ok": false, "message": err.message })),
+    }
+}
+
+struct LlmRuntimeConfig {
+    provider: String,
+    model: String,
+    base_url: Option<String>,
+}
+
+fn llm_read_config(db: &Connection) -> AppResult<LlmRuntimeConfig> {
+    let provider = get_setting(db, "llm.provider")?.unwrap_or_else(|| "deepseek".to_string());
+    let provider = if is_valid_llm_provider(&provider) {
+        provider
+    } else {
+        "openai".to_string()
+    };
+    let model = get_setting(db, "llm.model")?.unwrap_or_default();
+    let base_url = get_setting(db, "llm.baseUrl")?
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty());
+    Ok(LlmRuntimeConfig {
+        provider,
+        model,
+        base_url,
+    })
+}
+
+fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
+    let Some(encoded) = get_setting(db, "secret:llm.apiKey")? else {
+        return Ok(None);
+    };
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|err| AppError::new("SECRET_DECODE_FAILED", err.to_string()))?;
+    Ok(Some(String::from_utf8(bytes).map_err(|err| {
+        AppError::new("SECRET_DECODE_FAILED", err.to_string())
+    })?))
+}
+
+fn llm_chat_with_config(
+    config: &LlmRuntimeConfig,
+    api_key: Option<&str>,
+    req: &Value,
+) -> AppResult<Value> {
+    if config.provider == "anthropic" {
+        llm_chat_anthropic(config, api_key, req)
+    } else {
+        llm_chat_openai_compatible(config, api_key, req)
+    }
+}
+
+fn llm_chat_openai_compatible(
+    config: &LlmRuntimeConfig,
+    api_key: Option<&str>,
+    req: &Value,
+) -> AppResult<Value> {
+    let base_url = llm_resolve_openai_base_url(config)?;
+    let messages = req
+        .get("messages")
+        .cloned()
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "req.messages required"))?;
+    let mut body = Map::new();
+    body.insert("model".to_string(), Value::String(config.model.clone()));
+    body.insert("messages".to_string(), messages);
+    body.insert(
+        "temperature".to_string(),
+        req.get("temperature")
+            .and_then(Value::as_f64)
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| json!(0.2)),
+    );
+    body.insert(
+        "max_tokens".to_string(),
+        req.get("maxTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(4096)
+            .into(),
+    );
+    if req.get("jsonMode").and_then(Value::as_bool) == Some(true) {
+        body.insert(
+            "response_format".to_string(),
+            json!({ "type": "json_object" }),
+        );
+    }
+    let client = catalog_client()?;
+    let mut request = client
+        .post(format!("{base_url}/chat/completions"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if let Some(key) = api_key.filter(|_| config.provider != "ollama") {
+        request = request.bearer_auth(key);
+    }
+    if config.provider == "openrouter" {
+        request = request
+            .header("http-referer", "https://myskills.local")
+            .header("x-title", "MySkills");
+    }
+    let res = request.json(&Value::Object(body)).send().map_err(|err| {
+        AppError::new(
+            "LLM_UNAVAILABLE",
+            format!("Could not reach LLM provider: {err}"),
+        )
+    })?;
+    let status = res.status();
+    if !status.is_success() {
+        let text = res.text().unwrap_or_default();
+        return Err(AppError::new(
+            "LLM_HTTP_ERROR",
+            format!(
+                "LLM request failed ({}): {}",
+                status.as_u16(),
+                truncate(&text, 400)
+            ),
+        ));
+    }
+    let json = res
+        .json::<Value>()
+        .map_err(|err| AppError::new("LLM_BAD_RESPONSE", err.to_string()))?;
+    let choice = json
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first());
+    let text = choice
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let finish_reason = choice
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(Value::as_str);
+    if text.is_empty() && finish_reason == Some("length") {
+        let reasoning_tokens = json
+            .pointer("/usage/completion_tokens_details/reasoning_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        return Err(AppError::new(
+            "LLM_BUDGET_EXHAUSTED",
+            if reasoning_tokens > 0 {
+                format!("The model spent its entire token budget on internal reasoning ({reasoning_tokens} reasoning tokens) without producing output. Try a larger maxTokens or a non-reasoning model.")
+            } else {
+                "Response was truncated at max_tokens before any content was produced. Try a larger maxTokens.".to_string()
+            },
+        ));
+    }
+    Ok(llm_response(text, llm_openai_usage(&json)))
+}
+
+fn llm_chat_anthropic(
+    config: &LlmRuntimeConfig,
+    api_key: Option<&str>,
+    req: &Value,
+) -> AppResult<Value> {
+    let api_key = api_key
+        .ok_or_else(|| AppError::new("LLM_NO_KEY", "Anthropic provider requires an API key."))?;
+    let base_url = config
+        .base_url
+        .clone()
+        .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string());
+    let mut system_parts = Vec::new();
+    let mut messages = Vec::new();
+    for message in req
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "req.messages required"))?
+    {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "message.role required"))?;
+        let content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "message.content required"))?;
+        if role == "system" {
+            system_parts.push(content.to_string());
+        } else {
+            messages.push(json!({ "role": role, "content": content }));
+        }
+    }
+    let mut body = Map::new();
+    body.insert("model".to_string(), Value::String(config.model.clone()));
+    body.insert("messages".to_string(), Value::Array(messages));
+    body.insert(
+        "max_tokens".to_string(),
+        req.get("maxTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(1024)
+            .into(),
+    );
+    body.insert(
+        "temperature".to_string(),
+        req.get("temperature")
+            .and_then(Value::as_f64)
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| json!(0.2)),
+    );
+    if req.get("jsonMode").and_then(Value::as_bool) == Some(true) {
+        system_parts
+            .push("Respond with a single JSON object and no surrounding prose.".to_string());
+    }
+    if !system_parts.is_empty() {
+        body.insert(
+            "system".to_string(),
+            Value::String(system_parts.join("\n\n")),
+        );
+    }
+    let client = catalog_client()?;
+    let res = client
+        .post(format!("{base_url}/messages"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&Value::Object(body))
+        .send()
+        .map_err(|err| {
+            AppError::new(
+                "LLM_UNAVAILABLE",
+                format!("Could not reach Anthropic: {err}"),
+            )
+        })?;
+    let status = res.status();
+    if !status.is_success() {
+        let text = res.text().unwrap_or_default();
+        return Err(AppError::new(
+            "LLM_HTTP_ERROR",
+            format!(
+                "Anthropic request failed ({}): {}",
+                status.as_u16(),
+                truncate(&text, 400)
+            ),
+        ));
+    }
+    let json = res
+        .json::<Value>()
+        .map_err(|err| AppError::new("LLM_BAD_RESPONSE", err.to_string()))?;
+    let text = json
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    Ok(llm_response(text, llm_anthropic_usage(&json)))
+}
+
+fn llm_response(text: String, usage: Value) -> Value {
+    let mut response = Map::new();
+    response.insert("text".to_string(), Value::String(text));
+    if !usage.is_null() {
+        response.insert("usage".to_string(), usage);
+    }
+    Value::Object(response)
+}
+
+fn llm_openai_usage(json: &Value) -> Value {
+    let Some(usage) = json.get("usage") else {
+        return Value::Null;
+    };
+    json!({
+        "promptTokens": usage.get("prompt_tokens").and_then(Value::as_i64).unwrap_or(0),
+        "completionTokens": usage.get("completion_tokens").and_then(Value::as_i64).unwrap_or(0),
+        "totalTokens": usage.get("total_tokens").and_then(Value::as_i64).unwrap_or(0),
+    })
+}
+
+fn llm_anthropic_usage(json: &Value) -> Value {
+    let Some(usage) = json.get("usage") else {
+        return Value::Null;
+    };
+    let prompt = usage
+        .get("input_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let completion = usage
+        .get("output_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    json!({
+        "promptTokens": prompt,
+        "completionTokens": completion,
+        "totalTokens": prompt + completion,
+    })
+}
+
+fn llm_resolve_openai_base_url(config: &LlmRuntimeConfig) -> AppResult<String> {
+    if let Some(base_url) = &config.base_url {
+        return Ok(base_url.clone());
+    }
+    match config.provider.as_str() {
+        "openai" => Ok("https://api.openai.com/v1".to_string()),
+        "openrouter" => Ok("https://openrouter.ai/api/v1".to_string()),
+        "deepseek" => Ok("https://api.deepseek.com/v1".to_string()),
+        "ollama" => Ok("http://localhost:11434/v1".to_string()),
+        "custom" => Err(AppError::new(
+            "INVALID_INPUT",
+            "baseUrl is required for provider \"custom\"",
+        )),
+        provider => Err(AppError::new(
+            "INVALID_INPUT",
+            format!("unknown provider \"{provider}\""),
+        )),
+    }
+}
+
+fn is_valid_llm_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "openai" | "anthropic" | "deepseek" | "openrouter" | "ollama" | "custom"
+    )
+}
+
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut truncated = s.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 #[tauri::command]
