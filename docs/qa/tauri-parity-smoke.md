@@ -47,7 +47,9 @@ Automated checks already available:
   platform ordering, and broken symlink scan diagnostics.
 - `npm run smoke:ui:workbench` renders the real React workbench in a DOM smoke
   harness with a mocked Tauri command bridge and verifies Coverage Matrix,
-  broken/orphan filtering, Library list, and Kanban scenario grouping.
+  broken/orphan filtering, Sync confirm, Library list, Kanban scenario
+  grouping, Scenarios detail, History table, and Settings network/scan/stats
+  surfaces.
 - `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
   Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
   build, and packaged fixture smoke across macOS, Linux, and Windows preview
@@ -95,11 +97,11 @@ Important caveat:
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
 | Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test and packaged app/DMG fixture smoke cover real scanner to Library DB, platform filter, disabled scope, parser-error reporting, scan run, and stats; workbench UI smoke verifies List and Kanban render/interaction against the same frontend component tree via mocked Tauri bridge. Real packaged UI fixture click-through still pending. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged app/DMG coverage smoke runs the real Rust matrix helper against disposable fixtures; workbench UI smoke verifies Matrix rendering plus broken/orphan filters. Real packaged UI fixture click-through still pending. |
-| Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; packaged workflow smoke verifies language/theme/network setting writes; Settings UI toggles still pending visual smoke. |
-| Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests and packaged app/DMG workflow smoke cover import, export, link, update, and delete semantics; packaged UI file workflow still pending. |
-| Sync plan | Plan dialog shows writes/skips/conflicts and token gate | partial | Rust fixture test covers symlink_create, skip/same_hash, symlink_replace, conflict/target_exists_file, token generation, and operation naming; packaged confirm dialog still pending. |
+| Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; packaged workflow smoke verifies language/theme/network setting writes; workbench UI smoke verifies Settings sections, network toggle, scan errors, and stats. Packaged Settings UI click-through still pending. |
+| Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests and packaged app/DMG workflow smoke cover import, export, link, update, and delete semantics; workbench UI smoke verifies Scenarios management view, detail expansion, linked skills, and AI recommendation gate. Packaged UI file picker workflow still pending. |
+| Sync plan | Plan dialog shows writes/skips/conflicts and token gate | partial | Rust fixture test covers symlink_create, skip/same_hash, symlink_replace, conflict/target_exists_file, token generation, and operation naming; workbench UI smoke verifies Sync confirm dialog summaries, write actions, rollback hint, and apply affordance. Packaged confirm dialog click-through still pending. |
 | Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; packaged app/DMG history smoke proves copy replacement backup path isolation and rollback restore; symlink packaged UI workflow still pending. |
-| History | Sync history and rollback flow work from packaged app | partial | Rust workflow test and packaged app/DMG history smoke verify success history rows, `rolled_back_at`, backup consumption, and restored target content; packaged History UI still pending. |
+| History | Sync history and rollback flow work from packaged app | partial | Rust workflow test and packaged app/DMG history smoke verify success history rows, `rolled_back_at`, backup consumption, and restored target content; workbench UI smoke verifies History table rows, grouped action text, backup path, and rollback affordance. Packaged History UI click-through still pending. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
 | macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture/history smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, executes and rolls back a safe copy sync, and verifies SQLite/backup results. |
