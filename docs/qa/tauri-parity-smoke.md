@@ -31,6 +31,10 @@ Automated checks already available:
   copy-to-canonical replacement from the disposable fixtures and verify
   `sync_history.backup_path` points inside the temporary
   `myskills-tauri-preview/backups` directory.
+- `npm run smoke:tauri:launch -- --history-smoke` and
+  `npm run smoke:tauri:dmg -- --history-smoke` extend that packaged sync smoke
+  by rolling the copy operation back, verifying `rolled_back_at`, and checking
+  the original canonical fixture content is restored.
 - `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
   Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
   build, and packaged fixture smoke across macOS, Linux, and Windows preview
@@ -81,11 +85,11 @@ Important caveat:
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
 | Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | partial | Rust fixture test covers symlink_create, skip/same_hash, symlink_replace, conflict/target_exists_file, token generation, and operation naming; packaged confirm dialog still pending. |
-| Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; packaged app/DMG sync smoke proves copy replacement backup path isolation; symlink packaged UI workflow still pending. |
-| History | Sync history and rollback flow work from packaged app | partial | Rust workflow test verifies success history rows and rollback marker update; packaged History UI still pending. |
+| Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; packaged app/DMG history smoke proves copy replacement backup path isolation and rollback restore; symlink packaged UI workflow still pending. |
+| History | Sync history and rollback flow work from packaged app | partial | Rust workflow test and packaged app/DMG history smoke verify success history rows, `rolled_back_at`, backup consumption, and restored target content; packaged History UI still pending. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
-| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture/sync smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, executes a safe copy sync, and verifies SQLite/backup results. |
+| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture/history smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, executes and rolls back a safe copy sync, and verifies SQLite/backup results. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |
 | Linux preview | Build and launch smoke on Linux runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke under `xvfb-run` on `ubuntu-24.04`; activation needs a token with `workflow` scope, then first green runner result. |
@@ -130,9 +134,11 @@ npm run smoke:tauri:fixtures
 npm run smoke:tauri:launch
 npm run smoke:tauri:launch -- --fixture-smoke
 npm run smoke:tauri:launch -- --sync-smoke
+npm run smoke:tauri:launch -- --history-smoke
 npm run smoke:tauri:dmg
 npm run smoke:tauri:dmg -- --fixture-smoke
 npm run smoke:tauri:dmg -- --sync-smoke
+npm run smoke:tauri:dmg -- --history-smoke
 npm run smoke:tauri:migration
 ```
 

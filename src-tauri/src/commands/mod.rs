@@ -1409,33 +1409,25 @@ pub fn sync_rollback(payload: Option<Value>, state: State<'_, AppState>) -> AppR
     }
 
     let rows = rollback_rows(&db, id, op_group_id.as_deref())?;
-    let mark_time = now_ms();
-    let mut rolled_back = 0;
-    for row in &rows {
-        if let Err(err) = rollback_one_row(row) {
-            let _ = scanner::scan_all(&db).map(|scan| {
-                if let Ok(mut last) = state.last_scan.lock() {
-                    *last = Some(scan.clone());
-                }
-                enqueue_ai_suggestions(&state, scan_added_skill_ids(&scan));
-            });
-            return Err(AppError::new(
-                err.code,
-                format!("Row {}: {}", row.id, err.message),
-            ));
-        }
-        db.execute(
-            "UPDATE sync_history SET rolled_back_at = ?1 WHERE id = ?2",
-            params![mark_time, row.id],
-        )?;
-        rolled_back += 1;
-    }
+    let rolled_back = rollback_history_rows(&db, &rows, || {
+        let _ = scanner::scan_all(&db).map(|scan| {
+            if let Ok(mut last) = state.last_scan.lock() {
+                *last = Some(scan.clone());
+            }
+            enqueue_ai_suggestions(&state, scan_added_skill_ids(&scan));
+        });
+    })?;
     let scan = scanner::scan_all(&db)?;
     if let Ok(mut last) = state.last_scan.lock() {
         *last = Some(scan.clone());
     }
     enqueue_ai_suggestions(&state, scan_added_skill_ids(&scan));
     Ok(json!({ "ok": true, "rolledBack": rolled_back }))
+}
+
+pub(crate) fn rollback_history_group(db: &Connection, op_group_id: &str) -> AppResult<usize> {
+    let rows = rollback_rows(db, -1, Some(op_group_id))?;
+    rollback_history_rows(db, &rows, || {})
 }
 
 struct RollbackRow {
@@ -1491,6 +1483,33 @@ fn rollback_one_row(row: &RollbackRow) -> AppResult<()> {
             format!("rollback unsupported for action={action}"),
         )),
     }
+}
+
+fn rollback_history_rows<F>(
+    db: &Connection,
+    rows: &[RollbackRow],
+    mut on_error: F,
+) -> AppResult<usize>
+where
+    F: FnMut(),
+{
+    let mark_time = now_ms();
+    let mut rolled_back = 0;
+    for row in rows {
+        if let Err(err) = rollback_one_row(row) {
+            on_error();
+            return Err(AppError::new(
+                err.code,
+                format!("Row {}: {}", row.id, err.message),
+            ));
+        }
+        db.execute(
+            "UPDATE sync_history SET rolled_back_at = ?1 WHERE id = ?2",
+            params![mark_time, row.id],
+        )?;
+        rolled_back += 1;
+    }
+    Ok(rolled_back)
 }
 
 fn rollback_symlink_row(row: &RollbackRow) -> AppResult<()> {

@@ -10,7 +10,7 @@ const previewDirName = 'myskills-tauri-preview';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 
 function parseArgs(argv) {
-  const args = { dmg: '', fixtureSmoke: false, syncSmoke: false };
+  const args = { dmg: '', fixtureSmoke: false, syncSmoke: false, historySmoke: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--dmg') {
@@ -20,6 +20,10 @@ function parseArgs(argv) {
     } else if (arg === '--sync-smoke') {
       args.fixtureSmoke = true;
       args.syncSmoke = true;
+    } else if (arg === '--history-smoke') {
+      args.fixtureSmoke = true;
+      args.syncSmoke = true;
+      args.historySmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -124,14 +128,28 @@ function inspectFixtureDb(dbPath, manifest, options = {}) {
       return null;
     }
     let syncBackupPath = null;
+    let rolledBackAt = null;
     if (options.syncSmoke) {
       const syncRow = queryJson(
         dbPath,
-        "SELECT backup_path AS backupPath, success FROM sync_history WHERE op_group_id = 'internal-smoke-sync' ORDER BY id DESC LIMIT 1",
+        "SELECT backup_path AS backupPath, success, rolled_back_at AS rolledBackAt FROM sync_history WHERE op_group_id = 'internal-smoke-sync' ORDER BY id DESC LIMIT 1",
       )[0];
       if (!syncRow || syncRow.success !== 1 || !syncRow.backupPath) return null;
       const expectedBackupRoot = path.join(path.dirname(dbPath), 'backups');
-      if (!syncRow.backupPath.startsWith(expectedBackupRoot) || !fs.existsSync(syncRow.backupPath)) {
+      if (!syncRow.backupPath.startsWith(expectedBackupRoot)) {
+        return null;
+      }
+      if (options.historySmoke) {
+        if (!syncRow.rolledBackAt) return null;
+        const sharedDir = platformDirs.shared;
+        const restoredSkill = fs.readFileSync(
+          path.join(sharedDir, 'fixture-stale', 'SKILL.md'),
+          'utf8',
+        );
+        if (!restoredSkill.includes('Canonical copy for stale drift smoke.')) return null;
+        if (fs.existsSync(syncRow.backupPath)) return null;
+        rolledBackAt = syncRow.rolledBackAt;
+      } else if (!fs.existsSync(syncRow.backupPath)) {
         return null;
       }
       syncBackupPath = syncRow.backupPath;
@@ -144,6 +162,7 @@ function inspectFixtureDb(dbPath, manifest, options = {}) {
       updatedSkills: scan.updatedSkills,
       errorKinds: [...errorKinds].sort(),
       ...(syncBackupPath ? { syncBackupPath } : {}),
+      ...(rolledBackAt ? { rolledBackAt } : {}),
     };
   } catch {
     return null;
@@ -209,6 +228,9 @@ try {
   if (args.syncSmoke) {
     env.MYSKILLS_INTERNAL_SMOKE_SYNC = '1';
   }
+  if (args.historySmoke) {
+    env.MYSKILLS_INTERNAL_SMOKE_ROLLBACK = '1';
+  }
   const child = spawn(binary, [], {
     cwd: root,
     env,
@@ -230,7 +252,10 @@ try {
   let fixtureResult = null;
   const dbReady = waitFor(() => {
     if (!manifest) return fs.existsSync(dbPath);
-    fixtureResult = inspectFixtureDb(dbPath, manifest, { syncSmoke: args.syncSmoke });
+    fixtureResult = inspectFixtureDb(dbPath, manifest, {
+      syncSmoke: args.syncSmoke,
+      historySmoke: args.historySmoke,
+    });
     return Boolean(fixtureResult);
   }, timeoutMs).then((ok) => (ok ? { dbReady: true } : { dbReady: false }));
   const result = await Promise.race([exitedEarly, dbReady]);

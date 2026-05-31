@@ -105,6 +105,15 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         }
         if std::env::var("MYSKILLS_INTERNAL_SMOKE_SYNC").is_ok() {
             run_internal_smoke_sync(&conn, &paths.backup_root)?;
+            if std::env::var("MYSKILLS_INTERNAL_SMOKE_ROLLBACK").is_ok() {
+                let rolled_back = commands::rollback_history_group(&conn, "internal-smoke-sync")?;
+                if rolled_back != 1 {
+                    return Err(crate::error::AppError::new(
+                        "SMOKE_ROLLBACK_FAILED",
+                        format!("expected one rollback row, got {rolled_back}"),
+                    ));
+                }
+            }
             let scan = scanner::scan_all(&conn)?;
             last_scan = Some(scan);
         }
