@@ -32,6 +32,10 @@ Automated checks already available:
   runners; macOS additionally runs mounted DMG fixture smoke. Activating it
   requires pushing `.github/workflows/tauri-preview.yml` with a GitHub token
   that has the `workflow` scope.
+- `npm run smoke:tauri:migration` runs a disposable stable migration drill:
+  copied Electron DB import, backup path rewrite, rollback to
+  `myskills.db.failed-*`, source DB immutability, and migration backup
+  preservation.
 - Rust fixture tests cover real scanner ingestion into the Library backend,
   including platform filtering, disabled-scope listing, parser errors, scan
   runs, and Settings stats.
@@ -80,7 +84,7 @@ Important caveat:
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |
 | Linux preview | Build and launch smoke on Linux runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke under `xvfb-run` on `ubuntu-24.04`; activation needs a token with `workflow` scope, then first green runner result. |
-| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests cover DB copy, markers, backup path rewrite, existing target refusal, invalid schema rejection, and rollback file moves. Stable enablement drill pending. |
+| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented; Rust foundation tests and `smoke:tauri:migration` cover DB copy, markers, backup path rewrite, existing target refusal, invalid source schema rejection, rollback file moves, source immutability, and backup preservation. Stable first-launch enablement remains disabled for preview builds. |
 
 ## Manual Smoke Script
 
@@ -122,6 +126,7 @@ npm run smoke:tauri:launch
 npm run smoke:tauri:launch -- --fixture-smoke
 npm run smoke:tauri:dmg
 npm run smoke:tauri:dmg -- --fixture-smoke
+npm run smoke:tauri:migration
 ```
 
 ## Release Decision

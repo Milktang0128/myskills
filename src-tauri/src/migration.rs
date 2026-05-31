@@ -500,4 +500,72 @@ mod tests {
         assert_eq!(err.code, "MIGRATION_ROLLBACK_EMPTY");
         fs::remove_dir_all(root).ok();
     }
+
+    #[test]
+    fn stable_migration_drill_imports_copy_and_rolls_back_without_source_mutation() {
+        let root = temp_dir("drill");
+        let electron_dir = root.join("electron");
+        let target_dir = root.join("tauri-stable");
+        let old_backup_root = electron_dir.join("backups");
+        let old_backup_item = old_backup_root.join("skill-1");
+        fs::create_dir_all(&old_backup_item).unwrap();
+        fs::write(old_backup_item.join("SKILL.md"), "original backup").unwrap();
+
+        let source_db = electron_dir.join("myskills.db");
+        fs::create_dir_all(&electron_dir).unwrap();
+        create_source_db(&source_db);
+        {
+            let conn = Connection::open(&source_db).unwrap();
+            conn.execute(
+                "UPDATE sync_history SET backup_path = ?1 WHERE skill_id = 'skill-1'",
+                params![old_backup_item.to_string_lossy()],
+            )
+            .unwrap();
+        }
+        let source_hash_before = sha256_file(&source_db).unwrap();
+
+        let import = prepare_stable_import(&source_db, Some(&old_backup_root), &target_dir, 111)
+            .expect("stable import should succeed");
+
+        assert_eq!(sha256_file(&source_db).unwrap(), source_hash_before);
+        assert!(source_db.exists());
+        assert!(old_backup_item.join("SKILL.md").exists());
+        assert!(import.target_db.exists());
+        assert!(import.backup_db.exists());
+        assert!(target_dir
+            .join("migration-backups/electron-111/backups/skill-1/SKILL.md")
+            .exists());
+
+        let imported_backup_path: String = Connection::open(&import.target_db)
+            .unwrap()
+            .query_row(
+                "SELECT backup_path FROM sync_history WHERE skill_id = 'skill-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(imported_backup_path.starts_with(
+            target_dir
+                .join("migration-backups/electron-111/backups")
+                .to_string_lossy()
+                .as_ref()
+        ));
+
+        let rollback = rollback_stable_import(&target_dir, 222).expect("rollback should succeed");
+
+        assert!(rollback.restored_db.is_none());
+        assert_eq!(
+            rollback.failed_db.as_deref(),
+            Some(target_dir.join("myskills.db.failed-222").as_path())
+        );
+        assert!(!target_dir.join("myskills.db").exists());
+        assert!(target_dir.join("myskills.db.failed-222").exists());
+        assert!(import.backup_db.exists());
+        assert!(target_dir
+            .join("migration-backups/electron-111/backups/skill-1/SKILL.md")
+            .exists());
+        assert_eq!(sha256_file(&source_db).unwrap(), source_hash_before);
+        assert!(old_backup_item.join("SKILL.md").exists());
+        fs::remove_dir_all(root).ok();
+    }
 }

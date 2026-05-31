@@ -107,6 +107,11 @@ Before enabling this migration in a stable build:
   backup path rewrite, existing target refusal, invalid source schema rejection,
   unknown external backup path preservation, current DB failure preservation,
   pre-migration DB restore, and empty rollback target rejection.
+- `npm run smoke:tauri:migration` must pass. This drill imports a copied
+  Electron DB into a disposable stable Tauri data directory, rewrites copied
+  backup paths, rolls back the imported DB to `myskills.db.failed-*`, preserves
+  `migration-backups/`, and verifies the source Electron DB and original backup
+  tree are unchanged.
 - Run migration against a copied Electron production DB, not the live source.
 - Verify old Electron sync history rows are either rollbackable through copied
   backups or clearly marked non-rollbackable.
