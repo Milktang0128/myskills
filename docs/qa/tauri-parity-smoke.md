@@ -53,7 +53,7 @@ Important caveat:
 | Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | partial | DB path observed in Settings; destructive sync backup paths still need workflow proof. |
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
 | Library | List/Kanban/Coverage render with real scanned skills | pending | Need real scan fixture or seeded skill dirs. |
-| Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | pending | Backend tests exist; desktop UI path still needs fixture smoke. |
+| Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
 | Scenarios | Create/edit/delete/import/export round trip | pending | Needs non-destructive fixture DB or temporary skill dirs. |
 | Sync plan | Plan dialog shows writes/skips/conflicts and token gate | pending | Must run against temporary platform dirs. |

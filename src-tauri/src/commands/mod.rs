@@ -894,12 +894,15 @@ pub fn scenarios_create_from_cluster(
 pub fn coverage_matrix(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
+    coverage_matrix_response(&db)
+}
+
+fn coverage_matrix_response(db: &Connection) -> AppResult<Value> {
     let all_platform_ids = db
         .prepare("SELECT id FROM platforms WHERE enabled = 1 ORDER BY sort_order, id")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    let configured =
-        get_setting(&db, "canonical_platform")?.unwrap_or_else(|| "shared".to_string());
+    let configured = get_setting(db, "canonical_platform")?.unwrap_or_else(|| "shared".to_string());
     let canonical = if all_platform_ids.iter().any(|id| id == &configured) {
         configured
     } else {
@@ -2876,6 +2879,92 @@ mod tests {
         conn
     }
 
+    fn coverage_conn() -> Connection {
+        let conn = settings_conn();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE platforms (
+              id TEXT PRIMARY KEY,
+              label TEXT NOT NULL,
+              skills_dir TEXT NOT NULL,
+              is_builtin INTEGER NOT NULL DEFAULT 0,
+              enabled INTEGER NOT NULL DEFAULT 1,
+              sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE skills (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              source_key TEXT NOT NULL DEFAULT 'local',
+              description TEXT,
+              content_hash TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              last_scanned_at INTEGER NOT NULL
+            );
+            CREATE TABLE skill_locations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              skill_id TEXT NOT NULL,
+              platform_id TEXT NOT NULL,
+              install_path TEXT NOT NULL,
+              real_path TEXT NOT NULL,
+              is_symlink INTEGER NOT NULL DEFAULT 0,
+              is_broken_link INTEGER NOT NULL DEFAULT 0,
+              is_disabled INTEGER NOT NULL DEFAULT 0,
+              content_hash TEXT,
+              mtime INTEGER,
+              last_seen_at INTEGER NOT NULL
+            );
+            INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared');
+            INSERT INTO platforms (id, label, skills_dir, enabled, sort_order) VALUES
+              ('shared', 'User Agents Folder', '/tmp/shared', 1, 0),
+              ('claude', 'Claude Code', '/tmp/claude', 1, 1),
+              ('codex', 'Codex', '/tmp/codex', 1, 2);
+            "#,
+        )
+        .expect("coverage schema");
+        conn
+    }
+
+    fn insert_coverage_skill(conn: &Connection, id: &str, name: &str) {
+        conn.execute(
+            "INSERT INTO skills
+             (id, name, source_key, description, content_hash, created_at, updated_at, last_scanned_at)
+             VALUES (?1, ?2, 'local', 'fixture', ?3, 1, 1, 1)",
+            params![id, name, format!("{id}-hash")],
+        )
+        .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_coverage_location(
+        conn: &Connection,
+        skill_id: &str,
+        platform_id: &str,
+        install_path: &str,
+        real_path: &str,
+        is_symlink: bool,
+        is_broken_link: bool,
+        is_disabled: bool,
+        content_hash: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO skill_locations
+             (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1)",
+            params![
+                skill_id,
+                platform_id,
+                install_path,
+                real_path,
+                is_symlink as i64,
+                is_broken_link as i64,
+                is_disabled as i64,
+                content_hash,
+            ],
+        )
+        .unwrap();
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("myskills-commands-test-{name}-{}", Uuid::new_v4()));
@@ -3084,6 +3173,141 @@ mod tests {
         assert_eq!(item["action"].as_str(), Some("conflict"));
         assert_eq!(item["reason"].as_str(), Some("canonical_has_dependents"));
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn coverage_matrix_reports_fixture_states_and_drift() {
+        let conn = coverage_conn();
+        insert_coverage_skill(&conn, "skill-in-sync", "fixture-in-sync");
+        insert_coverage_skill(&conn, "skill-stale", "fixture-stale");
+        insert_coverage_skill(&conn, "skill-orphan", "fixture-claude-only");
+        insert_coverage_skill(&conn, "skill-broken", "fixture-broken-link");
+        insert_coverage_skill(&conn, "skill-disabled", "fixture-disabled");
+
+        insert_coverage_location(
+            &conn,
+            "skill-in-sync",
+            "shared",
+            "/tmp/shared/fixture-in-sync",
+            "/tmp/shared/fixture-in-sync",
+            false,
+            false,
+            false,
+            Some("same"),
+        );
+        insert_coverage_location(
+            &conn,
+            "skill-in-sync",
+            "claude",
+            "/tmp/claude/fixture-in-sync",
+            "/tmp/shared/fixture-in-sync",
+            true,
+            false,
+            false,
+            Some("same"),
+        );
+
+        insert_coverage_location(
+            &conn,
+            "skill-stale",
+            "shared",
+            "/tmp/shared/fixture-stale",
+            "/tmp/shared/fixture-stale",
+            false,
+            false,
+            false,
+            Some("canonical"),
+        );
+        insert_coverage_location(
+            &conn,
+            "skill-stale",
+            "claude",
+            "/tmp/claude/fixture-stale",
+            "/tmp/claude/fixture-stale",
+            false,
+            false,
+            false,
+            Some("stale"),
+        );
+
+        insert_coverage_location(
+            &conn,
+            "skill-orphan",
+            "claude",
+            "/tmp/claude/fixture-claude-only",
+            "/tmp/claude/fixture-claude-only",
+            false,
+            false,
+            false,
+            Some("orphan"),
+        );
+        insert_coverage_location(
+            &conn,
+            "skill-broken",
+            "codex",
+            "/tmp/codex/fixture-broken-link",
+            "/tmp/missing",
+            true,
+            true,
+            false,
+            None,
+        );
+        insert_coverage_location(
+            &conn,
+            "skill-disabled",
+            "shared",
+            "/tmp/shared/.disabled/fixture-disabled",
+            "/tmp/shared/.disabled/fixture-disabled",
+            false,
+            false,
+            true,
+            Some("disabled"),
+        );
+
+        let matrix = coverage_matrix_response(&conn).unwrap();
+        assert_eq!(
+            matrix.get("canonicalPlatform").and_then(Value::as_str),
+            Some("shared")
+        );
+        assert_eq!(
+            matrix.get("platforms").and_then(Value::as_array).unwrap(),
+            &vec![json!("shared"), json!("claude"), json!("codex")]
+        );
+        let rows = matrix.get("rows").and_then(Value::as_array).unwrap();
+        let by_id = rows
+            .iter()
+            .map(|row| (row.get("skillId").and_then(Value::as_str).unwrap(), row))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(
+            by_id["skill-in-sync"]["cells"]["claude"]["state"].as_str(),
+            Some("symlink")
+        );
+        assert_eq!(
+            by_id["skill-stale"]["cells"]["claude"]["drift"].as_str(),
+            Some("stale")
+        );
+        assert_eq!(by_id["skill-stale"]["hasDrift"].as_bool(), Some(true));
+        assert_eq!(
+            by_id["skill-orphan"]["cells"]["shared"]["state"].as_str(),
+            Some("missing")
+        );
+        assert_eq!(
+            by_id["skill-orphan"]["cells"]["claude"]["drift"].as_str(),
+            Some("only_here")
+        );
+        assert_eq!(
+            by_id["skill-broken"]["cells"]["codex"]["state"].as_str(),
+            Some("broken")
+        );
+        assert_eq!(
+            by_id["skill-disabled"]["cells"]["shared"]["state"].as_str(),
+            Some("disabled")
+        );
+        assert_eq!(
+            by_id["skill-disabled"]["hasCanonicalSource"].as_bool(),
+            Some(false)
+        );
     }
 
     #[test]
