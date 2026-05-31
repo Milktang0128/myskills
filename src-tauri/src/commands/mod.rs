@@ -4058,53 +4058,892 @@ pub fn ai_queue_status(payload: Option<Value>) -> AppResult<Value> {
     Ok(json!({ "pending": 0, "schedulerRunning": false }))
 }
 #[tauri::command]
-pub fn ai_bulk_categorize(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
-    Err(AppError::new(
-        "NOT_IMPLEMENTED",
-        "bulk categorization is not yet ported to Tauri",
-    ))
+pub fn ai_bulk_categorize(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let raw_ids = payload
+        .as_ref()
+        .and_then(|p| p.get("skillIds"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "skillIds (string[]) required"))?;
+    let mut ids = Vec::new();
+    for id in raw_ids.iter().filter_map(Value::as_str) {
+        if !id.is_empty() && !ids.iter().any(|seen| seen == id) {
+            ids.push(id.to_string());
+        }
+        if ids.len() >= 200 {
+            break;
+        }
+    }
+    if ids.is_empty() {
+        return Ok(json!({
+            "proposedScenarios": [],
+            "assignments": [],
+            "classifiedCount": 0,
+            "skippedCount": 0
+        }));
+    }
+    let db = conn(&state)?;
+    require_network(&db)?;
+    let config = llm_read_config(&db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new(
+            "LLM_NO_MODEL",
+            "No LLM model configured. Set one in Settings -> AI.",
+        ));
+    }
+    let api_key = llm_read_api_key(&db)?;
+    if api_key.is_none() && config.provider != "ollama" {
+        return Err(AppError::new(
+            "LLM_NO_KEY",
+            "No LLM API key configured. Set one in Settings -> AI.",
+        ));
+    }
+    let scenarios = ai_bulk_read_scenarios(&db)?;
+    let skills = ai_bulk_read_skills(&db, &ids)?;
+    if skills.is_empty() {
+        return Ok(json!({
+            "proposedScenarios": [],
+            "assignments": [],
+            "classifiedCount": 0,
+            "skippedCount": 0
+        }));
+    }
+    let mut all_assignments = Vec::new();
+    let mut proposed = std::collections::HashMap::<String, Value>::new();
+    let mut intent = String::new();
+    for batch in skills.chunks(20) {
+        let (system, user) =
+            ai_bulk_prompt(&scenarios, proposed.values().cloned().collect(), batch);
+        let response = llm_chat_with_config(
+            &config,
+            api_key.as_deref(),
+            &json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": user }
+                ],
+                "temperature": 0.2,
+                "jsonMode": true,
+                "maxTokens": 4096
+            }),
+        )?;
+        let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+        let parsed = ai_bulk_parse_response(text);
+        if intent.is_empty() {
+            intent = parsed
+                .get("intent")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+        let batch_plan = ai_bulk_plan_from_response(&scenarios, batch, &parsed, &mut proposed);
+        if let Some(assignments) = batch_plan.as_array() {
+            all_assignments.extend(assignments.iter().cloned());
+        }
+    }
+    let useful_proposed = proposed
+        .into_values()
+        .filter(|scenario| {
+            scenario
+                .get("usedByCount")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                > 0
+        })
+        .collect::<Vec<_>>();
+    let classified_count = all_assignments
+        .iter()
+        .filter(|assignment| {
+            assignment
+                .get("target")
+                .and_then(|t| t.get("kind"))
+                .and_then(Value::as_str)
+                != Some("skip")
+        })
+        .count();
+    let skipped_count = all_assignments.len().saturating_sub(classified_count);
+    Ok(json!({
+        "intent": if intent.is_empty() { Value::Null } else { Value::String(intent) },
+        "proposedScenarios": useful_proposed,
+        "assignments": all_assignments,
+        "classifiedCount": classified_count,
+        "skippedCount": skipped_count
+    }))
 }
 #[tauri::command]
-pub fn ai_apply_bulk_categorization(payload: Option<Value>) -> AppResult<Value> {
-    let _ = payload;
-    Ok(json!({ "newScenariosCreated": 0, "assignmentsApplied": 0, "errors": [] }))
+pub fn ai_apply_bulk_categorization(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let plan = payload
+        .as_ref()
+        .and_then(|p| p.get("plan"))
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "plan required"))?;
+    let assignments = plan
+        .get("assignments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "plan.assignments required"))?;
+    let proposed_scenarios = plan
+        .get("proposedScenarios")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "plan.proposedScenarios required"))?;
+
+    let mut used_new_keys = std::collections::HashSet::new();
+    for assignment in assignments {
+        if assignment.pointer("/target/kind").and_then(Value::as_str) == Some("new") {
+            if let Some(key) = assignment
+                .pointer("/target/scenarioKey")
+                .and_then(Value::as_str)
+            {
+                used_new_keys.insert(key.to_string());
+            }
+        }
+    }
+    let proposed_by_key = proposed_scenarios
+        .iter()
+        .filter_map(|scenario| Some((scenario.get("key")?.as_str()?.to_string(), scenario)))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let mut db = conn(&state)?;
+    let tx = db.transaction()?;
+    let now = now_ms();
+    let mut next_sort: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM scenarios",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut new_scenarios_created = 0;
+    for key in used_new_keys {
+        let Some(proposal) = proposed_by_key.get(&key) else {
+            continue;
+        };
+        let name = proposal.get("name").and_then(Value::as_str).unwrap_or(&key);
+        let reason = proposal.get("reason").and_then(Value::as_str);
+        let color = proposal.get("color").and_then(Value::as_str);
+        let changed = tx.execute(
+            "INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 0, ?6)
+             ON CONFLICT(key) DO NOTHING",
+            params![key, name, reason, color, next_sort, now],
+        )?;
+        if changed > 0 {
+            new_scenarios_created += 1;
+            next_sort += 1;
+        }
+    }
+    let mut key_to_id = std::collections::HashMap::new();
+    {
+        let mut stmt = tx.prepare("SELECT id, key FROM scenarios")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (id, key) = row?;
+            key_to_id.insert(key, id);
+        }
+    }
+    let mut assignments_applied = 0;
+    let mut errors = Vec::new();
+    for assignment in assignments {
+        let skill_id = assignment
+            .get("skillId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if skill_id.is_empty() {
+            continue;
+        }
+        let Some(target) = assignment.get("target") else {
+            continue;
+        };
+        let scenario_id = match target.get("kind").and_then(Value::as_str) {
+            Some("skip") | None => continue,
+            Some("existing") => target.get("scenarioId").and_then(Value::as_i64),
+            Some("new") => target
+                .get("scenarioKey")
+                .and_then(Value::as_str)
+                .and_then(|key| key_to_id.get(key).copied()),
+            _ => None,
+        };
+        let Some(scenario_id) = scenario_id else {
+            errors.push(json!({ "skillId": skill_id, "message": "target scenario not found" }));
+            continue;
+        };
+        match tx.execute(
+            "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at)
+             VALUES (?1, ?2, ?3)",
+            params![skill_id, scenario_id, now],
+        ) {
+            Ok(changed) => assignments_applied += changed,
+            Err(err) => {
+                errors.push(json!({ "skillId": skill_id, "message": err.to_string() }));
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(json!({
+        "newScenariosCreated": new_scenarios_created,
+        "assignmentsApplied": assignments_applied,
+        "errors": errors
+    }))
 }
+
+#[derive(Clone)]
+struct BulkScenarioRow {
+    id: i64,
+    key: String,
+    name: String,
+    description: Option<String>,
+}
+
+#[derive(Clone)]
+struct BulkSkillRow {
+    id: String,
+    name: String,
+    description: Option<String>,
+    body_excerpt: Option<String>,
+}
+
+fn ai_bulk_read_scenarios(db: &Connection) -> AppResult<Vec<BulkScenarioRow>> {
+    let mut stmt =
+        db.prepare("SELECT id, key, name, description FROM scenarios ORDER BY sort_order, name")?;
+    let rows = stmt.query_map([], |r| {
+        Ok(BulkScenarioRow {
+            id: r.get(0)?,
+            key: r.get(1)?,
+            name: r.get(2)?,
+            description: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn ai_bulk_read_skills(db: &Connection, ids: &[String]) -> AppResult<Vec<BulkSkillRow>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, name, description, body_excerpt FROM skills WHERE id IN ({placeholders})"
+    );
+    let bind_values = ids
+        .iter()
+        .map(|id| SqlValue::Text(id.clone()))
+        .collect::<Vec<_>>();
+    let mut stmt = db.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(bind_values), |r| {
+        Ok(BulkSkillRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            body_excerpt: r.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn ai_bulk_prompt(
+    existing: &[BulkScenarioRow],
+    proposed_so_far: Vec<Value>,
+    batch: &[BulkSkillRow],
+) -> (String, String) {
+    let system =
+        "You categorize a user's AI agent skills into scenarios.\n\
+         Reuse existing scenarios when plausible. Propose new lower-kebab-case scenario keys when a real theme does not fit existing scenarios.\n\
+         Assign every input skill exactly once; skip only if the skill is unreadable.\n\
+         Output only JSON with this exact shape:\n\
+         {\"intent\":string,\"proposedScenarios\":[{\"key\":string,\"name\":string,\"reason\":string,\"color\":string}],\"assignments\":[{\"skillId\":string,\"scenarioKey\":string,\"isNew\":boolean,\"why\":string}]}";
+    let existing_block = existing
+        .iter()
+        .map(|s| {
+            format!(
+                "- key={} name={} description={}",
+                s.key,
+                s.name,
+                compact_for_prompt(s.description.as_deref().unwrap_or(""), 100)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let proposed_block = if proposed_so_far.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        proposed_so_far
+            .iter()
+            .map(|p| {
+                format!(
+                    "- key={} name={} reason={}",
+                    p.get("key").and_then(Value::as_str).unwrap_or(""),
+                    p.get("name").and_then(Value::as_str).unwrap_or(""),
+                    compact_for_prompt(p.get("reason").and_then(Value::as_str).unwrap_or(""), 100)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let skills_block = batch
+        .iter()
+        .map(|s| {
+            format!(
+                "- skillId={}\n  name={}\n  description={}\n  body={}",
+                s.id,
+                s.name,
+                compact_for_prompt(s.description.as_deref().unwrap_or(""), 400),
+                compact_for_prompt(s.body_excerpt.as_deref().unwrap_or(""), 600)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (
+        system.to_string(),
+        format!(
+            "existingScenarios:\n{existing_block}\n\nproposedScenarios:\n{proposed_block}\n\nskills:\n{skills_block}"
+        ),
+    )
+}
+
+fn ai_bulk_parse_response(text: &str) -> Value {
+    serde_json::from_str::<Value>(text)
+        .or_else(|_| {
+            let Some(start) = text.find('{') else {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no json object",
+                )));
+            };
+            let Some(end) = text.rfind('}') else {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no json object",
+                )));
+            };
+            serde_json::from_str::<Value>(&text[start..=end])
+        })
+        .unwrap_or_else(|_| json!({ "intent": "", "proposedScenarios": [], "assignments": [] }))
+}
+
+fn ai_bulk_plan_from_response(
+    scenarios: &[BulkScenarioRow],
+    batch: &[BulkSkillRow],
+    parsed: &Value,
+    proposed: &mut std::collections::HashMap<String, Value>,
+) -> Value {
+    let existing_by_key = scenarios
+        .iter()
+        .map(|scenario| (scenario.key.clone(), scenario.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    for scenario in parsed
+        .get("proposedScenarios")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let key = normalize_bulk_scenario_key(
+            scenario.get("key").and_then(Value::as_str).unwrap_or(""),
+            scenario.get("name").and_then(Value::as_str).unwrap_or(""),
+        );
+        if key.is_empty() || existing_by_key.contains_key(&key) || proposed.contains_key(&key) {
+            continue;
+        }
+        proposed.insert(
+            key.clone(),
+            json!({
+                "key": key,
+                "name": scenario.get("name").and_then(Value::as_str).unwrap_or("").trim(),
+                "reason": scenario.get("reason").and_then(Value::as_str).unwrap_or("").trim(),
+                "color": scenario.get("color").and_then(Value::as_str),
+                "usedByCount": 0
+            }),
+        );
+    }
+    let batch_by_id = batch
+        .iter()
+        .map(|skill| (skill.id.clone(), skill.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut assigned = std::collections::HashSet::new();
+    let mut assignments = Vec::new();
+    for assignment in parsed
+        .get("assignments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let skill_id = assignment
+            .get("skillId")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let Some(skill) = batch_by_id.get(skill_id) else {
+            continue;
+        };
+        if !assigned.insert(skill.id.clone()) {
+            continue;
+        }
+        let scenario_key = assignment
+            .get("scenarioKey")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let is_new = assignment
+            .get("isNew")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let target = if scenario_key.is_empty() {
+            json!({ "kind": "skip", "reason": assignment.get("why").and_then(Value::as_str) })
+        } else if let Some(existing) = existing_by_key.get(scenario_key).filter(|_| !is_new) {
+            json!({ "kind": "existing", "scenarioId": existing.id })
+        } else {
+            let key = normalize_bulk_scenario_key(scenario_key, scenario_key);
+            if !proposed.contains_key(&key) {
+                proposed.insert(
+                    key.clone(),
+                    json!({ "key": key, "name": scenario_key, "reason": "", "usedByCount": 0 }),
+                );
+            }
+            if let Some(row) = proposed.get_mut(&key) {
+                let used = row.get("usedByCount").and_then(Value::as_i64).unwrap_or(0) + 1;
+                row["usedByCount"] = json!(used);
+            }
+            json!({ "kind": "new", "scenarioKey": key })
+        };
+        assignments.push(json!({
+            "skillId": skill.id,
+            "skillName": skill.name,
+            "target": target,
+            "why": assignment.get("why").and_then(Value::as_str)
+        }));
+    }
+    for skill in batch {
+        if assigned.contains(&skill.id) {
+            continue;
+        }
+        assignments.push(json!({
+            "skillId": skill.id,
+            "skillName": skill.name,
+            "target": { "kind": "skip", "reason": "AI returned no assignment" }
+        }));
+    }
+    Value::Array(assignments)
+}
+
+fn normalize_bulk_scenario_key(key: &str, fallback: &str) -> String {
+    let source = if key.trim().is_empty() { fallback } else { key };
+    slugify(source)
+}
+
 #[tauri::command]
 pub fn ai_library_overview_get(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
-    let language = payload
-        .as_ref()
-        .and_then(|p| p.get("language"))
-        .and_then(Value::as_str)
-        .unwrap_or("en");
+    let language = normalize_ai_language(
+        payload
+            .as_ref()
+            .and_then(|p| p.get("language"))
+            .and_then(Value::as_str)
+            .unwrap_or("en"),
+    );
     let db = conn(&state)?;
     let set_hash = current_set_hash(&db)?;
-    let row: Option<(String, String)> = db
+    let row: Option<(String, String, Option<String>)> = db
         .query_row(
-            "SELECT set_hash, overview_json FROM library_overview WHERE id = 1 AND language = ?1",
-            params![language],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT set_hash, overview_json, language FROM library_overview WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     let overview = row
         .as_ref()
-        .and_then(|(_, json)| serde_json::from_str::<Value>(json).ok());
-    let stale = row.map(|(hash, _)| hash != set_hash).unwrap_or(false);
+        .and_then(|(_, json, _)| serde_json::from_str::<Value>(json).ok());
+    let stale = row
+        .map(|(hash, _, row_language)| {
+            hash != set_hash || row_language.as_deref() != Some(language)
+        })
+        .unwrap_or(false);
     Ok(json!({ "overview": overview, "stale": stale, "currentSetHash": set_hash }))
 }
 #[tauri::command]
-pub fn ai_library_overview_generate(payload: Option<Value>) -> AppResult<Value> {
-    let language = payload
-        .as_ref()
-        .and_then(|p| p.get("language"))
-        .and_then(Value::as_str)
-        .unwrap_or("en");
-    Ok(
-        json!({ "intro": "", "clusters": [], "uncategorized": [], "totalSkills": 0, "generatedAt": now_ms(), "model": "tauri-placeholder", "language": language }),
+pub fn ai_library_overview_generate(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let language = normalize_ai_language(
+        payload
+            .as_ref()
+            .and_then(|p| p.get("language"))
+            .and_then(Value::as_str)
+            .unwrap_or("en"),
+    );
+    let db = conn(&state)?;
+    require_network(&db)?;
+    let config = llm_read_config(&db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new(
+            "LLM_NO_MODEL",
+            "No LLM model configured. Set one in Settings -> AI.",
+        ));
+    }
+    let api_key = llm_read_api_key(&db)?;
+    if api_key.is_none() && config.provider != "ollama" {
+        return Err(AppError::new(
+            "LLM_NO_KEY",
+            "No LLM API key configured. Set one in Settings -> AI.",
+        ));
+    }
+    let skills = ai_overview_read_skills(&db)?;
+    if skills.is_empty() {
+        return Err(AppError::new(
+            "LIBRARY_EMPTY",
+            "No skills in the library to summarize.",
+        ));
+    }
+    let truncated = skills.into_iter().take(100).collect::<Vec<_>>();
+    let (system, user) = ai_overview_prompt(&truncated, language);
+    let retry_directive = if language == "zh" {
+        "Previous attempt returned no usable clusters. Return Chinese user-facing text and group all skills into 3-8 non-empty clusters."
+    } else {
+        "Previous attempt returned no usable clusters. Group all skills into 3-8 non-empty clusters."
+    };
+    let mut final_overview = None;
+    for attempt in 1..=3 {
+        let user_content = if attempt == 1 {
+            user.clone()
+        } else {
+            format!("{retry_directive}\n\n{user}")
+        };
+        let response = llm_chat_with_config(
+            &config,
+            api_key.as_deref(),
+            &json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": user_content }
+                ],
+                "temperature": 0,
+                "jsonMode": true,
+                "maxTokens": 32768
+            }),
+        )?;
+        let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+        let raw = ai_overview_parse_response(text);
+        let overview = ai_overview_post_process(raw, &truncated, language, &config.model);
+        if overview
+            .get("clusters")
+            .and_then(Value::as_array)
+            .is_some_and(|clusters| !clusters.is_empty())
+        {
+            final_overview = Some(overview);
+            break;
+        }
+    }
+    let overview = final_overview.ok_or_else(|| {
+        AppError::new(
+            "LLM_NO_CLUSTERS",
+            "The model produced no usable clusters across 3 attempts.",
+        )
+    })?;
+    db.execute(
+        "INSERT INTO library_overview (id, set_hash, overview_json, generated_at, model, language)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+           set_hash = excluded.set_hash,
+           overview_json = excluded.overview_json,
+           generated_at = excluded.generated_at,
+           model = excluded.model,
+           language = excluded.language",
+        params![
+            ai_overview_set_hash(&truncated),
+            serde_json::to_string(&overview)
+                .map_err(|err| AppError::new("SERIALIZE_FAILED", err.to_string()))?,
+            overview
+                .get("generatedAt")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(now_ms),
+            config.model,
+            language
+        ],
+    )?;
+    Ok(overview)
+}
+
+#[derive(Clone)]
+struct OverviewSkillRow {
+    id: String,
+    name: String,
+    description: Option<String>,
+    body_excerpt: Option<String>,
+    content_hash: String,
+}
+
+#[derive(Default)]
+struct RawOverviewResponse {
+    intro: String,
+    clusters: Vec<RawOverviewCluster>,
+}
+
+struct RawOverviewCluster {
+    name: String,
+    purpose: String,
+    skills: Vec<RawOverviewSkill>,
+}
+
+struct RawOverviewSkill {
+    skill_id: String,
+    brief: String,
+}
+
+fn normalize_ai_language(language: &str) -> &'static str {
+    if language == "zh" {
+        "zh"
+    } else {
+        "en"
+    }
+}
+
+fn ai_overview_read_skills(db: &Connection) -> AppResult<Vec<OverviewSkillRow>> {
+    let mut stmt = db.prepare(
+        "SELECT id, name, description, body_excerpt, content_hash
+         FROM skills
+         ORDER BY name COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(OverviewSkillRow {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            description: r.get(2)?,
+            body_excerpt: r.get(3)?,
+            content_hash: r.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn ai_overview_prompt(skills: &[OverviewSkillRow], language: &str) -> (String, String) {
+    let language_rule = if language == "zh" {
+        "All user-facing text must be written in Chinese."
+    } else {
+        "All user-facing text must be written in English."
+    };
+    let system = format!(
+        "You are a librarian creating a navigable library map for a user's AI agent skills.\n\
+         Group the complete library into 3-8 use-case or domain clusters, not technology buckets.\n\
+         Write a 1-2 sentence intro, a 1-2 sentence purpose for each cluster, and one brief label for each skill.\n\
+         Every input skill must appear exactly once. Never invent skillId values.\n\
+         {language_rule}\n\
+         Output only JSON with this exact shape:\n\
+         {{\"intro\":string,\"clusters\":[{{\"name\":string,\"purpose\":string,\"skills\":[{{\"skillId\":string,\"brief\":string}}]}}]}}"
+    );
+    let skills_block = skills
+        .iter()
+        .map(|s| {
+            format!(
+                "- skillId={}\n  name={}\n  description={}\n  body={}",
+                s.id,
+                compact_for_prompt(&s.name, 60),
+                compact_for_prompt(s.description.as_deref().unwrap_or(""), 250),
+                compact_for_prompt(s.body_excerpt.as_deref().unwrap_or(""), 300)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (
+        system,
+        format!("Total skills: {}\n\nskills:\n{skills_block}", skills.len()),
     )
+}
+
+fn compact_for_prompt(input: &str, max_chars: usize) -> String {
+    let compacted = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    compacted.chars().take(max_chars).collect()
+}
+
+fn ai_overview_parse_response(text: &str) -> RawOverviewResponse {
+    let parsed = serde_json::from_str::<Value>(text)
+        .or_else(|_| {
+            let Some(start) = text.find('{') else {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no json object",
+                )));
+            };
+            let Some(end) = text.rfind('}') else {
+                return Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "no json object",
+                )));
+            };
+            serde_json::from_str::<Value>(&text[start..=end])
+        })
+        .unwrap_or(Value::Null);
+    let Some(obj) = parsed.as_object() else {
+        return RawOverviewResponse::default();
+    };
+    let intro = obj
+        .get("intro")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let clusters = obj
+        .get("clusters")
+        .and_then(Value::as_array)
+        .map(|clusters| {
+            clusters
+                .iter()
+                .filter_map(|cluster| {
+                    let c = cluster.as_object()?;
+                    let name = c.get("name").and_then(Value::as_str).unwrap_or("").trim();
+                    if name.is_empty() {
+                        return None;
+                    }
+                    let skills = c
+                        .get("skills")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| {
+                                    let item = item.as_object()?;
+                                    let skill_id = item
+                                        .get("skillId")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .trim();
+                                    if skill_id.is_empty() {
+                                        return None;
+                                    }
+                                    Some(RawOverviewSkill {
+                                        skill_id: skill_id.to_string(),
+                                        brief: item
+                                            .get("brief")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    Some(RawOverviewCluster {
+                        name: name.to_string(),
+                        purpose: c
+                            .get("purpose")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string(),
+                        skills,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    RawOverviewResponse { intro, clusters }
+}
+
+fn ai_overview_post_process(
+    raw: RawOverviewResponse,
+    input_skills: &[OverviewSkillRow],
+    language: &str,
+    model: &str,
+) -> Value {
+    let by_id = input_skills
+        .iter()
+        .map(|s| (s.id.clone(), s.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let by_name = input_skills
+        .iter()
+        .map(|s| (s.name.to_lowercase(), s.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut seen = std::collections::HashSet::new();
+    let mut used_cluster_keys = std::collections::HashSet::new();
+    let mut clusters = Vec::new();
+
+    for raw_cluster in raw.clusters {
+        let mut skills = Vec::new();
+        for raw_skill in raw_cluster.skills {
+            let input = by_id
+                .get(&raw_skill.skill_id)
+                .or_else(|| by_name.get(&raw_skill.skill_id.to_lowercase()));
+            let Some(input) = input else {
+                continue;
+            };
+            if !seen.insert(input.id.clone()) {
+                continue;
+            }
+            skills.push(json!({
+                "skillId": input.id,
+                "name": input.name,
+                "brief": trim_ai_brief(&raw_skill.brief, &input.name)
+            }));
+        }
+        if skills.is_empty() {
+            continue;
+        }
+        let base_key = {
+            let key = slugify(&raw_cluster.name);
+            if key.is_empty() {
+                "cluster".to_string()
+            } else {
+                key
+            }
+        };
+        let mut key = base_key.clone();
+        let mut suffix = 2;
+        while used_cluster_keys.contains(&key) {
+            key = format!("{base_key}-{suffix}");
+            suffix += 1;
+        }
+        used_cluster_keys.insert(key.clone());
+        clusters.push(json!({
+            "key": key,
+            "name": raw_cluster.name,
+            "purpose": raw_cluster.purpose,
+            "skills": skills
+        }));
+    }
+
+    let uncategorized = input_skills
+        .iter()
+        .filter(|skill| !seen.contains(&skill.id))
+        .map(|skill| {
+            json!({
+                "skillId": skill.id,
+                "name": skill.name,
+                "brief": ""
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "intro": raw.intro.trim(),
+        "clusters": clusters,
+        "uncategorized": uncategorized,
+        "totalSkills": input_skills.len(),
+        "generatedAt": now_ms(),
+        "model": model,
+        "language": language
+    })
+}
+
+fn trim_ai_brief(brief: &str, fallback: &str) -> String {
+    let cleaned = brief.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() {
+        return fallback.to_string();
+    }
+    if cleaned.chars().count() <= 30 {
+        return cleaned;
+    }
+    let mut value = cleaned.chars().take(28).collect::<String>();
+    value.push_str("...");
+    value
+}
+
+fn ai_overview_set_hash(rows: &[OverviewSkillRow]) -> String {
+    let mut sorted = rows.to_vec();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut joined = String::new();
+    for row in sorted {
+        joined.push_str(&row.id);
+        joined.push('|');
+        joined.push_str(&row.content_hash);
+        joined.push('\n');
+    }
+    hex::encode(sha2::Sha256::digest(joined.as_bytes()))
 }
 
 fn platform_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
