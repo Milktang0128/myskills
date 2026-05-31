@@ -22,6 +22,10 @@ Automated checks already available:
 - `npm run smoke:tauri:dmg` mounts the latest local macOS DMG, verifies the
   preview bundle id, launches the mounted app binary, and checks isolated DB
   initialization.
+- `npm run smoke:tauri:launch -- --fixture-smoke` and
+  `npm run smoke:tauri:dmg -- --fixture-smoke` launch the packaged app with
+  disposable platform fixtures, force an internal temporary app data directory,
+  run a real startup scan, and verify the resulting SQLite rows.
 - Rust fixture tests cover real scanner ingestion into the Library backend,
   including platform filtering, disabled-scope listing, parser errors, scan
   runs, and Settings stats.
@@ -45,7 +49,9 @@ Important caveat:
 - A GUI-level launch can still use the real macOS user app data root even when
   the process is started with a temporary `HOME`. The isolation guarantee for
   release is therefore "separate preview app data directory", not "throwaway
-  HOME" unless the platform-specific runner proves otherwise.
+  HOME" unless the platform-specific runner proves otherwise. The automated
+  fixture smoke uses the internal `MYSKILLS_INTERNAL_SMOKE_DATA_DIR` override to
+  make the throwaway data root explicit.
 
 ## Stable Gate
 
@@ -55,7 +61,7 @@ Important caveat:
 | Preview identity | Packaged app uses `com.kanbenzhi.myskills.tauri-preview` | pass | Verified from app state and `Info.plist`. |
 | Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | partial | DB path observed in Settings; destructive sync backup paths still need workflow proof. |
 | App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
-| Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test covers real scanner to Library list, platform filter, disabled scope, parser-error reporting, scan run, and stats; packaged List/Kanban UI smoke still pending. |
+| Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test and packaged app/DMG fixture smoke cover real scanner to Library DB, platform filter, disabled scope, parser-error reporting, scan run, and stats; visual List/Kanban UI smoke still pending. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged UI fixture smoke still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; write paths and toggles not exercised. |
 | Scenarios | Create/edit/delete/import/export round trip | partial | Rust round-trip tests cover export/import, idempotent re-import, missing-skill reporting, and fixed import link counts; packaged UI file workflow still pending. |
@@ -64,7 +70,7 @@ Important caveat:
 | History | Sync history and rollback flow work from packaged app | partial | Rust workflow test verifies success history rows and rollback marker update; packaged History UI still pending. |
 | Discover | Keyword search, preview, staged install plan render | partial | Discover page rendered; network/catalog actions not exercised. |
 | AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; packaged UI smoke still pending. |
-| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | partial | Automated DMG mount/launch smoke exists; full UI workflow smoke from DMG still pending. |
+| macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, and verifies SQLite results. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | pending | Required before claiming Windows support. |
 | Linux preview | Build and launch smoke on Linux runner | pending | Required before claiming Linux support. |
@@ -107,7 +113,9 @@ Useful commands:
 ```bash
 npm run smoke:tauri:fixtures
 npm run smoke:tauri:launch
+npm run smoke:tauri:launch -- --fixture-smoke
 npm run smoke:tauri:dmg
+npm run smoke:tauri:dmg -- --fixture-smoke
 ```
 
 ## Release Decision

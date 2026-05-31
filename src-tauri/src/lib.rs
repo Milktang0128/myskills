@@ -8,6 +8,8 @@ mod scanner;
 mod state;
 
 use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::params;
+use std::path::Path;
 use tauri::Manager;
 
 use crate::error::AppResult;
@@ -81,27 +83,80 @@ pub fn run() {
 }
 
 fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
-    let default_app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| crate::error::AppError::new("PATH_ERROR", err.to_string()))?;
+    let default_app_data = match std::env::var("MYSKILLS_INTERNAL_SMOKE_DATA_DIR") {
+        Ok(path) if !path.trim().is_empty() => std::path::PathBuf::from(path),
+        _ => app
+            .path()
+            .app_data_dir()
+            .map_err(|err| crate::error::AppError::new("PATH_ERROR", err.to_string()))?,
+    };
     let paths = AppPaths::new(AppPaths::isolated_preview_dir(default_app_data))?;
     let db = db::init_pool(&paths.db_path)?;
+    let mut last_scan = None;
     if let Ok(conn) = db.get() {
         let _ = commands::recover_pending_backups(&conn);
         let _ = commands::recover_pending_history(&conn);
         if let Ok(days) = commands::backup_retention_days(&conn) {
             let _ = commands::cleanup_old_backups(&conn, &paths.backup_root, days);
         }
+        if let Some(scan) = apply_internal_smoke_fixture(&conn)? {
+            last_scan = Some(scan);
+        }
     }
     let _manager = SqliteConnectionManager::file(&paths.db_path);
     Ok(AppState {
         paths,
         db,
-        last_scan: std::sync::Mutex::new(None),
+        last_scan: std::sync::Mutex::new(last_scan),
         plan_store: std::sync::Mutex::new(std::collections::HashMap::new()),
         sync_lock: std::sync::Mutex::new(()),
         ai_queue: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         ai_worker_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
+}
+
+fn apply_internal_smoke_fixture(
+    conn: &rusqlite::Connection,
+) -> AppResult<Option<serde_json::Value>> {
+    let Ok(manifest_path) = std::env::var("MYSKILLS_INTERNAL_SMOKE_FIXTURE_MANIFEST") else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(&manifest_path).map_err(|err| {
+        crate::error::AppError::new(
+            "SMOKE_FIXTURE_FAILED",
+            format!("could not read smoke fixture manifest {manifest_path}: {err}"),
+        )
+    })?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
+        crate::error::AppError::new(
+            "SMOKE_FIXTURE_FAILED",
+            format!("invalid smoke fixture manifest {manifest_path}: {err}"),
+        )
+    })?;
+    let platforms = manifest
+        .get("platforms")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            crate::error::AppError::new(
+                "SMOKE_FIXTURE_FAILED",
+                "smoke fixture manifest missing platforms",
+            )
+        })?;
+    for platform_id in ["shared", "claude", "codex"] {
+        let dir = platforms
+            .get(platform_id)
+            .and_then(serde_json::Value::as_str)
+            .filter(|dir| Path::new(dir).is_dir())
+            .ok_or_else(|| {
+                crate::error::AppError::new(
+                    "SMOKE_FIXTURE_FAILED",
+                    format!("smoke fixture directory for {platform_id} is missing"),
+                )
+            })?;
+        conn.execute(
+            "UPDATE platforms SET skills_dir = ?1, enabled = 1 WHERE id = ?2",
+            params![dir, platform_id],
+        )?;
+    }
+    scanner::scan_all(conn).map(Some)
 }

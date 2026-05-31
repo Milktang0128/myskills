@@ -10,11 +10,13 @@ const previewDirName = 'myskills-tauri-preview';
 const timeoutMs = Number(process.env.MYSKILLS_SMOKE_TIMEOUT_MS ?? 15_000);
 
 function parseArgs(argv) {
-  const args = { dmg: '' };
+  const args = { dmg: '', fixtureSmoke: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--dmg') {
       args.dmg = argv[++i] ?? '';
+    } else if (arg === '--fixture-smoke') {
+      args.fixtureSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -74,6 +76,70 @@ async function terminate(child) {
   ]);
 }
 
+function createFixtures(tempRoot) {
+  const result = spawnSync(
+    process.execPath,
+    ['scripts/create-tauri-smoke-fixtures.mjs', '--json', '--root', path.join(tempRoot, 'fixtures')],
+    { cwd: root, encoding: 'utf8' },
+  );
+  if (result.status !== 0) {
+    const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+    throw new Error(`fixture creation failed\n${output}`);
+  }
+  return JSON.parse(result.stdout);
+}
+
+function inspectFixtureDb(dbPath, manifest) {
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const platformRows = queryJson(dbPath, 'SELECT id, skills_dir FROM platforms');
+    const platformDirs = Object.fromEntries(platformRows.map((row) => [row.id, row.skills_dir]));
+    for (const platformId of ['shared', 'claude', 'codex']) {
+      if (platformDirs[platformId] !== manifest.platforms[platformId]) return null;
+    }
+    const totalSkills = queryJson(dbPath, 'SELECT COUNT(*) AS count FROM skills')[0]?.count;
+    const disabledLocations = queryJson(
+      dbPath,
+      'SELECT COUNT(*) AS count FROM skill_locations WHERE is_disabled = 1',
+    )[0]?.count;
+    const scan = queryJson(
+      dbPath,
+      'SELECT total_found AS totalFound, new_count AS newSkills, updated_count AS updatedSkills, errors_json AS errorsJson FROM scan_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1',
+    )[0];
+    if (!scan) return null;
+    const errors = JSON.parse(scan.errorsJson || '[]');
+    const errorKinds = new Set(errors.map((error) => error.kind));
+    if (
+      totalSkills !== 4 ||
+      disabledLocations !== 1 ||
+      scan.totalFound !== 7 ||
+      scan.newSkills !== 4 ||
+      !errorKinds.has('missing_frontmatter') ||
+      (manifest.expected.brokenLink.length > 0 && !errorKinds.has('broken_symlink'))
+    ) {
+      return null;
+    }
+    return {
+      totalSkills,
+      disabledLocations,
+      totalFound: scan.totalFound,
+      newSkills: scan.newSkills,
+      updatedSkills: scan.updatedSkills,
+      errorKinds: [...errorKinds].sort(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function queryJson(dbPath, sql) {
+  const result = spawnSync('sqlite3', ['-json', dbPath, sql], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `sqlite3 failed for query: ${sql}`);
+  }
+  return JSON.parse(result.stdout || '[]');
+}
+
 if (process.platform !== 'darwin') {
   console.error('DMG smoke is macOS-only.');
   process.exit(1);
@@ -92,6 +158,7 @@ const mountPoint = path.join(tempRoot, 'mount');
 const home = path.join(tempRoot, 'home');
 fs.mkdirSync(mountPoint, { recursive: true });
 fs.mkdirSync(home, { recursive: true });
+const manifest = args.fixtureSmoke ? createFixtures(tempRoot) : null;
 
 let attached = false;
 try {
@@ -110,12 +177,17 @@ try {
   }
 
   const dbPath = expectedDbPath(home);
+  const smokeDataDir = path.dirname(dbPath);
   const env = {
     ...process.env,
     HOME: home,
     XDG_DATA_HOME: path.join(home, '.local/share'),
     APPDATA: path.join(home, 'AppData/Roaming'),
+    MYSKILLS_INTERNAL_SMOKE_DATA_DIR: smokeDataDir,
   };
+  if (manifest) {
+    env.MYSKILLS_INTERNAL_SMOKE_FIXTURE_MANIFEST = path.join(manifest.root, 'manifest.json');
+  }
   const child = spawn(binary, [], {
     cwd: root,
     env,
@@ -134,15 +206,19 @@ try {
   const exitedEarly = new Promise((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
-  const dbReady = waitFor(() => fs.existsSync(dbPath), timeoutMs).then((ok) =>
-    ok ? { dbReady: true } : { dbReady: false },
-  );
+  let fixtureResult = null;
+  const dbReady = waitFor(() => {
+    if (!manifest) return fs.existsSync(dbPath);
+    fixtureResult = inspectFixtureDb(dbPath, manifest);
+    return Boolean(fixtureResult);
+  }, timeoutMs).then((ok) => (ok ? { dbReady: true } : { dbReady: false }));
   const result = await Promise.race([exitedEarly, dbReady]);
   await terminate(child);
 
   if (!result.dbReady) {
     const details = [];
     details.push(`expected DB: ${dbPath}`);
+    if (manifest) details.push(`fixture manifest: ${path.join(manifest.root, 'manifest.json')}`);
     if ('code' in result) details.push(`process exit: code=${result.code} signal=${result.signal}`);
     if (stdout.trim()) details.push(`stdout:\n${stdout.trim()}`);
     if (stderr.trim()) details.push(`stderr:\n${stderr.trim()}`);
@@ -151,7 +227,11 @@ try {
 
   console.log(`tauri DMG smoke passed: ${dmgPath}`);
   console.log(`bundle id: ${bundleId}`);
-  console.log(`created isolated preview DB at ${dbPath}`);
+  if (fixtureResult) {
+    console.log(`fixture result: ${JSON.stringify(fixtureResult)}`);
+  } else {
+    console.log(`created isolated preview DB at ${dbPath}`);
+  }
 } finally {
   if (attached) {
     spawnSync('hdiutil', ['detach', mountPoint, '-quiet'], { encoding: 'utf8' });
