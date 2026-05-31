@@ -732,7 +732,7 @@ rollback(history_id):
 - CI matrix：启用 `docs/ci/tauri-preview.github-actions.yml` 后，macOS / Ubuntu / Windows 基础检查通过；macOS preview bundle 通过
 - macOS preview 手动 smoke 通过
 - Windows/Linux 构建和启动 smoke 通过
-- 明确 Electron 生产 DB 到 Tauri 正式 app id 的迁移/回滚策略
+- 明确 Electron 生产 DB 到 Tauri 正式 app id 的迁移/回滚策略；当前策略文档为 `docs/qa/tauri-stable-migration.md`，正式启用前仍需实现和回滚演练
 
 ---
 

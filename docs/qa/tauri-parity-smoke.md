@@ -62,7 +62,7 @@ Important caveat:
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | pending | Required before claiming Windows support. |
 | Linux preview | Build and launch smoke on Linux runner | pending | Required before claiming Linux support. |
-| Migration strategy | Electron production DB migration and rollback plan documented | pending | Required before switching stable app id/data directory. |
+| Migration strategy | Electron production DB migration and rollback plan documented | partial | Strategy documented in `docs/qa/tauri-stable-migration.md`; implementation and rollback drill pending. |
 
 ## Manual Smoke Script
 
