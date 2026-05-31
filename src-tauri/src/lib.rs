@@ -100,6 +100,23 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         if let Ok(days) = commands::backup_retention_days(&conn) {
             let _ = commands::cleanup_old_backups(&conn, &paths.backup_root, days);
         }
+        if std::env::var("MYSKILLS_INTERNAL_SMOKE_FRONTEND").is_ok() {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params!["smoke.frontend.expected", "1"],
+            )?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params!["smoke.frontend.ready", "0"],
+            )?;
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params!["smoke.frontend.view", ""],
+            )?;
+        }
         if let Some(scan) = apply_internal_smoke_fixture(&conn)? {
             last_scan = Some(scan);
         }

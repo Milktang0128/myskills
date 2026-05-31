@@ -45,6 +45,10 @@ Automated checks already available:
   with disposable platform fixtures, run the real Rust Coverage Matrix helper,
   and verify in-sync, stale drift, only-here orphan, disabled, canonical
   platform ordering, and broken symlink scan diagnostics.
+- `npm run smoke:tauri:launch -- --frontend-smoke` and
+  `npm run smoke:tauri:dmg -- --frontend-smoke` require the packaged WebView
+  to initialize the real React workspace and complete a Tauri bridge round trip
+  by writing `smoke.frontend.ready=1` and `smoke.frontend.view=workspace`.
 - `npm run smoke:ui:workbench` renders the real React workbench in a DOM smoke
   harness with a mocked Tauri command bridge and verifies Coverage Matrix,
   broken/orphan filtering, Sync confirm, Library list, Kanban scenario
@@ -95,7 +99,7 @@ Important caveat:
 | Electron freeze line | `release/electron-v0.1.x` remains separate from `tauri/refactor-v0.2` | pass | No Electron files need to change for this smoke. |
 | Preview identity | Packaged app uses `com.kanbenzhi.myskills.tauri-preview` | pass | Verified from app state and `Info.plist`. |
 | Preview data isolation | DB, `backups/`, and `staging/` are under `myskills-tauri-preview` | pass | Settings observed the preview DB path; packaged app/DMG sync smoke proves destructive backup writes land under temporary `myskills-tauri-preview/backups`; `AppPaths` creates `staging/` under the same preview data root. |
-| App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state. |
+| App boot | Packaged app opens to MySkills workbench, not a blank shell | pass | Verified with Computer Use app state; packaged app/DMG frontend smoke now requires the real React workspace to initialize and complete a Tauri bridge write. |
 | Library | List/Kanban/Coverage render with real scanned skills | partial | Rust fixture test and packaged app/DMG fixture smoke cover real scanner to Library DB, platform filter, disabled scope, parser-error reporting, scan run, and stats; workbench UI smoke verifies List and Kanban render/interaction against the same frontend component tree via mocked Tauri bridge. Real packaged UI fixture click-through still pending. |
 | Coverage Matrix | Drift/gap/orphan/broken/disabled states match Electron behavior | partial | Rust fixture test covers in-sync, stale, orphan, broken, disabled, canonical ordering, and missing cells; packaged app/DMG coverage smoke runs the real Rust matrix helper against disposable fixtures; workbench UI smoke verifies Matrix rendering plus broken/orphan filters. Real packaged UI fixture click-through still pending. |
 | Settings | Platform paths, stats, language, network gate, AI config render correctly | partial | Settings page rendered; packaged workflow smoke verifies language/theme/network setting writes; workbench UI smoke verifies Settings sections, network toggle, scan errors, and stats. Packaged Settings UI click-through still pending. |
@@ -153,14 +157,16 @@ npm run smoke:tauri:launch -- --sync-smoke
 npm run smoke:tauri:launch -- --history-smoke
 npm run smoke:tauri:launch -- --workflow-smoke
 npm run smoke:tauri:launch -- --coverage-smoke
-npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke
+npm run smoke:tauri:launch -- --frontend-smoke
+npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
 npm run smoke:tauri:dmg
 npm run smoke:tauri:dmg -- --fixture-smoke
 npm run smoke:tauri:dmg -- --sync-smoke
 npm run smoke:tauri:dmg -- --history-smoke
 npm run smoke:tauri:dmg -- --workflow-smoke
 npm run smoke:tauri:dmg -- --coverage-smoke
-npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke
+npm run smoke:tauri:dmg -- --frontend-smoke
+npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
 npm run smoke:tauri:migration
 npm run smoke:ui:workbench
 ```

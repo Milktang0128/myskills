@@ -176,6 +176,26 @@ export default function Workspace() {
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
 
+  useEffect(() => {
+    if (!bridgeReady) return;
+    let cancelled = false;
+    api.settings
+      .get('smoke.frontend.expected')
+      .then(async (expected) => {
+        if (cancelled || expected !== '1') return;
+        await Promise.all([
+          api.settings.set('smoke.frontend.ready', '1'),
+          api.settings.set('smoke.frontend.view', 'workspace'),
+        ]);
+      })
+      .catch(() => {
+        // Internal smoke marker only; normal app startup should ignore failures.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady]);
+
   // Refresh hasOverviewRun whenever the user lands on the library shell in a
   // non-ai-lens sub-view. Covers initial mount AND navigating back from
   // ai-lens (user may have just generated a fresh overview there).

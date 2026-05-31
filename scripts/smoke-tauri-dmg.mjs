@@ -17,6 +17,7 @@ function parseArgs(argv) {
     historySmoke: false,
     workflowSmoke: false,
     coverageSmoke: false,
+    frontendSmoke: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -37,6 +38,8 @@ function parseArgs(argv) {
     } else if (arg === '--coverage-smoke') {
       args.fixtureSmoke = true;
       args.coverageSmoke = true;
+    } else if (arg === '--frontend-smoke') {
+      args.frontendSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -258,6 +261,28 @@ function queryJson(dbPath, sql) {
   return JSON.parse(result.stdout || '[]');
 }
 
+function inspectFrontendReady(dbPath) {
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const settings = Object.fromEntries(
+      queryJson(
+        dbPath,
+        "SELECT key, value FROM settings WHERE key IN ('smoke.frontend.expected', 'smoke.frontend.ready', 'smoke.frontend.view')",
+      ).map((row) => [row.key, row.value]),
+    );
+    if (
+      settings['smoke.frontend.expected'] !== '1' ||
+      settings['smoke.frontend.ready'] !== '1' ||
+      settings['smoke.frontend.view'] !== 'workspace'
+    ) {
+      return null;
+    }
+    return { frontendReady: true, frontendView: settings['smoke.frontend.view'] };
+  } catch {
+    return null;
+  }
+}
+
 if (process.platform !== 'darwin') {
   console.error('DMG smoke is macOS-only.');
   process.exit(1);
@@ -318,6 +343,9 @@ try {
   if (args.coverageSmoke) {
     env.MYSKILLS_INTERNAL_SMOKE_COVERAGE = '1';
   }
+  if (args.frontendSmoke) {
+    env.MYSKILLS_INTERNAL_SMOKE_FRONTEND = '1';
+  }
   const child = spawn(binary, [], {
     cwd: root,
     env,
@@ -337,7 +365,12 @@ try {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
   let fixtureResult = null;
+  let frontendResult = null;
   const dbReady = waitFor(() => {
+    if (args.frontendSmoke) {
+      frontendResult = inspectFrontendReady(dbPath);
+      if (!frontendResult) return false;
+    }
     if (!manifest) return fs.existsSync(dbPath);
     fixtureResult = inspectFixtureDb(dbPath, manifest, {
       syncSmoke: args.syncSmoke,
@@ -363,7 +396,9 @@ try {
   console.log(`tauri DMG smoke passed: ${dmgPath}`);
   console.log(`bundle id: ${bundleId}`);
   if (fixtureResult) {
-    console.log(`fixture result: ${JSON.stringify(fixtureResult)}`);
+    console.log(`fixture result: ${JSON.stringify({ ...fixtureResult, ...frontendResult })}`);
+  } else if (frontendResult) {
+    console.log(`frontend result: ${JSON.stringify(frontendResult)}`);
   } else {
     console.log(`created isolated preview DB at ${dbPath}`);
   }

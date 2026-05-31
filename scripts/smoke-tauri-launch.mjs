@@ -16,6 +16,7 @@ function parseArgs(argv) {
     historySmoke: false,
     workflowSmoke: false,
     coverageSmoke: false,
+    frontendSmoke: false,
   };
   for (const arg of argv) {
     if (arg === '--fixture-smoke') {
@@ -33,6 +34,8 @@ function parseArgs(argv) {
     } else if (arg === '--coverage-smoke') {
       args.fixtureSmoke = true;
       args.coverageSmoke = true;
+    } else if (arg === '--frontend-smoke') {
+      args.frontendSmoke = true;
     } else {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -249,6 +252,28 @@ function queryJson(dbPath, sql) {
   return JSON.parse(result.stdout || '[]');
 }
 
+function inspectFrontendReady(dbPath) {
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const settings = Object.fromEntries(
+      queryJson(
+        dbPath,
+        "SELECT key, value FROM settings WHERE key IN ('smoke.frontend.expected', 'smoke.frontend.ready', 'smoke.frontend.view')",
+      ).map((row) => [row.key, row.value]),
+    );
+    if (
+      settings['smoke.frontend.expected'] !== '1' ||
+      settings['smoke.frontend.ready'] !== '1' ||
+      settings['smoke.frontend.view'] !== 'workspace'
+    ) {
+      return null;
+    }
+    return { frontendReady: true, frontendView: settings['smoke.frontend.view'] };
+  } catch {
+    return null;
+  }
+}
+
 const args = parseArgs(process.argv.slice(2));
 const binary = appBinary();
 if (!fs.existsSync(binary)) {
@@ -286,6 +311,9 @@ if (args.workflowSmoke) {
 if (args.coverageSmoke) {
   env.MYSKILLS_INTERNAL_SMOKE_COVERAGE = '1';
 }
+if (args.frontendSmoke) {
+  env.MYSKILLS_INTERNAL_SMOKE_FRONTEND = '1';
+}
 
 const child = spawn(binary, [], {
   cwd: root,
@@ -306,7 +334,12 @@ const exitedEarly = new Promise((resolve) => {
   child.once('exit', (code, signal) => resolve({ code, signal }));
 });
 let fixtureResult = null;
+let frontendResult = null;
 const dbReady = waitFor(() => {
+  if (args.frontendSmoke) {
+    frontendResult = inspectFrontendReady(dbPath);
+    if (!frontendResult) return false;
+  }
   if (!manifest) return fs.existsSync(dbPath);
   fixtureResult = inspectFixtureDb(dbPath, manifest, {
     syncSmoke: args.syncSmoke,
@@ -333,7 +366,11 @@ if (!result.dbReady) {
 
 fs.rmSync(tempRoot, { recursive: true, force: true });
 if (fixtureResult) {
-  console.log(`tauri launch fixture smoke passed: ${JSON.stringify(fixtureResult)}`);
+  console.log(
+    `tauri launch fixture smoke passed: ${JSON.stringify({ ...fixtureResult, ...frontendResult })}`,
+  );
+} else if (frontendResult) {
+  console.log(`tauri launch frontend smoke passed: ${JSON.stringify(frontendResult)}`);
 } else {
   console.log(`tauri launch smoke passed: created isolated preview DB at ${dbPath}`);
 }

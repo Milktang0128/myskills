@@ -83,12 +83,12 @@ jobs:
 
       - name: Packaged fixture smoke
         if: runner.os != 'Linux'
-        run: npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke
+        run: npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
 
       - name: Packaged fixture smoke (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke
+        run: xvfb-run -a npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
 
       - name: Mounted DMG fixture smoke
         if: runner.os == 'macOS'
-        run: npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke
+        run: npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
