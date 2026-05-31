@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use arboard::Clipboard;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
+use serde_json::Map;
 use serde_json::{json, Value};
 use sha2::Digest;
 use tauri::{AppHandle, Emitter, State};
@@ -2214,9 +2215,9 @@ fn do_copy_item(backup_root: &Path, item: &Value) -> AppResult<ExecuteOutcome> {
     let source_real = fs::canonicalize(&source)?;
     let meta = fs::metadata(&source_real)?;
     let (dev, ino) = metadata_dev_ino(&meta);
-    if item.get("sourceDev").and_then(Value::as_i64).unwrap_or(0) != dev
-        || item.get("sourceIno").and_then(Value::as_i64).unwrap_or(0) != ino
-    {
+    let planned_dev = item.get("sourceDev").and_then(Value::as_i64).unwrap_or(0);
+    let planned_ino = item.get("sourceIno").and_then(Value::as_i64).unwrap_or(0);
+    if (planned_dev != 0 || planned_ino != 0) && (planned_dev != dev || planned_ino != ino) {
         return Err(AppError::new("SOURCE_CHANGED", "source changed since plan"));
     }
     if has_symlink_in_tree(&source_real)? {
@@ -2678,29 +2679,97 @@ mod tests {
     }
 }
 
+const CATALOG_USER_AGENT: &str = "MySkills/0.1 (+https://github.com/Milktang0128/myskills)";
+const CATALOG_SEARCH_BASE: &str = "https://skills.sh/api/search";
+const CATALOG_GH_REPO_API: &str = "https://api.github.com/repos";
+const CATALOG_GH_RAW: &str = "https://raw.githubusercontent.com";
+const CATALOG_CACHE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const CATALOG_MAX_BATCH_SIZE: usize = 30;
+const CATALOG_EXCERPT_CHARS: usize = 500;
+
 #[tauri::command]
 pub fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
     require_network(&db)?;
-    let q = payload
-        .as_ref()
-        .and_then(|p| p.get("q"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    Ok(
-        json!({ "query": q, "searchType": "tauri-placeholder", "skills": [], "count": 0, "duration_ms": 0 }),
-    )
+    let q = required_str(&payload, "q")?.trim().to_string();
+    if q.is_empty() {
+        return Ok(
+            json!({ "query": "", "searchType": "fuzzy", "skills": [], "count": 0, "duration_ms": 0 }),
+        );
+    }
+    let limit = clamp_i64(optional_i64(&payload, "limit").unwrap_or(30), 1, 100).to_string();
+    let offset = optional_i64(&payload, "offset")
+        .unwrap_or(0)
+        .max(0)
+        .to_string();
+    let client = catalog_client()?;
+    let res = client
+        .get(CATALOG_SEARCH_BASE)
+        .query(&[
+            ("q", q.as_str()),
+            ("limit", limit.as_str()),
+            ("offset", offset.as_str()),
+        ])
+        .header(reqwest::header::USER_AGENT, CATALOG_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .map_err(|err| {
+            AppError::new(
+                "CATALOG_UNAVAILABLE",
+                format!("Could not reach skills.sh - check your network connection. ({err})"),
+            )
+        })?;
+    let status = res.status();
+    if status.as_u16() == 429 {
+        return Err(AppError::new(
+            "CATALOG_RATE_LIMITED",
+            "skills.sh rate-limited this request. Wait a moment and try again.",
+        ));
+    }
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(AppError::new(
+            "CATALOG_UNAUTHORIZED",
+            "Public search is no longer available on skills.sh.",
+        ));
+    }
+    if !status.is_success() {
+        return Err(AppError::new(
+            "CATALOG_UNAVAILABLE",
+            format!(
+                "skills.sh returned HTTP {} {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("")
+            ),
+        ));
+    }
+    let body = res.json::<Value>().map_err(|err| {
+        AppError::new(
+            "CATALOG_BAD_RESPONSE",
+            format!("skills.sh returned malformed JSON: {err}"),
+        )
+    })?;
+    Ok(normalize_catalog_search_response(&body, &q))
 }
 
 #[tauri::command]
 pub fn catalog_preview(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
-    require_network(&db)?;
     let source = required_str(&payload, "source")?;
     let skill_id = required_str(&payload, "skillId")?;
-    Ok(
-        json!({ "source": source, "skillId": skill_id, "rawMarkdown": "", "frontmatter": {}, "bodyExcerpt": null }),
-    )
+    let raw = catalog_fetch_skill_content(&db, source, skill_id)?;
+    let (frontmatter, body) = catalog_parse_markdown(&raw)?;
+    let excerpt = body
+        .trim()
+        .chars()
+        .take(CATALOG_EXCERPT_CHARS)
+        .collect::<String>();
+    Ok(json!({
+        "source": source,
+        "skillId": skill_id,
+        "rawMarkdown": raw,
+        "frontmatter": frontmatter,
+        "bodyExcerpt": if excerpt.is_empty() { Value::Null } else { Value::String(excerpt) },
+    }))
 }
 
 #[tauri::command]
@@ -2709,25 +2778,73 @@ pub fn catalog_enrich_descriptions(
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
     let db = conn(&state)?;
-    require_network(&db)?;
-    let items = payload
+    let raw_items = payload
         .as_ref()
         .and_then(|p| p.get("items"))
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(Value::Array(
-        items
-            .into_iter()
-            .map(|item| {
-                json!({
-                    "source": item.get("source").cloned().unwrap_or(Value::Null),
-                    "skillId": item.get("skillId").cloned().unwrap_or(Value::Null),
-                    "description": null
-                })
-            })
-            .collect(),
-    ))
+        .ok_or_else(|| {
+            AppError::new(
+                "INVALID_INPUT",
+                "items (array of {source, skillId}) required",
+            )
+        })?;
+    let items = raw_items
+        .iter()
+        .filter_map(|item| {
+            Some((
+                item.get("source")?.as_str()?.to_string(),
+                item.get("skillId")?.as_str()?.to_string(),
+            ))
+        })
+        .take(CATALOG_MAX_BATCH_SIZE)
+        .collect::<Vec<_>>();
+    let now = now_ms();
+    let mut results: Vec<Option<Value>> = vec![None; items.len()];
+    let mut todo = Vec::new();
+
+    for (index, (source, skill_id)) in items.iter().enumerate() {
+        if let Some((description, fetched_at)) =
+            catalog_read_description_cache(&db, source, skill_id)?
+        {
+            if now - fetched_at < CATALOG_CACHE_TTL_MS {
+                results[index] = Some(json!({
+                    "source": source,
+                    "skillId": skill_id,
+                    "description": description
+                }));
+                continue;
+            }
+        }
+        todo.push(index);
+    }
+
+    if !todo.is_empty() && get_setting(&db, "allow_external_network")?.as_deref() == Some("1") {
+        for index in todo.iter().copied() {
+            let (source, skill_id) = &items[index];
+            let description = catalog_fetch_skill_content(&db, source, skill_id)
+                .ok()
+                .and_then(|raw| catalog_description_from_markdown(&raw).ok().flatten());
+            catalog_write_description_cache(&db, source, skill_id, description.as_deref())?;
+            results[index] = Some(json!({
+                "source": source,
+                "skillId": skill_id,
+                "description": description
+            }));
+        }
+    }
+
+    for index in todo {
+        if results[index].is_none() {
+            let (source, skill_id) = &items[index];
+            results[index] = Some(json!({
+                "source": source,
+                "skillId": skill_id,
+                "description": Value::Null
+            }));
+        }
+    }
+
+    Ok(Value::Array(results.into_iter().flatten().collect()))
 }
 
 #[tauri::command]
@@ -2735,12 +2852,597 @@ pub fn catalog_plan_install(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    let source = required_str(&payload, "source")?;
+    let skill_id = required_str(&payload, "skillId")?;
+    let skill_name = required_str(&payload, "skillName")?;
+    let target_platform_ids = payload
+        .as_ref()
+        .and_then(|p| p.get("targetPlatformIds"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "targetPlatformIds (string[]) required"))?
+        .iter()
+        .map(|v| {
+            v.as_str().map(str::to_string).ok_or_else(|| {
+                AppError::new("INVALID_INPUT", "targetPlatformIds entries must be strings")
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
     let db = conn(&state)?;
-    require_network(&db)?;
-    sync_plan(
-        Some(json!({ "kind": "sync_from_canonical", "catalog": payload })),
-        state,
-    )
+    let raw = catalog_fetch_skill_content(&db, source, skill_id)?;
+    let (frontmatter, _) = catalog_parse_markdown(&raw)?;
+    let fm_name = frontmatter
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if fm_name.is_none() {
+        return Err(AppError::new(
+            "MISSING_FRONTMATTER",
+            format!("SKILL.md from {source}/{skill_id} has no `name` field - cannot install."),
+        ));
+    }
+    let fm_name = fm_name.unwrap_or(skill_name);
+    let basename = sanitize_catalog_basename(skill_id)
+        .filter(|name| is_safe_basename(name))
+        .ok_or_else(|| {
+            AppError::new(
+                "INVALID_INPUT",
+                format!("cannot derive safe install basename from \"{skill_id}\""),
+            )
+        })?;
+    let stage_wrap = state.paths.staging_root.join(Uuid::new_v4().to_string());
+    let stage_dir = stage_wrap.join(&basename);
+    if let Err(err) = (|| -> AppResult<()> {
+        fs::create_dir_all(&stage_dir)?;
+        fs::write(stage_dir.join("SKILL.md"), raw.as_bytes())?;
+        Ok(())
+    })() {
+        let _ = fs::remove_dir_all(&stage_wrap);
+        return Err(AppError::new(
+            "STAGING_FAILED",
+            format!("Could not stage skill for install: {}", err.message),
+        ));
+    }
+    let source_hash = hex::encode(sha2::Sha256::digest(raw.as_bytes()));
+    match catalog_plan_from_staging(
+        &state,
+        &db,
+        &stage_dir,
+        fm_name,
+        &source_hash,
+        source,
+        skill_id,
+        &target_platform_ids,
+    ) {
+        Ok(plan) => Ok(plan),
+        Err(err) => {
+            let _ = fs::remove_dir_all(&stage_wrap);
+            Err(err)
+        }
+    }
+}
+
+fn catalog_client() -> AppResult<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| AppError::new("CATALOG_HTTP_CLIENT_FAILED", err.to_string()))
+}
+
+fn catalog_fetch_skill_content(db: &Connection, source: &str, skill_id: &str) -> AppResult<String> {
+    require_network(db)?;
+    if !is_valid_catalog_source(source) {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            format!("bad source \"{source}\" - expected owner/repo"),
+        ));
+    }
+    if !is_valid_catalog_skill_id(skill_id) {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            format!("bad skillId \"{skill_id}\""),
+        ));
+    }
+    let client = catalog_client()?;
+    let branch = catalog_default_branch(&client, source)?;
+    let candidates = [
+        format!("skills/{skill_id}/SKILL.md"),
+        format!("skills/.curated/{skill_id}/SKILL.md"),
+        format!("skills/.experimental/{skill_id}/SKILL.md"),
+        format!("{skill_id}/SKILL.md"),
+        "SKILL.md".to_string(),
+    ];
+    let mut last_err = None;
+    for sub_path in candidates {
+        let encoded_path = sub_path
+            .split('/')
+            .map(percent_encode_segment)
+            .collect::<Vec<_>>()
+            .join("/");
+        let url = format!(
+            "{}/{}/{}/{}",
+            CATALOG_GH_RAW,
+            source,
+            percent_encode_segment(&branch),
+            encoded_path
+        );
+        let res = match client
+            .get(&url)
+            .header(reqwest::header::USER_AGENT, CATALOG_USER_AGENT)
+            .header(reqwest::header::ACCEPT, "text/plain")
+            .send()
+        {
+            Ok(res) => res,
+            Err(err) => {
+                last_err = Some(err.to_string());
+                continue;
+            }
+        };
+        let status = res.status();
+        if status.as_u16() == 404 {
+            continue;
+        }
+        if status.as_u16() == 429 {
+            return Err(AppError::new(
+                "CATALOG_RATE_LIMITED",
+                "GitHub rate-limited the SKILL.md fetch. Wait a moment and try again.",
+            ));
+        }
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(AppError::new(
+                "CATALOG_UNAUTHORIZED",
+                format!(
+                    "GitHub denied the SKILL.md fetch for \"{source}\" (HTTP {}).",
+                    status.as_u16()
+                ),
+            ));
+        }
+        if !status.is_success() {
+            last_err = Some(format!(
+                "HTTP {} {}",
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("")
+            ));
+            continue;
+        }
+        let text = res
+            .text()
+            .map_err(|err| AppError::new("CATALOG_UNAVAILABLE", err.to_string()))?;
+        if !text.is_empty() {
+            return Ok(text);
+        }
+    }
+    Err(AppError::new(
+        "CONTENT_NOT_FOUND",
+        format!(
+            "Could not find SKILL.md for {source}/{skill_id} on any known path{}.",
+            last_err
+                .map(|err| format!(" (last error: {err})"))
+                .unwrap_or_default()
+        ),
+    ))
+}
+
+fn catalog_default_branch(client: &reqwest::blocking::Client, source: &str) -> AppResult<String> {
+    let url = format!("{CATALOG_GH_REPO_API}/{source}");
+    let res = match client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, CATALOG_USER_AGENT)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .send()
+    {
+        Ok(res) => res,
+        Err(_) => return Ok("main".to_string()),
+    };
+    let status = res.status();
+    if status.as_u16() == 404 {
+        return Err(AppError::new(
+            "CATALOG_REPO_NOT_FOUND",
+            format!("GitHub repository \"{source}\" does not exist."),
+        ));
+    }
+    if status.as_u16() == 429 {
+        return Err(AppError::new(
+            "CATALOG_RATE_LIMITED",
+            "GitHub rate-limited the request. Wait a few minutes and try again.",
+        ));
+    }
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(AppError::new(
+            "CATALOG_UNAUTHORIZED",
+            format!(
+                "GitHub denied the request for \"{source}\" (HTTP {}). Likely rate-limit on unauthenticated calls.",
+                status.as_u16()
+            ),
+        ));
+    }
+    if !status.is_success() {
+        return Ok("main".to_string());
+    }
+    let body = match res.json::<Value>() {
+        Ok(body) => body,
+        Err(_) => return Ok("main".to_string()),
+    };
+    Ok(body
+        .get("default_branch")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main")
+        .to_string())
+}
+
+fn normalize_catalog_search_response(body: &Value, query: &str) -> Value {
+    let skills = body
+        .get("skills")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(normalize_catalog_result)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let count = number_to_i64(body.get("count")).unwrap_or(skills.len() as i64);
+    json!({
+        "query": body.get("query").and_then(Value::as_str).unwrap_or(query),
+        "searchType": body.get("searchType").and_then(Value::as_str).unwrap_or("fuzzy"),
+        "skills": skills,
+        "count": count,
+        "duration_ms": number_to_i64(body.get("duration_ms")).unwrap_or(0),
+    })
+}
+
+fn normalize_catalog_result(raw: &Value) -> Option<Value> {
+    let obj = raw.as_object()?;
+    let name = obj.get("name")?.as_str()?;
+    let source = obj.get("source")?.as_str()?;
+    let id = obj.get("id").and_then(Value::as_str);
+    let skill_id = obj
+        .get("skillId")
+        .and_then(Value::as_str)
+        .or_else(|| obj.get("skill_id").and_then(Value::as_str))
+        .or_else(|| obj.get("slug").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| id.map(last_path_segment))
+        .or_else(|| Some(last_path_segment(name)))?;
+    if skill_id.is_empty() {
+        return None;
+    }
+    let mut result = Map::new();
+    let result_id = id
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{source}/{skill_id}"));
+    result.insert("id".to_string(), Value::String(result_id));
+    result.insert("skillId".to_string(), Value::String(skill_id));
+    result.insert("name".to_string(), Value::String(name.to_string()));
+    result.insert("source".to_string(), Value::String(source.to_string()));
+    result.insert(
+        "installs".to_string(),
+        Value::Number(
+            number_to_i64(obj.get("installs"))
+                .or_else(|| number_to_i64(obj.get("install_count")))
+                .unwrap_or(0)
+                .into(),
+        ),
+    );
+    if let Some(description) = obj.get("description").and_then(Value::as_str) {
+        result.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+    Some(Value::Object(result))
+}
+
+fn catalog_parse_markdown(raw: &str) -> AppResult<(Value, String)> {
+    let Some((frontmatter, body)) = catalog_split_frontmatter(raw) else {
+        return Ok((json!({}), raw.to_string()));
+    };
+    let docs = yaml_rust2::YamlLoader::load_from_str(frontmatter).map_err(|err| {
+        AppError::new(
+            "PARSE_ERROR",
+            format!("SKILL.md frontmatter is invalid: {err}"),
+        )
+    })?;
+    let frontmatter_json = docs.first().map(yaml_to_json).unwrap_or_else(|| json!({}));
+    Ok((frontmatter_json, body.to_string()))
+}
+
+fn catalog_split_frontmatter(raw: &str) -> Option<(&str, &str)> {
+    let rest = raw
+        .strip_prefix("---\n")
+        .or_else(|| raw.strip_prefix("---\r\n"))?;
+    if let Some(idx) = rest.find("\n---\n") {
+        let body_start = idx + "\n---\n".len();
+        return Some((&rest[..idx], &rest[body_start..]));
+    }
+    if let Some(idx) = rest.find("\r\n---\r\n") {
+        let body_start = idx + "\r\n---\r\n".len();
+        return Some((&rest[..idx], &rest[body_start..]));
+    }
+    None
+}
+
+fn catalog_description_from_markdown(raw: &str) -> AppResult<Option<String>> {
+    let (frontmatter, _) = catalog_parse_markdown(raw)?;
+    Ok(frontmatter
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string))
+}
+
+fn catalog_read_description_cache(
+    db: &Connection,
+    source: &str,
+    skill_id: &str,
+) -> AppResult<Option<(Option<String>, i64)>> {
+    Ok(db
+        .query_row(
+            "SELECT description, fetched_at FROM catalog_descriptions WHERE source = ?1 AND skill_id = ?2",
+            params![source, skill_id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .optional()?)
+}
+
+fn catalog_write_description_cache(
+    db: &Connection,
+    source: &str,
+    skill_id: &str,
+    description: Option<&str>,
+) -> AppResult<()> {
+    db.execute(
+        "INSERT INTO catalog_descriptions (source, skill_id, description, fetched_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source, skill_id) DO UPDATE SET
+           description = excluded.description,
+           fetched_at = excluded.fetched_at",
+        params![source, skill_id, description, now_ms()],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn catalog_plan_from_staging(
+    state: &State<'_, AppState>,
+    db: &Connection,
+    staging_dir: &Path,
+    skill_name: &str,
+    source_hash: &str,
+    installed_from_source: &str,
+    installed_from_skill_id: &str,
+    target_platform_ids: &[String],
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let enabled_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let canonical = canonical_platform(db, &enabled_ids)?;
+    let canonical_platform = platforms
+        .iter()
+        .find(|p| p.id == canonical)
+        .ok_or_else(|| {
+            AppError::new(
+                "INVALID_STATE",
+                format!("canonical platform \"{canonical}\" is not registered"),
+            )
+        })?;
+    let op_group_id = Uuid::new_v4().to_string();
+    let placeholder_skill_id = format!("pending:{installed_from_source}:{installed_from_skill_id}");
+    let skill = SyncSkillRow {
+        id: placeholder_skill_id,
+        name: skill_name.to_string(),
+    };
+    let staging = LocRow {
+        id: -1,
+        skill_id: skill.id.clone(),
+        platform_id: "staging".to_string(),
+        install_path: staging_dir.to_string_lossy().to_string(),
+        real_path: staging_dir.to_string_lossy().to_string(),
+        is_symlink: false,
+        is_broken_link: false,
+        is_disabled: false,
+        content_hash: Some(source_hash.to_string()),
+        mtime: None,
+    };
+    let mut items = Vec::new();
+    if has_symlink_in_tree(staging_dir)? {
+        items.push(sync_placeholder(
+            &skill,
+            "staging",
+            &canonical,
+            "conflict",
+            "source_has_symlink",
+            &op_group_id,
+        ));
+        let plan = finalize_sync_plan("promote_to_canonical", items);
+        store_plan(state, &plan)?;
+        return Ok(plan);
+    }
+    let mut copy_item = build_sync_item(SyncBuildItemArgs {
+        skill: &skill,
+        source: Some(&staging),
+        target: None,
+        source_platform_id: "staging",
+        target_platform_id: &canonical,
+        target_platform_dir: &canonical_platform.skills_dir,
+        op_group_id: &op_group_id,
+        override_action: Some("copy_to_canonical"),
+    });
+    copy_item["installedFromSource"] = json!(installed_from_source);
+    copy_item["installedFromSkillId"] = json!(installed_from_skill_id);
+    let canonical_target = copy_item
+        .get("targetPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let target_basename = copy_item
+        .get("targetBasename")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let can_symlink = copy_item.get("action").and_then(Value::as_str) == Some("copy_to_canonical");
+    items.push(copy_item);
+
+    if can_symlink {
+        for target_id in target_platform_ids {
+            if target_id == &canonical {
+                continue;
+            }
+            let Some(platform) = platforms.iter().find(|p| p.id == *target_id) else {
+                continue;
+            };
+            let target_path = PathBuf::from(&platform.skills_dir).join(&target_basename);
+            if !target_inside_platform(&target_path, &platform.skills_dir) {
+                continue;
+            }
+            items.push(json!({
+                "skillName": skill_name,
+                "skillId": skill.id.clone(),
+                "opGroupId": op_group_id.clone(),
+                "targetBasename": target_basename.clone(),
+                "sourcePlatformId": canonical,
+                "sourceLocationId": -1,
+                "sourceRealPath": canonical_target.clone(),
+                "sourceDev": 0,
+                "sourceIno": 0,
+                "sourceHash": source_hash,
+                "targetPlatformId": target_id,
+                "targetPath": target_path.to_string_lossy(),
+                "targetHash": Value::Null,
+                "mode": "symlink",
+                "action": "symlink_replace",
+                "installedFromSource": installed_from_source,
+                "installedFromSkillId": installed_from_skill_id,
+            }));
+        }
+    }
+
+    let plan = finalize_sync_plan("promote_to_canonical", items);
+    store_plan(state, &plan)?;
+    Ok(plan)
+}
+
+fn yaml_to_json(yaml: &yaml_rust2::Yaml) -> Value {
+    match yaml {
+        yaml_rust2::Yaml::Real(s) => s
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(s.clone())),
+        yaml_rust2::Yaml::Integer(i) => Value::Number((*i).into()),
+        yaml_rust2::Yaml::String(s) => Value::String(s.clone()),
+        yaml_rust2::Yaml::Boolean(b) => Value::Bool(*b),
+        yaml_rust2::Yaml::Array(items) => Value::Array(items.iter().map(yaml_to_json).collect()),
+        yaml_rust2::Yaml::Hash(hash) => {
+            let mut map = Map::new();
+            for (key, value) in hash {
+                if let Some(key) = yaml_key_to_string(key) {
+                    map.insert(key, yaml_to_json(value));
+                }
+            }
+            Value::Object(map)
+        }
+        yaml_rust2::Yaml::Null | yaml_rust2::Yaml::BadValue | yaml_rust2::Yaml::Alias(_) => {
+            Value::Null
+        }
+    }
+}
+
+fn yaml_key_to_string(yaml: &yaml_rust2::Yaml) -> Option<String> {
+    match yaml {
+        yaml_rust2::Yaml::String(s) => Some(s.clone()),
+        yaml_rust2::Yaml::Integer(i) => Some(i.to_string()),
+        yaml_rust2::Yaml::Boolean(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn is_valid_catalog_source(source: &str) -> bool {
+    let mut parts = source.split('/');
+    let Some(owner) = parts.next() else {
+        return false;
+    };
+    let Some(repo) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some()
+        || owner.is_empty()
+        || repo.is_empty()
+        || owner.len() > 39
+        || repo.len() > 100
+    {
+        return false;
+    }
+    let owner_ok = owner
+        .chars()
+        .enumerate()
+        .all(|(idx, c)| c.is_ascii_alphanumeric() || (idx > 0 && c == '-'));
+    let repo_ok = repo
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+    owner_ok && repo_ok
+}
+
+fn is_valid_catalog_skill_id(skill_id: &str) -> bool {
+    !skill_id.is_empty()
+        && skill_id.len() <= 100
+        && skill_id.chars().enumerate().all(|(idx, c)| {
+            c.is_ascii_alphanumeric() || (idx > 0 && (c == '-' || c == '_' || c == '.'))
+        })
+}
+
+fn sanitize_catalog_basename(input: &str) -> Option<String> {
+    let cleaned = input
+        .chars()
+        .filter(|c| {
+            !c.is_control() && !matches!(c, '/' | '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|')
+        })
+        .collect::<String>()
+        .trim_start_matches('.')
+        .trim()
+        .chars()
+        .take(100)
+        .collect::<String>();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn percent_encode_segment(input: &str) -> String {
+    let mut out = String::new();
+    for byte in input.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn last_path_segment(input: &str) -> String {
+    input
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn number_to_i64(value: Option<&Value>) -> Option<i64> {
+    value.and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+            .or_else(|| v.as_f64().map(|f| f as i64))
+    })
+}
+
+fn clamp_i64(n: i64, lo: i64, hi: i64) -> i64 {
+    n.max(lo).min(hi)
 }
 
 #[tauri::command]
