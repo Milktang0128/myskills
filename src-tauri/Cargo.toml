@@ -1,0 +1,32 @@
+[package]
+name = "myskills"
+version = "0.2.0-tauri.0"
+description = "AI Skill Hub"
+authors = ["tangmilk1205@gmail.com"]
+edition = "2021"
+
+[lib]
+name = "myskills_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+arboard = "3"
+base64 = "0.22"
+dirs = "5"
+hex = "0.4"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+thiserror = "1"
+time = { version = "0.3", features = ["formatting"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+yaml-rust2 = "0.8"

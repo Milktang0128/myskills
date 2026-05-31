@@ -1,0 +1,32 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "productName": "MySkills",
+  "version": "0.2.0-tauri.0",
+  "identifier": "com.kanbenzhi.myskills.tauri-preview",
+  "build": {
+    "beforeDevCommand": "npm run dev:next",
+    "devUrl": "http://localhost:4477",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../out"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MySkills",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "icon": ["../build/icon.icns"],
+    "category": "DeveloperTool"
+  }
+}

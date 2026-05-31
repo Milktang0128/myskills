@@ -33,7 +33,12 @@ A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Cod
 
 ## Install
 
-Download the signed, notarized DMG:
+The released `v0.1.x` line remains the frozen Electron/macOS line. The active
+`tauri/refactor-v0.2` branch is a Tauri 2 rewrite that uses a separate preview
+app id (`com.kanbenzhi.myskills.tauri-preview`) and a separate app data
+directory until DB migration and rollback parity are verified.
+
+Download the signed, notarized Electron DMG:
 
 **[→ Releases page](https://github.com/Milktang0128/myskills/releases/latest)**
 
@@ -42,13 +47,13 @@ Download the signed, notarized DMG:
 - DMG is ~116 MB; the installed app is ~280 MB
 - Signed with a Developer ID certificate and stapled with Apple's notary ticket — open with a normal double-click, no Terminal workaround
 
-## On your Mac
+## On your desktop
 
 What MySkills puts where:
 
-- `~/Library/Application Support/MySkills/myskills.db` — the SQLite database (scenarios, tags, scan results)
-- `~/Library/Application Support/MySkills/backups/` — automatic backups before every sync write; retention is configurable in Settings
-- macOS Keychain — your AI provider API keys, if you enable AI features
+- The app data directory contains `myskills.db`, `backups/`, and `staging/`.
+- Automatic backups are written before every sync write; retention is configurable in Settings.
+- AI provider API keys live in the system credential store when AI features are enabled.
 
 **Your `SKILL.md` files are never modified by MySkills.** Tags and scenarios live only in the database above.
 
@@ -85,7 +90,7 @@ What MySkills puts where:
 - **AI Lens** clusters your library into themes; you can promote any cluster into a real scenario in one click
 - **Auto-categorize** new skills into scenarios you've defined
 - **AI search** in Discover re-ranks catalog results against a natural-language need
-- Each feature has its own toggle. Keys live in the macOS Keychain via Electron `safeStorage`
+- Each feature has its own toggle. Keys live in the system credential store.
 
 <p align="center">
   <img src="docs/screenshots/ai-lens.en.png" width="900" alt="AI Lens — clusters the whole library into named themes; each cluster can be promoted into a real scenario" />
@@ -102,25 +107,26 @@ What MySkills puts where:
 
 ```bash
 npm install
-npm run rebuild     # rebuild better-sqlite3 against Electron's ABI
-npm run dev         # Next.js dev (:4477) + Electron concurrently
+npm run dev         # Tauri dev shell + Next.js dev (:4477)
+npm run build       # Next.js static export
+npm run build:tauri # Tauri desktop bundle
 ```
 
-`npm run package` produces a signed DMG. Requires an Apple Developer ID certificate and an `xcrun notarytool` keychain profile (`myskills-notary` by default — see `scripts/notarize.cjs`).
+Legacy Electron commands are kept under `*:electron:legacy` for the frozen `v0.1.x` line.
 
-**Requirements:** Node 22+, npm 10+, macOS 13+, Xcode Command Line Tools (for `better-sqlite3` native compilation).
+**Requirements:** Node 22+, npm 10+, Rust/Cargo via rustup, and platform-specific Tauri prerequisites.
 
 ## Architecture
 
-Two TypeScript projects in one repo:
+The v0.2 line uses a Web control surface with a Rust backend:
 
 | Side | Path | Stack |
 |---|---|---|
-| Main process | `electron/` | Node 22, `better-sqlite3`, `electron-builder`, IPC via `contextBridge` |
+| Backend | `src-tauri/` | Tauri 2, Rust, `rusqlite`, custom commands |
 | Renderer | `src/` | Next.js 15 (static export), React 19, Tailwind, shadcn/Radix |
-| Contract | `shared/` | Plain TypeScript types and IPC channel constants — dependency-free |
+| Contract | `shared/` | Plain TypeScript types and command/channel constants — dependency-free |
 
-The renderer runs sandboxed: `nodeIntegration: false`, `contextIsolation: true`, strict CSP, IPC sender validation. All filesystem and database work lives in the main process.
+The renderer does not receive direct filesystem, SQL, shell, or HTTP permissions. All filesystem, database, secret, and network-gated work lives behind MySkills-specific Tauri commands.
 
 For deeper architecture see [**CLAUDE.md**](./CLAUDE.md) — the file is framed as an LLM coding-assistant brief, but the content is plain architecture notes worth reading. The full product spec is in [**SPEC.md**](./SPEC.md) (Chinese).
 

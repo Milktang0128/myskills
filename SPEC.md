@@ -192,11 +192,11 @@ Skill 的宿主。MVP 支持：
 |---|---|
 | 性能 | 扫描 200 个 skill < 2 秒；UI 首屏 < 500ms |
 | 内存 | 空闲内存 < 200MB |
-| 体积 | 安装包 < 100MB（Electron 限制下能压就压） |
+| 体积 | Tauri preview 以小包体为目标；Electron `v0.1.x` 维护线不再作为体积基准 |
 | 隐私 | 默认全本地，AI 调用必须走用户自配 key |
 | 稳定 | 任何同步操作都可回滚；DB 损坏不影响实际 skill 文件 |
 | 可移植 | 数据库可单文件导出 |
-| 平台 | MVP 仅 macOS（Apple Silicon + Intel） |
+| 平台 | `v0.1.x` 冻结为 macOS Electron 线；`v0.2` 目标为 Tauri 2 跨 macOS / Windows / Linux |
 
 ---
 
@@ -206,14 +206,14 @@ Skill 的宿主。MVP 支持：
 
 | 层 | 选型 | 理由 |
 |---|---|---|
-| 桌面框架 | **Electron 33** | 用户选定。生态成熟、跨进程 IPC 直观、AI 库齐全 |
+| 桌面框架 | **Tauri 2** | `v0.2` 重构路线：系统 WebView + Rust 后端，更贴合本地优先、文件系统密集、跨平台发布 |
 | 渲染层 | **Next.js 15 + React 19**（静态导出模式 `output: 'export'`） | App Router 心智、TypeScript 友好、不需要 SSR |
 | UI 库 | **shadcn/ui + Tailwind 3** | 控件可定制、设计感强、不绑死供应商 |
-| 数据库 | **SQLite (better-sqlite3)** | 同步 API、零依赖、单文件、查询快 |
-| Skill 解析 | **gray-matter** | YAML frontmatter 标准库 |
-| 包管理 | **pnpm 10** | 用户已装 |
-| 打包 | **electron-builder** | DMG / mac 签名 |
-| 语言 | **TypeScript** 全栈 | 主进程、渲染进程、共享类型 |
+| 数据库 | **SQLite (`rusqlite` + pool)** | Rust 后端持有 DB；renderer 不直接执行 SQL |
+| Skill 解析 | **Rust parser + YAML frontmatter** | 扫描、hash、symlink 状态和错误归类在 Rust 后端完成 |
+| 包管理 | **npm 10** | 当前仓库按 `package-lock.json` 维护 |
+| 打包 | **Tauri bundler** | preview 使用 `com.kanbenzhi.myskills.tauri-preview`，正式切换前不复用 Electron 生产数据目录 |
+| 语言 | **Rust + TypeScript** | Rust 承载 DB/FS/secrets/network；TypeScript 承载 React UI 和共享 DTO |
 
 ### 5.2 进程模型
 

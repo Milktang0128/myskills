@@ -2,6 +2,7 @@ node_modules/
 .next/
 out/
 dist-electron/
+src-tauri/target/
 release/
 *.log
 .DS_Store
