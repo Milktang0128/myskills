@@ -335,6 +335,34 @@ const syncPlan = {
   ],
 };
 
+const catalogInstallPlan = {
+  token: 'ui-smoke-catalog-token',
+  generatedAt: now,
+  expiresAt: now + 60_000,
+  operation: 'promote_to_canonical',
+  items: [
+    {
+      skillName: 'catalog-slide-builder',
+      skillId: 'catalog-slide-builder',
+      opGroupId: 'ui-smoke-catalog-install',
+      targetBasename: 'catalog-slide-builder',
+      sourcePlatformId: 'catalog',
+      sourceLocationId: -1,
+      sourceRealPath: '/tmp/myskills-ui/staging/catalog-slide-builder',
+      sourceDev: 1,
+      sourceIno: 3,
+      sourceHash: 'catalog-hash',
+      targetPlatformId: 'shared',
+      targetPath: '/tmp/myskills-ui/shared/catalog-slide-builder',
+      targetHash: null,
+      mode: 'copy',
+      action: 'copy_to_canonical',
+      installedFromSource: 'skills/catalog',
+      installedFromSkillId: 'catalog-slide-builder',
+    },
+  ],
+};
+
 function syncPlanItem(overrides) {
   return {
     skillName: 'fixture-stale',
@@ -428,6 +456,56 @@ function invoke(command, payload = {}) {
       return Promise.resolve(skillFixtures.find((skill) => skill.id === payload.id) ?? skillFixtures[0]);
     case 'coverage_matrix':
       return Promise.resolve(matrix);
+    case 'catalog_search':
+      return Promise.resolve({
+        query: payload.q ?? 'skill',
+        searchType: 'fuzzy',
+        count: 2,
+        duration_ms: 12,
+        skills: [
+          {
+            id: 'catalog-slide-builder',
+            skillId: 'catalog-slide-builder',
+            name: 'catalog-slide-builder',
+            source: 'skills/catalog',
+            description: 'Build slide decks from markdown.',
+            installs: 2400,
+          },
+          {
+            id: 'fixture-in-sync',
+            skillId: 'fixture-in-sync',
+            name: 'fixture-in-sync',
+            source: 'skills/catalog',
+            description: 'Already installed local fixture.',
+            installs: 1200,
+          },
+        ],
+      });
+    case 'catalog_enrich_descriptions':
+      return Promise.resolve(
+        (payload.items ?? []).map((item) => ({
+          source: item.source,
+          skillId: item.skillId,
+          description:
+            item.skillId === 'catalog-slide-builder'
+              ? 'Build slide decks from markdown.'
+              : 'Already installed local fixture.',
+        })),
+      );
+    case 'catalog_preview':
+      return Promise.resolve({
+        source: payload.source,
+        skillId: payload.skillId,
+        rawMarkdown:
+          '---\nname: catalog-slide-builder\ndescription: Build slide decks from markdown.\n---\n\nUse this skill to draft slide decks from markdown outlines.\n',
+        frontmatter: {
+          name: 'catalog-slide-builder',
+          description: 'Build slide decks from markdown.',
+        },
+        bodyExcerpt: 'Use this skill to draft slide decks from markdown outlines.',
+      });
+    case 'catalog_plan_install':
+      return Promise.resolve(catalogInstallPlan);
     case 'sync_plan':
       return Promise.resolve(syncPlan);
     case 'sync_execute':
@@ -698,6 +776,23 @@ try {
   expectText('kanban', 'fixture-in-sync');
   expectText('kanban', 'fixture-claude-only');
 
+  clickButton('Discover');
+  await waitFor('discover popular results', () => text().includes('Popular on skills.sh') && text().includes('catalog-slide-builder'));
+  expectText('discover keyword results', 'via skills.sh');
+  expectText('discover keyword results', 'Build slide decks from markdown.');
+  expectText('discover installed badge', 'Installed');
+  clickButton('catalog-slide-builder');
+  await waitFor('discover preview', () => text().includes('Preview from skills.sh') && text().includes('SKILL.md'));
+  expectText('discover preview', 'Install to');
+  expectText('discover preview', 'main source');
+  expectText('discover preview', 'Use this skill to draft slide decks from markdown outlines.');
+  clickButton('Install to 1 platform');
+  await waitFor('discover install plan', () => text().includes('Move to main source'));
+  expectText('discover install plan', 'copy into main source');
+  expectText('discover install plan', 'Apply 1 write');
+  clickButton('Cancel');
+  await waitFor('discover install plan close', () => !text().includes('Apply 1 write'));
+
   clickButton('Manage scenarios');
   await waitFor('scenarios view', () => text().includes('New') && text().includes('Research workflow'));
   expectText('scenarios view', 'Import');
@@ -724,11 +819,14 @@ try {
   expectText('settings view', 'Stats');
   clickButton('Allow external network requests');
   await waitFor('network toggle', () => text().includes('Offline mode'));
+  clickButton('Discover');
+  await waitFor('discover offline gate', () => text().includes('External network is disabled in Settings'));
+  expectText('discover offline gate', 'Enable external network access in Settings to browse the catalog.');
 
   if (consoleErrors.length > 0) {
     throw new Error(`UI smoke captured console errors:\n${consoleErrors.join('\n')}`);
   }
-  console.log('ui workbench smoke passed: matrix, sync confirm, library, kanban, scenarios, history, and settings rendered from mocked Tauri bridge');
+  console.log('ui workbench smoke passed: matrix, sync confirm, library, kanban, discover, scenarios, history, and settings rendered from mocked Tauri bridge');
 } finally {
   cleanup();
 }
