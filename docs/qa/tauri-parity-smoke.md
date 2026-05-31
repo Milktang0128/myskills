@@ -49,7 +49,8 @@ Automated checks already available:
   harness with a mocked Tauri command bridge and verifies Coverage Matrix,
   broken/orphan filtering, Sync confirm, Library list, Kanban scenario
   grouping, Discover keyword search/preview/install-plan/offline gate,
-  Scenarios detail, History table, and Settings network/scan/stats surfaces.
+  Scenarios detail, History table, Settings network/scan/stats surfaces, and
+  LLM provider/API-key/features/test UI.
 - `docs/ci/tauri-preview.github-actions.yml` is the ready-to-activate GitHub
   Actions workflow for command audit, Rust fmt, clippy, Rust tests, Tauri
   build, and packaged fixture smoke across macOS, Linux, and Windows preview
@@ -103,7 +104,7 @@ Important caveat:
 | Sync execute | Copy/symlink writes are backed up, recorded, rescanned, and rollback-able | partial | Rust workflow test covers copy-to-canonical execute, success history, and rollback file removal; packaged app/DMG history smoke proves copy replacement backup path isolation and rollback restore; symlink packaged UI workflow still pending. |
 | History | Sync history and rollback flow work from packaged app | partial | Rust workflow test and packaged app/DMG history smoke verify success history rows, `rolled_back_at`, backup consumption, and restored target content; workbench UI smoke verifies History table rows, grouped action text, backup path, and rollback affordance. Packaged History UI click-through still pending. |
 | Discover | Keyword search, preview, staged install plan render | partial | Workbench UI smoke verifies keyword results, installed badge, preview drawer, install target selection, staged install plan dialog, and offline fail-closed banner. Live network/catalog and packaged UI click-through still pending. |
-| AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; workbench UI smoke verifies AI settings surface and Discover offline gate. Provider config/key UI write flow and packaged UI smoke still pending. |
+| AI / LLM | Provider config, key write-only behavior, network gate, AI features | partial | Rust tests prove network fail-closed and config does not return legacy API key secrets; workbench UI smoke verifies provider/model save, API key write-only placeholder, feature toggles, connection-test result, AI settings surface, and Discover offline gate. Packaged UI smoke still pending. |
 | macOS unsigned preview | DMG mounts, app launches, preview id is correct, basic workflows pass | pass | Automated DMG fixture/history smoke mounts the package, verifies `com.kanbenzhi.myskills.tauri-preview`, launches the mounted binary, scans disposable fixtures, executes and rolls back a safe copy sync, and verifies SQLite/backup results. |
 | macOS signed/notarized preview | Developer ID signing, notarization, stapling, Gatekeeper launch | pending | Required before public release. |
 | Windows preview | Build and launch smoke on Windows runner | partial | Ready-to-activate GitHub Actions workflow covers Tauri build and packaged fixture smoke on `windows-latest`; activation needs a token with `workflow` scope, then first green runner result. |

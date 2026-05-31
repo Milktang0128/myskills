@@ -256,6 +256,13 @@ let llmFeatures = {
   recommend: false,
 };
 
+let llmConfig = {
+  provider: 'openai',
+  model: null,
+  hasApiKey: false,
+  baseUrl: null,
+};
+
 const lastScan = {
   totalFound: 7,
   newSkills: 5,
@@ -513,14 +520,24 @@ function invoke(command, payload = {}) {
     case 'sync_history':
       return Promise.resolve(historyRows);
     case 'llm_get_config':
-      return Promise.resolve({ provider: 'openai', model: null, hasApiKey: false, baseUrl: null });
+      return Promise.resolve(llmConfig);
     case 'llm_set_config':
-      return Promise.resolve({
-        provider: payload.provider ?? 'openai',
+      llmConfig = {
+        ...llmConfig,
+        provider: payload.provider ?? llmConfig.provider,
         model: payload.model ?? null,
-        hasApiKey: false,
         baseUrl: payload.baseUrl ?? null,
-      });
+      };
+      return Promise.resolve(llmConfig);
+    case 'llm_set_api_key':
+      if (!payload.key || String(payload.key).length < 4) {
+        return Promise.reject({ code: 'INVALID_INPUT', message: 'API key required' });
+      }
+      llmConfig = { ...llmConfig, hasApiKey: true };
+      return Promise.resolve({ ok: true, hasApiKey: true });
+    case 'llm_delete_api_key':
+      llmConfig = { ...llmConfig, hasApiKey: false };
+      return Promise.resolve({ ok: true, hasApiKey: false });
     case 'llm_get_features':
       return Promise.resolve(llmFeatures);
     case 'llm_set_features':
@@ -590,6 +607,7 @@ function expectNoText(label, unexpected) {
 function clickButton(label) {
   const buttons = [...document.querySelectorAll('button')];
   const button = buttons.find((candidate) => {
+    if (candidate.disabled) return false;
     const candidateText = normalizeText(candidate.textContent ?? '');
     return candidate.getAttribute('aria-label') === label || candidateText === label || candidateText.includes(label);
   });
@@ -597,6 +615,38 @@ function clickButton(label) {
     throw new Error(`Could not find button "${label}"\n\n${text()}`);
   }
   button.click();
+}
+
+function setInputValue(id, value) {
+  const input = document.getElementById(id);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`Could not find input #${id}\n\n${text()}`);
+  }
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+  input.focus();
+  setter?.call(input, value);
+  input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function setSelectValue(id, value) {
+  const select = document.getElementById(id);
+  if (!(select instanceof HTMLSelectElement)) {
+    throw new Error(`Could not find select #${id}\n\n${text()}`);
+  }
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function expectInputPlaceholder(id, expected) {
+  const input = document.getElementById(id);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`Could not find input #${id}\n\n${text()}`);
+  }
+  if (!input.placeholder.includes(expected)) {
+    throw new Error(`Expected #${id} placeholder to include "${expected}", got "${input.placeholder}"`);
+  }
 }
 
 function clickRoleButtonText(label) {
@@ -652,6 +702,7 @@ async function renderWorkspace() {
   installGlobal('HTMLSelectElement', window.HTMLSelectElement);
   installGlobal('Node', window.Node);
   installGlobal('Event', window.Event);
+  installGlobal('InputEvent', window.InputEvent);
   installGlobal('MouseEvent', window.MouseEvent);
   installGlobal('CustomEvent', window.CustomEvent);
   installGlobal('MutationObserver', window.MutationObserver);
@@ -817,6 +868,26 @@ try {
   expectText('settings view', 'Scan errors (2)');
   expectText('settings view', 'Broken copy');
   expectText('settings view', 'Stats');
+  setSelectValue('llm-provider', 'openai');
+  setInputValue('llm-model', 'gpt-4o-mini');
+  clickButton('Save');
+  setInputValue('llm-key', 'sk-ui-smoke-secret');
+  await waitFor('save API key button', () => text().includes('Save API key'));
+  clickButton('Save API key');
+  await waitFor('api key write-only placeholder', () => {
+    const input = document.getElementById('llm-key');
+    return input instanceof HTMLInputElement && input.placeholder.includes('saved in the OS credential store');
+  });
+  expectInputPlaceholder('llm-key', 'saved in the OS credential store');
+  expectNoText('api key write-only UI', 'sk-ui-smoke-secret');
+  clickButton('Use AI for catalog search (Discover)');
+  await waitFor('AI search feature enabled', () => llmFeatures.search === true);
+  clickButton('Suggest scenarios for new skills (auto-categorize)');
+  await waitFor('auto categorize feature enabled', () => llmFeatures.autoCategorize === true);
+  clickButton('Recommend missing skills for active scenarios');
+  await waitFor('recommend feature enabled', () => llmFeatures.recommend === true);
+  clickButton('Test connection');
+  await waitFor('LLM test result', () => text().includes('Failed: network disabled in UI smoke'));
   clickButton('Allow external network requests');
   await waitFor('network toggle', () => text().includes('Offline mode'));
   clickButton('Discover');
@@ -826,7 +897,7 @@ try {
   if (consoleErrors.length > 0) {
     throw new Error(`UI smoke captured console errors:\n${consoleErrors.join('\n')}`);
   }
-  console.log('ui workbench smoke passed: matrix, sync confirm, library, kanban, discover, scenarios, history, and settings rendered from mocked Tauri bridge');
+  console.log('ui workbench smoke passed: matrix, sync confirm, library, kanban, discover, scenarios, history, settings, and LLM settings rendered from mocked Tauri bridge');
 } finally {
   cleanup();
 }
