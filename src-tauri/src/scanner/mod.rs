@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 use crate::db::now_ms;
 use crate::error::{AppError, AppResult};
@@ -97,6 +98,14 @@ fn scan_root(
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(original) = icloud_evicted_name(&name) {
+            errors.push(json!({
+                "path": root.join(original).to_string_lossy(),
+                "kind": "icloud_evicted",
+                "message": "iCloud has evicted this skill - download it in Finder, then rescan"
+            }));
+            continue;
+        }
         if name.starts_with('.') && !disabled {
             continue;
         }
@@ -160,87 +169,299 @@ fn reconcile(
 ) -> AppResult<(i64, i64, i64)> {
     let mut new_count = 0;
     let mut updated_count = 0;
+    let mut seen_location_ids = std::collections::HashSet::new();
+    let mut seen_skill_ids = std::collections::HashSet::new();
 
-    for d in discovered {
-        let skill_id = format!("local:{}", d.parsed.name);
-        let existing: Option<String> = conn
-            .query_row(
-                "SELECT content_hash FROM skills WHERE id = ?1",
-                params![skill_id],
-                |r| r.get(0),
-            )
-            .ok();
-        if existing.is_none() {
-            new_count += 1;
-        } else if existing != Some(d.parsed.content_hash.clone()) {
-            updated_count += 1;
-        }
-        conn.execute(
+    let pre_scan_skill_ids = {
+        let mut stmt = conn.prepare("SELECT id FROM skills")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<std::collections::HashSet<_>, _>>()?
+    };
+
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut find_skill = tx.prepare(
+            "SELECT id, content_hash FROM skills WHERE name = ?1 AND source_key = 'local'",
+        )?;
+        let mut insert_skill = tx.prepare(
             "INSERT INTO skills
              (id, name, source_key, description, version, author, license, body_excerpt, content_hash, size_bytes, file_count, created_at, updated_at, last_scanned_at)
-             VALUES (?1, ?2, 'local', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?11)
-             ON CONFLICT(id) DO UPDATE SET
-               description=excluded.description,
-               version=excluded.version,
-               author=excluded.author,
-               license=excluded.license,
-               body_excerpt=excluded.body_excerpt,
-               content_hash=excluded.content_hash,
-               size_bytes=excluded.size_bytes,
-               file_count=excluded.file_count,
-               updated_at=CASE WHEN skills.content_hash != excluded.content_hash THEN excluded.updated_at ELSE skills.updated_at END,
-               last_scanned_at=excluded.last_scanned_at",
-            params![
-                skill_id,
-                d.parsed.name,
-                d.parsed.description,
-                d.parsed.version,
-                d.parsed.author,
-                d.parsed.license,
-                d.parsed.body_excerpt,
-                d.parsed.content_hash,
-                d.parsed.size_bytes,
-                d.parsed.file_count,
-                scanned_at
-            ],
+             VALUES (?1, ?2, 'local', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?11)",
         )?;
-        conn.execute(
+        let mut update_skill = tx.prepare(
+            "UPDATE skills SET
+               description = ?1,
+               version = ?2,
+               author = ?3,
+               license = ?4,
+               body_excerpt = ?5,
+               content_hash = ?6,
+               size_bytes = ?7,
+               file_count = ?8,
+               updated_at = ?9,
+               last_scanned_at = ?10
+             WHERE id = ?11",
+        )?;
+        let mut touch_skill = tx.prepare("UPDATE skills SET last_scanned_at = ?1 WHERE id = ?2")?;
+        let mut find_location = tx.prepare(
+            "SELECT id FROM skill_locations WHERE platform_id = ?1 AND install_path = ?2",
+        )?;
+        let mut insert_location = tx.prepare(
             "INSERT INTO skill_locations
              (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(platform_id, install_path) DO UPDATE SET
-               skill_id=excluded.skill_id,
-               real_path=excluded.real_path,
-               is_symlink=excluded.is_symlink,
-               is_broken_link=excluded.is_broken_link,
-               is_disabled=excluded.is_disabled,
-               content_hash=excluded.content_hash,
-               mtime=excluded.mtime,
-               last_seen_at=excluded.last_seen_at",
-            params![
-                skill_id,
-                d.platform_id,
-                d.install_path,
-                d.real_path,
-                d.is_symlink as i64,
-                d.is_broken as i64,
-                d.is_disabled as i64,
-                d.parsed.content_hash,
-                d.parsed.mtime,
-                scanned_at
-            ],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
+        let mut update_location = tx.prepare(
+            "UPDATE skill_locations SET
+               skill_id = ?1,
+               real_path = ?2,
+               is_symlink = ?3,
+               is_broken_link = ?4,
+               is_disabled = ?5,
+               content_hash = ?6,
+               mtime = ?7,
+               last_seen_at = ?8
+             WHERE id = ?9",
+        )?;
+
+        for d in discovered {
+            let existing: Option<(String, String)> = find_skill
+                .query_row(params![d.parsed.name], |r| Ok((r.get(0)?, r.get(1)?)))
+                .ok();
+            let skill_id = if let Some((skill_id, content_hash)) = existing {
+                if content_hash != d.parsed.content_hash {
+                    update_skill.execute(params![
+                        d.parsed.description,
+                        d.parsed.version,
+                        d.parsed.author,
+                        d.parsed.license,
+                        d.parsed.body_excerpt,
+                        d.parsed.content_hash,
+                        d.parsed.size_bytes,
+                        d.parsed.file_count,
+                        scanned_at,
+                        scanned_at,
+                        skill_id
+                    ])?;
+                    updated_count += 1;
+                } else {
+                    touch_skill.execute(params![scanned_at, skill_id])?;
+                }
+                skill_id
+            } else {
+                let skill_id = Uuid::new_v4().to_string();
+                insert_skill.execute(params![
+                    skill_id,
+                    d.parsed.name,
+                    d.parsed.description,
+                    d.parsed.version,
+                    d.parsed.author,
+                    d.parsed.license,
+                    d.parsed.body_excerpt,
+                    d.parsed.content_hash,
+                    d.parsed.size_bytes,
+                    d.parsed.file_count,
+                    scanned_at
+                ])?;
+                new_count += 1;
+                skill_id
+            };
+            seen_skill_ids.insert(skill_id.clone());
+
+            let existing_location: Option<i64> = find_location
+                .query_row(params![d.platform_id, d.install_path], |r| r.get(0))
+                .ok();
+            if let Some(location_id) = existing_location {
+                update_location.execute(params![
+                    skill_id,
+                    d.real_path,
+                    d.is_symlink as i64,
+                    d.is_broken as i64,
+                    d.is_disabled as i64,
+                    d.parsed.content_hash,
+                    d.parsed.mtime,
+                    scanned_at,
+                    location_id
+                ])?;
+                seen_location_ids.insert(location_id);
+            } else {
+                insert_location.execute(params![
+                    skill_id,
+                    d.platform_id,
+                    d.install_path,
+                    d.real_path,
+                    d.is_symlink as i64,
+                    d.is_broken as i64,
+                    d.is_disabled as i64,
+                    d.parsed.content_hash,
+                    d.parsed.mtime,
+                    scanned_at
+                ])?;
+                seen_location_ids.insert(tx.last_insert_rowid());
+            }
+        }
     }
 
-    let removed = conn.execute(
-        "DELETE FROM skill_locations WHERE last_seen_at < ?1",
-        params![scanned_at],
-    )? as i64;
-    conn.execute(
+    let all_location_ids = {
+        let mut stmt = tx.prepare("SELECT id FROM skill_locations")?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for location_id in all_location_ids
+        .into_iter()
+        .filter(|id| !seen_location_ids.contains(id))
+    {
+        tx.execute(
+            "DELETE FROM skill_locations WHERE id = ?1",
+            params![location_id],
+        )?;
+    }
+    tx.execute(
         "DELETE FROM skills
          WHERE id NOT IN (SELECT DISTINCT skill_id FROM skill_locations)
            AND id NOT IN (SELECT DISTINCT skill_id FROM skill_scenarios)",
         [],
     )?;
+    tx.commit()?;
+
+    let mut removed = 0;
+    for id in pre_scan_skill_ids {
+        if seen_skill_ids.contains(&id) {
+            continue;
+        }
+        let still_there: Option<i64> = conn
+            .query_row("SELECT 1 FROM skills WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
+            .ok();
+        if still_there.is_none() {
+            removed += 1;
+        }
+    }
     Ok((new_count, updated_count, removed))
+}
+
+fn icloud_evicted_name(name: &str) -> Option<&str> {
+    name.strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".icloud"))
+        .filter(|original| !original.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE skills (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              source_key TEXT NOT NULL DEFAULT 'local',
+              description TEXT,
+              version TEXT,
+              author TEXT,
+              license TEXT,
+              body_excerpt TEXT,
+              content_hash TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL DEFAULT 0,
+              file_count INTEGER NOT NULL DEFAULT 0,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              last_scanned_at INTEGER NOT NULL,
+              UNIQUE(name, source_key)
+            );
+            CREATE TABLE skill_locations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              skill_id TEXT NOT NULL,
+              platform_id TEXT NOT NULL,
+              install_path TEXT NOT NULL,
+              real_path TEXT NOT NULL,
+              is_symlink INTEGER NOT NULL DEFAULT 0,
+              is_broken_link INTEGER NOT NULL DEFAULT 0,
+              is_disabled INTEGER NOT NULL DEFAULT 0,
+              content_hash TEXT,
+              mtime INTEGER,
+              last_seen_at INTEGER NOT NULL,
+              UNIQUE(platform_id, install_path)
+            );
+            CREATE TABLE skill_scenarios (
+              skill_id TEXT NOT NULL,
+              scenario_id INTEGER NOT NULL,
+              added_at INTEGER NOT NULL,
+              PRIMARY KEY (skill_id, scenario_id)
+            );
+            "#,
+        )
+        .expect("schema");
+        conn
+    }
+
+    fn discovered(name: &str, hash: &str, platform: &str, path: &str) -> Discovered {
+        Discovered {
+            platform_id: platform.to_string(),
+            install_path: path.to_string(),
+            real_path: path.to_string(),
+            is_symlink: false,
+            is_broken: false,
+            is_disabled: false,
+            parsed: parser::ParsedSkill {
+                name: name.to_string(),
+                description: None,
+                version: None,
+                author: None,
+                license: None,
+                body_excerpt: None,
+                content_hash: hash.to_string(),
+                size_bytes: 10,
+                file_count: 1,
+                mtime: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn reconcile_counts_removed_skills_not_removed_locations() {
+        let conn = test_conn();
+        let first = vec![
+            discovered("Alpha", "hash-a", "claude", "/tmp/claude/alpha"),
+            discovered("Alpha", "hash-a", "codex", "/tmp/codex/alpha"),
+        ];
+        assert_eq!(reconcile(&conn, &first, 100).unwrap(), (1, 0, 0));
+
+        let second = vec![discovered("Alpha", "hash-a", "claude", "/tmp/claude/alpha")];
+        assert_eq!(reconcile(&conn, &second, 200).unwrap(), (0, 0, 0));
+        let location_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM skill_locations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(location_count, 1);
+
+        let third: Vec<Discovered> = Vec::new();
+        assert_eq!(reconcile(&conn, &third, 300).unwrap(), (0, 0, 1));
+    }
+
+    #[test]
+    fn reconcile_preserves_scenario_orphans_without_counting_removed() {
+        let conn = test_conn();
+        let first = vec![discovered("Alpha", "hash-a", "claude", "/tmp/claude/alpha")];
+        assert_eq!(reconcile(&conn, &first, 100).unwrap(), (1, 0, 0));
+        let skill_id: String = conn
+            .query_row("SELECT id FROM skills WHERE name = 'Alpha'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO skill_scenarios (skill_id, scenario_id, added_at) VALUES (?1, 1, 100)",
+            params![skill_id],
+        )
+        .unwrap();
+
+        let empty: Vec<Discovered> = Vec::new();
+        assert_eq!(reconcile(&conn, &empty, 200).unwrap(), (0, 0, 0));
+        let skill_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(skill_count, 1);
+    }
 }
