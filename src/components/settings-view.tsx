@@ -9,6 +9,7 @@ import {
   Crown,
   CloudOff,
   FileX2,
+  Database,
   Plus,
   Trash2,
   Check,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react';
 import type {
   AppStats,
+  ElectronMigrationCandidate,
   LlmConfig,
   LlmFeatureToggles,
   LlmProvider,
@@ -91,9 +93,11 @@ export function SettingsView({ onChanged }: Props) {
   const [savingLlmKey, setSavingLlmKey] = useState(false);
   const [testingLlm, setTestingLlm] = useState(false);
   const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
+  const [migrationCandidates, setMigrationCandidates] = useState<ElectronMigrationCandidate[]>([]);
+  const [discoveringMigration, setDiscoveringMigration] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [pls, st, ls, c, cands, netRaw, cfg, feats] = await Promise.all([
+    const [pls, st, ls, c, cands, netRaw, cfg, feats, migration] = await Promise.all([
       api.platforms.list(),
       api.settings.stats(),
       api.scan.lastResult(),
@@ -102,6 +106,7 @@ export function SettingsView({ onChanged }: Props) {
       api.settings.get('allow_external_network'),
       api.llm.getConfig(),
       api.llm.getFeatures(),
+      api.migration.discover().catch(() => [] as ElectronMigrationCandidate[]),
     ]);
     setPlatforms(pls);
     setStats(st);
@@ -117,6 +122,7 @@ export function SettingsView({ onChanged }: Props) {
       baseUrl: cfg.baseUrl ?? '',
     });
     setLlmFeatures(feats);
+    setMigrationCandidates(migration);
     // Probe each known candidate's default dir in parallel.
     const probes = await Promise.all(
       cands.map((cand) => api.platforms.probe(cand.defaultDir).then((r) => [cand.id, r] as const)),
@@ -349,6 +355,22 @@ export function SettingsView({ onChanged }: Props) {
   async function toggleFeature(key: keyof LlmFeatureToggles, next: boolean) {
     const updated = await api.llm.setFeatures({ [key]: next });
     setLlmFeatures(updated);
+  }
+
+  async function refreshMigrationCandidates() {
+    setDiscoveringMigration(true);
+    try {
+      setMigrationCandidates(await api.migration.discover());
+    } catch (err) {
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
+    } finally {
+      setDiscoveringMigration(false);
+    }
   }
 
   return (
@@ -632,6 +654,14 @@ export function SettingsView({ onChanged }: Props) {
               </div>
             </div>
           </section>
+
+          <Separator />
+
+          <MigrationDiscoverySection
+            candidates={migrationCandidates}
+            discovering={discoveringMigration}
+            onRefresh={refreshMigrationCandidates}
+          />
 
           <Separator />
 
@@ -921,6 +951,114 @@ export function SettingsView({ onChanged }: Props) {
   );
 }
 
+function MigrationDiscoverySection({
+  candidates,
+  discovering,
+  onRefresh,
+}: {
+  candidates: ElectronMigrationCandidate[];
+  discovering: boolean;
+  onRefresh: () => void;
+}) {
+  const t = useT();
+  const validCount = candidates.filter((candidate) => candidate.valid).length;
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Database className="h-4 w-4" />
+            {t('settings.migration.header')}
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('settings.migration.help')}
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={onRefresh} disabled={discovering}>
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${discovering ? 'animate-spin' : ''}`} />
+          {discovering ? t('settings.migration.scanning') : t('settings.migration.refresh')}
+        </Button>
+      </div>
+
+      <div className="rounded-md border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-medium">
+            {t('settings.migration.summary', {
+              count: candidates.length,
+              valid: validCount,
+            })}
+          </div>
+          <span className="rounded bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            {t('settings.migration.readOnlyBadge')}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t('settings.migration.readOnlyHelp')}
+        </p>
+
+        {candidates.length === 0 ? (
+          <p className="mt-3 rounded border border-dashed px-3 py-2 text-xs text-muted-foreground">
+            {t('settings.migration.empty')}
+          </p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {candidates.map((candidate) => (
+              <div
+                key={candidate.dbPath}
+                className={`rounded-md border p-3 ${
+                  candidate.valid
+                    ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-950 dark:bg-emerald-950/20'
+                    : 'border-amber-200 bg-amber-50/50 dark:border-amber-950 dark:bg-amber-950/20'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium">
+                    {candidate.valid
+                      ? t('settings.migration.valid')
+                      : t('settings.migration.invalid')}
+                  </span>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {formatBytes(candidate.sizeBytes)}
+                  </span>
+                </div>
+                <div className="mt-2 space-y-1 font-mono text-[11px] text-muted-foreground">
+                  <div className="break-all">
+                    {t('settings.migration.dbPath', { path: candidate.dbPath })}
+                  </div>
+                  {candidate.backupRoot && (
+                    <div className="break-all">
+                      {t('settings.migration.backupRoot', { path: candidate.backupRoot })}
+                    </div>
+                  )}
+                  {candidate.sourceSha256 && (
+                    <div className="break-all">
+                      {t('settings.migration.sha', {
+                        hash: shortHash(candidate.sourceSha256),
+                      })}
+                    </div>
+                  )}
+                  {candidate.modifiedAt && (
+                    <div>
+                      {t('settings.migration.modified', {
+                        time: formatRelative(candidate.modifiedAt),
+                      })}
+                    </div>
+                  )}
+                  {candidate.reason && (
+                    <div className="break-all text-amber-700 dark:text-amber-300">
+                      {candidate.reason}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -1027,6 +1165,11 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function shortHash(hash: string): string {
+  if (hash.length <= 16) return hash;
+  return `${hash.slice(0, 12)}…${hash.slice(-8)}`;
 }
 
 function ErrorIcon({ kind }: { kind: string }) {

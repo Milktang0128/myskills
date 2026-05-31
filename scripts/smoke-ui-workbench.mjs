@@ -263,6 +263,27 @@ let llmConfig = {
   baseUrl: null,
 };
 
+const migrationCandidates = [
+  {
+    dbPath: '/Users/example/Library/Application Support/MySkills/myskills.db',
+    backupRoot: '/Users/example/Library/Application Support/MySkills/backups',
+    sizeBytes: 262144,
+    modifiedAt: now - 3600_000,
+    sourceSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    valid: true,
+    reason: null,
+  },
+  {
+    dbPath: '/tmp/myskills-ui/invalid-electron/myskills.db',
+    backupRoot: null,
+    sizeBytes: 8192,
+    modifiedAt: now - 7200_000,
+    sourceSha256: null,
+    valid: false,
+    reason: 'MIGRATION_SCHEMA_INVALID: Electron DB is missing required table `skills`',
+  },
+];
+
 const lastScan = {
   totalFound: 7,
   newSkills: 5,
@@ -436,6 +457,8 @@ function invoke(command, payload = {}) {
       return Promise.resolve({ ok: true });
     case 'settings_cleanup_backups':
       return Promise.resolve({ deletedDirs: 1, deletedBytes: 2048, nulledRows: 1, remainingBytes: 4096 });
+    case 'migration_discover':
+      return Promise.resolve(migrationCandidates);
     case 'scan_last_result':
       return Promise.resolve(lastScan);
     case 'scan_run':
@@ -865,6 +888,11 @@ try {
   expectText('settings view', 'Platforms');
   expectText('settings view', 'Network enabled');
   expectText('settings view', 'AI integration');
+  expectText('settings migration discovery', 'Electron migration');
+  expectText('settings migration discovery', '1 valid of 2 candidate DBs');
+  expectText('settings migration discovery', 'read-only');
+  expectText('settings migration discovery', 'Valid Electron database');
+  expectText('settings migration discovery', 'Invalid candidate');
   expectText('settings view', 'Scan errors (2)');
   expectText('settings view', 'Broken copy');
   expectText('settings view', 'Stats');
