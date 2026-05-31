@@ -163,6 +163,9 @@ export const api = {
       bridge().invoke(IPC.sync.plan, { kind: 'sync_from_canonical', requests }) as Promise<SyncPlan>,
     planPromote: (requests: Array<{ skillId: string; sourceLocationId?: number }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', requests }) as Promise<SyncPlan>,
+    planToggleDisabled: (
+      requests: Array<{ skillId: string; locationId: number; disable: boolean }>,
+    ) => bridge().invoke(IPC.sync.planToggleDisabled, { requests }) as Promise<SyncPlan>,
     execute: (token: string) =>
       bridge().invoke(IPC.sync.execute, { token }) as Promise<SyncExecuteResult>,
     history: (skillId?: string, limit = 50) =>

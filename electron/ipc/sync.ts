@@ -4,11 +4,14 @@ import { IPC } from '../../shared/ipc-channels';
 import {
   planSyncFromCanonical,
   planPromoteToCanonical,
+  planToggleDisabled,
   executeSync,
   type SyncFromCanonicalRequest,
   type PromoteRequest,
+  type ToggleDisabledRequest,
 } from '../sync/symlink';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { scanAll } from '../scanner';
 import { restoreBackup } from '../sync/backup';
 
@@ -40,6 +43,19 @@ export function registerSyncHandlers(): void {
       return planPromoteToCanonical(p.requests);
     }
     throw makeError('INVALID_INPUT', 'unknown plan kind');
+  });
+
+  registerHandler(IPC.sync.planToggleDisabled, (_e, payload) => {
+    const p = payload as { requests?: ToggleDisabledRequest[] };
+    if (!p || !Array.isArray(p.requests)) {
+      throw makeError('INVALID_INPUT', 'requests[] required');
+    }
+    for (const r of p.requests) {
+      if (!r || typeof r.skillId !== 'string' || typeof r.locationId !== 'number' || typeof r.disable !== 'boolean') {
+        throw makeError('INVALID_INPUT', 'each request needs { skillId, locationId, disable }');
+      }
+    }
+    return planToggleDisabled(p.requests);
   });
 
   // Execute only takes a token — the plan is loaded server-side, so the
@@ -228,6 +244,26 @@ function rollbackOneRow(row: RollbackTarget): void {
     }
     return;
   }
+  if (row.action === 'disable' || row.action === 'enable') {
+    // A move is reversed by moving the entry back: it now lives at to_path;
+    // put it back at from_path. Converge gracefully if it's already gone.
+    let atTo: 'present' | 'absent' = 'absent';
+    try {
+      fs.lstatSync(row.to_path);
+      atTo = 'present';
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') throw err;
+    }
+    if (atTo === 'absent') return; // already reversed / removed — nothing to undo
+    if (!row.from_path) throw makeError('UNSAFE', 'history row missing original path');
+    if (pathExists(row.from_path)) {
+      throw makeError('UNSAFE', `${row.from_path} already exists — refusing to reverse the move`);
+    }
+    fs.mkdirSync(path.dirname(row.from_path), { recursive: true });
+    fs.renameSync(row.to_path, row.from_path);
+    return;
+  }
   if (row.action === 'copy_to_canonical') {
     // Same ENOENT relaxation — the canonical copy may already be gone, in
     // which case rollback is effectively complete. Still proceed so the
@@ -253,4 +289,14 @@ function rollbackOneRow(row: RollbackTarget): void {
 
 function isIpcError(x: unknown): x is { code: string; message: string } {
   return typeof x === 'object' && x !== null && 'code' in x && 'message' in x;
+}
+
+/** True if anything exists at `p` — including a broken symlink (lstat, not stat). */
+function pathExists(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
 }

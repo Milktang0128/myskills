@@ -219,6 +219,11 @@ export const en = {
   'detail.loc.copiedPath': 'Copied',
   'detail.loc.broken': 'Broken',
   'detail.loc.disabled': 'Disabled',
+  'detail.loc.disableBtn': 'Disable',
+  'detail.loc.disableTitle': 'Move this location into .disabled (the agent tool stops reading it; files are kept and restorable anytime)',
+  'detail.loc.disableBlockedTitle': 'Synced copies elsewhere point at this real copy — disable those platforms first',
+  'detail.loc.enableBtn': 'Enable',
+  'detail.loc.enableTitle': 'Move this location out of .disabled so the agent tool sees it again',
   'detail.loc.canonical': 'Main source',
   'detail.loc.symlink': 'Synced copy',
   'detail.loc.inSync': 'In sync',
@@ -397,6 +402,10 @@ export const en = {
   'syncConfirm.applying': 'Applying…',
   'syncConfirm.conflict.adopt': 'Adopt this',
   'syncConfirm.conflict.reveal': 'Reveal',
+  'syncConfirm.title.disable': 'Disable skill',
+  'syncConfirm.subtitle.disable': 'Move the skill folder into this platform\'s .disabled folder. The agent tool stops seeing it, but the files stay put and you can restore it anytime.',
+  'syncConfirm.title.enable': 'Enable skill',
+  'syncConfirm.subtitle.enable': 'Move the skill folder back out of .disabled so the agent tool sees it again.',
   'syncConfirm.title.fromCanonical': 'Sync from main source',
   'syncConfirm.subtitle.fromCanonical': 'Source: {{platform}} main source. Other tools get a linked copy.',
   'syncConfirm.subtitle.promoteFull': 'Move these skills into the {{platform}} main source. Other tools get a linked copy and stay in sync.',
@@ -416,6 +425,8 @@ export const en = {
   'syncConfirm.action.createSymlink': 'new copy',
   'syncConfirm.action.backupSymlink': 'backup then replace',
   'syncConfirm.action.copyToCanonical': 'copy into main source',
+  'syncConfirm.action.disable': 'move into .disabled',
+  'syncConfirm.action.enable': 'move out of .disabled',
   'syncConfirm.action.alreadyLinked': 'already in sync',
   'syncConfirm.action.skip': 'skip',
   'syncConfirm.action.conflict': 'needs attention',
@@ -433,6 +444,10 @@ export const en = {
     'Source contains a linked copy — refused for safety (a hostile link could exfiltrate data outside the skills directory). Flatten the source to plain files before retrying.',
   'syncConfirm.reason.case_collision':
     'Target platform already has a skill with the same name in different casing — APFS is case-insensitive, writing would silently overwrite. Rename one of them and retry.',
+  'syncConfirm.reason.canonical_has_dependents':
+    'This is the real copy that synced copies elsewhere point at — disabling it would break them. Disable the platforms that link here first, then this one.',
+  'syncConfirm.reason.already_disabled': 'This location is already disabled.',
+  'syncConfirm.reason.already_enabled': 'This location is already enabled.',
 
   // ── Sync history page ───────────────────────────────────────────────────
   'history.title': 'Sync history',

@@ -392,6 +392,177 @@ export function planInstallFromStaging(args: PlanInstallArgs): SyncPlan {
   return finalizePlan(items, 'promote_to_canonical');
 }
 
+/* ============================================================================
+ * Enable / disable (move a single location ⇄ its platform's .disabled/)
+ * ========================================================================== */
+
+export interface ToggleDisabledRequest {
+  skillId: string;
+  /** The skill_locations.id to move. */
+  locationId: number;
+  /** true → disable (move into .disabled/), false → enable (move back out). */
+  disable: boolean;
+}
+
+/**
+ * Plan enable/disable for one or more locations. Each item is a folder move
+ * within a single platform's skills dir:
+ *   disable: <skillsDir>/<name>/        → <skillsDir>/.disabled/<name>/
+ *   enable:  <skillsDir>/.disabled/<name>/ → <skillsDir>/<name>/
+ *
+ * Safety:
+ *  - The basename comes from the existing location's install_path, validated.
+ *  - Disabling a *real directory* that live symlinks point at is refused
+ *    ('canonical_has_dependents') — the move would orphan them.
+ *  - A move whose destination already exists is refused ('target_exists_dir').
+ *  - Already-in-the-requested-state is a 'skip'.
+ *
+ * The operation field is 'disable' if any item disables, else 'enable'. The
+ * detail view sends a single request, so it's unambiguous in practice.
+ */
+export function planToggleDisabled(requests: ToggleDisabledRequest[]): SyncPlan {
+  const platforms = listPlatforms();
+  const platformById = new Map(platforms.map((p) => [p.id, p]));
+  const items: SyncPlanItem[] = [];
+
+  for (const req of requests) {
+    const skill = loadSkill(req.skillId);
+    if (!skill) continue;
+    const loc = loadLocationById(req.locationId);
+    if (!loc || loc.skill_id !== req.skillId) continue;
+    const platform = platformById.get(loc.platform_id);
+    if (!platform) continue;
+
+    const opGroupId = randomUUID();
+    items.push(buildMoveItem({ skill, loc, skillsDir: platform.skillsDir, disable: req.disable, opGroupId }));
+  }
+
+  const op: SyncPlan['operation'] = requests.some((r) => r.disable) ? 'disable' : 'enable';
+  return finalizePlan(items, op);
+}
+
+interface LocRowWithSkill extends LocRow {
+  skill_id: string;
+}
+
+function loadLocationById(id: number): LocRowWithSkill | null {
+  return (
+    (getDb()
+      .prepare(
+        `SELECT id, skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime
+         FROM skill_locations WHERE id = ?`,
+      )
+      .get(id) as LocRowWithSkill | undefined) ?? null
+  );
+}
+
+interface MoveBuildArgs {
+  skill: SkillRow;
+  loc: LocRowWithSkill;
+  skillsDir: string;
+  disable: boolean;
+  opGroupId: string;
+}
+
+function buildMoveItem(args: MoveBuildArgs): SyncPlanItem {
+  const { skill, loc, skillsDir, disable, opGroupId } = args;
+
+  const moveConflict = (reason: SyncPlanItem['reason']): SyncPlanItem => ({
+    skillName: skill.name,
+    skillId: skill.id,
+    opGroupId,
+    targetBasename: '',
+    sourcePlatformId: loc.platform_id,
+    sourceLocationId: loc.id,
+    sourceRealPath: loc.install_path,
+    sourceDev: 0,
+    sourceIno: 0,
+    sourceHash: loc.content_hash,
+    targetPlatformId: loc.platform_id,
+    targetPath: '',
+    targetHash: null,
+    mode: 'symlink',
+    action: 'conflict',
+    reason,
+  });
+
+  // Already in the requested state → nothing to do.
+  if (disable && loc.is_disabled) {
+    return { ...moveConflict('already_disabled'), action: 'skip' };
+  }
+  if (!disable && !loc.is_disabled) {
+    return { ...moveConflict('already_enabled'), action: 'skip' };
+  }
+
+  const basename = path.basename(loc.install_path);
+  if (!isSafeBasename(basename)) return moveConflict('unsafe_target_name');
+
+  // Disabling a real dir that live symlinks resolve into would orphan them.
+  // Compare by realpath, not by the stored real_path strings: the scanner
+  // records a *raw* path for real dirs but a *resolved* one for symlinks, so
+  // a plain string match would miss dependents when the platform's skillsDir
+  // is itself a symlink.
+  if (disable && !loc.is_symlink) {
+    let canonicalReal: string;
+    try {
+      canonicalReal = fs.realpathSync(loc.install_path);
+    } catch {
+      canonicalReal = loc.real_path;
+    }
+    const liveSymlinks = getDb()
+      .prepare(
+        `SELECT real_path FROM skill_locations
+         WHERE skill_id = ? AND id != ? AND is_disabled = 0 AND is_symlink = 1`,
+      )
+      .all(loc.skill_id, loc.id) as Array<{ real_path: string }>;
+    const hasDependent = liveSymlinks.some((s) => {
+      try {
+        return fs.realpathSync(s.real_path) === canonicalReal;
+      } catch {
+        return s.real_path === canonicalReal;
+      }
+    });
+    if (hasDependent) return moveConflict('canonical_has_dependents');
+  }
+
+  const from = loc.install_path;
+  const to = disable
+    ? path.join(skillsDir, '.disabled', basename)
+    : path.join(skillsDir, basename);
+
+  // Destination must be free — never clobber.
+  if (fs.existsSync(to) || isBrokenSymlink(to)) {
+    return { ...moveConflict('target_exists_dir'), targetBasename: basename, targetPath: to };
+  }
+
+  // Pin the entry we're about to move by its own inode (lstat — for a symlink
+  // location this pins the link, not its target).
+  let lst: fs.Stats;
+  try {
+    lst = fs.lstatSync(from);
+  } catch {
+    return { ...moveConflict('unreadable'), targetBasename: basename };
+  }
+
+  return {
+    skillName: skill.name,
+    skillId: skill.id,
+    opGroupId,
+    targetBasename: basename,
+    sourcePlatformId: loc.platform_id,
+    sourceLocationId: loc.id,
+    sourceRealPath: from,
+    sourceDev: Number(lst.dev),
+    sourceIno: Number(lst.ino),
+    sourceHash: loc.content_hash,
+    targetPlatformId: loc.platform_id,
+    targetPath: to,
+    targetHash: null,
+    mode: 'symlink',
+    action: disable ? 'disable' : 'enable',
+  };
+}
+
 export async function executeSync(token: string): Promise<SyncExecuteResult> {
   if (executeInFlight) {
     throw new Error('Another sync is already running — wait for it to finish.');
@@ -894,8 +1065,93 @@ function doExecuteOne(item: SyncPlanItem): ExecuteOutcome {
       return doSymlinkCreate(item, /* allowReplaceWithBackup */ true);
     case 'copy_to_canonical':
       return doCopyToCanonical(item);
+    case 'disable':
+    case 'enable':
+      return doMove(item);
     default:
       throw new Error(`refusing to execute unknown action: ${item.action}`);
+  }
+}
+
+/**
+ * Execute an enable/disable move: rename `sourceRealPath` → `targetPath`,
+ * both inside the same platform's skills dir (so the rename is atomic on one
+ * volume). No content is read or rewritten — for a symlink location we move
+ * the link entry itself, never dereferencing it.
+ */
+function doMove(item: SyncPlanItem): ExecuteOutcome {
+  const from = item.sourceRealPath;
+  const to = item.targetPath;
+
+  // Re-pin the entry by its own inode (lstat — don't follow a symlink).
+  let lst: fs.Stats;
+  try {
+    lst = fs.lstatSync(from);
+  } catch {
+    throw new Error('source entry disappeared since plan was generated — re-plan and try again');
+  }
+  if (Number(lst.dev) !== item.sourceDev || Number(lst.ino) !== item.sourceIno) {
+    throw new Error('source entry changed since plan was generated — re-plan and try again');
+  }
+
+  // Both endpoints must resolve inside the platform root.
+  assertPathInPlatformRoot(item.targetPlatformId, from);
+  assertPathInPlatformRoot(item.targetPlatformId, to);
+
+  // Never clobber an existing destination.
+  if (fs.existsSync(to) || isBrokenSymlink(to)) {
+    throw new Error(`destination already exists: ${to}`);
+  }
+
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  fs.renameSync(from, to);
+  // Content is unchanged — record the hash on both sides as a breadcrumb.
+  return { beforeHash: item.sourceHash, afterHash: item.sourceHash, backupPath: null };
+}
+
+/**
+ * Assert that `targetPath` (which may or may not exist yet) resolves inside
+ * the given platform's skills root. Realpaths the parent dir to defeat
+ * symlinked-parent escapes, mirroring reAssertTargetInPlatformRoot but
+ * parameterized by an explicit path rather than item.targetPath.
+ */
+function assertPathInPlatformRoot(platformId: PlatformId, targetPath: string): void {
+  const platform = listPlatforms().find((p) => p.id === platformId);
+  if (!platform) throw new Error(`unknown platform ${platformId}`);
+  let root: string;
+  try {
+    root = fs.realpathSync(platform.skillsDir);
+  } catch {
+    root = path.resolve(platform.skillsDir);
+  }
+
+  // Resolve the NEAREST EXISTING ancestor of targetPath, then re-append the
+  // not-yet-created tail components. This defeats symlinked-ancestor escapes
+  // even when an intermediate dir (e.g. a `.disabled/` created on the first
+  // disable for this platform) doesn't exist yet — a plain dirname-realpath
+  // would fall back to a lexical compare and wrongly reject a skillsDir that
+  // is itself a symlink.
+  let probe = path.dirname(targetPath);
+  const tail = [path.basename(targetPath)];
+  let realParent = path.resolve(probe);
+  while (true) {
+    try {
+      realParent = fs.realpathSync(probe);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      const parent = path.dirname(probe);
+      if (parent === probe) {
+        realParent = path.resolve(probe);
+        break;
+      }
+      tail.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+  const real = path.join(realParent, ...tail);
+  if (!isInside(real, root)) {
+    throw new Error(`${targetPath} resolves to ${real}, which is outside platform root ${root}`);
   }
 }
 

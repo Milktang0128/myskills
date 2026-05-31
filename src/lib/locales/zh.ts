@@ -222,6 +222,11 @@ export const zh: Dict = {
   'detail.loc.copiedPath': '已复制',
   'detail.loc.broken': '失效',
   'detail.loc.disabled': '已禁用',
+  'detail.loc.disableBtn': '禁用',
+  'detail.loc.disableTitle': '把这个位置移进 .disabled（agent 工具读不到，文件保留，可随时恢复）',
+  'detail.loc.disableBlockedTitle': '别处有同步副本指向这个真本 — 请先禁用那些平台',
+  'detail.loc.enableBtn': '启用',
+  'detail.loc.enableTitle': '把这个位置移出 .disabled，让 agent 工具重新可见',
   'detail.loc.canonical': '主源',
   'detail.loc.symlink': '同步副本',
   'detail.loc.inSync': '已同步',
@@ -402,6 +407,10 @@ export const zh: Dict = {
   'syncConfirm.conflict.reveal': '在 Finder 中显示',
   'syncConfirm.title.fromCanonical': '从主源同步',
   'syncConfirm.subtitle.fromCanonical': '从 {{platform}} 主源同步。其他工具会获得指向主源的副本。',
+  'syncConfirm.title.disable': '禁用技能',
+  'syncConfirm.subtitle.disable': '把技能目录移进该平台的 .disabled 文件夹。agent 工具就读不到它了，但文件还在，随时能恢复。',
+  'syncConfirm.title.enable': '启用技能',
+  'syncConfirm.subtitle.enable': '把技能目录从 .disabled 移回原处，agent 工具重新可见。',
   'syncConfirm.subtitle.promoteFull': '把这些技能放入 {{platform}} 主源。其他工具下的副本会指向主源，主源更新时同步更新。',
   'syncConfirm.summary.write': '{{count}} 项写入',
   'syncConfirm.summary.writes': '{{count}} 项写入',
@@ -419,6 +428,8 @@ export const zh: Dict = {
   'syncConfirm.action.createSymlink': '新建副本',
   'syncConfirm.action.backupSymlink': '备份后替换',
   'syncConfirm.action.copyToCanonical': '复制到主源',
+  'syncConfirm.action.disable': '移入 .disabled（禁用）',
+  'syncConfirm.action.enable': '移出 .disabled（启用）',
   'syncConfirm.action.alreadyLinked': '已同步',
   'syncConfirm.action.skip': '跳过',
   'syncConfirm.action.conflict': '需要处理',
@@ -436,6 +447,10 @@ export const zh: Dict = {
     '源目录里含有同步副本 — 出于安全考虑（防止数据外泄），MySkills 拒绝拷贝含内部链接的目录。请先整理成纯文件再试。',
   'syncConfirm.reason.case_collision':
     '目标平台已有同名（仅大小写不同）的技能 — macOS APFS 不区分大小写，强行写入会静默覆盖现有目录。请先重命名其中一方再重试。',
+  'syncConfirm.reason.canonical_has_dependents':
+    '这是别处同步副本指向的真本 — 直接禁用会让那些副本失效。请先禁用指向它的平台，再禁用这里。',
+  'syncConfirm.reason.already_disabled': '这个位置已经是禁用状态了。',
+  'syncConfirm.reason.already_enabled': '这个位置已经是启用状态了。',
 
   // ── 同步历史页 ──────────────────────────────────────────────────────────
   'history.title': '同步历史',
