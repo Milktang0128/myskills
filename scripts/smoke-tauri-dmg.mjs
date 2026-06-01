@@ -123,6 +123,25 @@ async function terminate(child) {
   ]);
 }
 
+async function cleanupTempRoot(tempRoot) {
+  let lastError;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      fs.rmSync(tempRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(250 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function createFixtures(tempRoot) {
   const result = spawnSync(
     process.execPath,
@@ -616,5 +635,5 @@ try {
   if (attached) {
     spawnSync('hdiutil', ['detach', mountPoint, '-quiet'], { encoding: 'utf8' });
   }
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  await cleanupTempRoot(tempRoot);
 }

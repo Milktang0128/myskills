@@ -110,6 +110,25 @@ async function terminate(child) {
   ]);
 }
 
+async function cleanupTempRoot(tempRoot) {
+  let lastError;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      fs.rmSync(tempRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(250 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function createFixtures(tempRoot) {
   const result = spawnSync(
     process.execPath,
@@ -559,11 +578,11 @@ if (!result.dbReady) {
   if ('code' in result) console.error(`process exit: code=${result.code} signal=${result.signal}`);
   if (stdout.trim()) console.error(`stdout:\n${stdout.trim()}`);
   if (stderr.trim()) console.error(`stderr:\n${stderr.trim()}`);
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  await cleanupTempRoot(tempRoot);
   process.exit(1);
 }
 
-fs.rmSync(tempRoot, { recursive: true, force: true });
+await cleanupTempRoot(tempRoot);
 if (fixtureResult) {
   console.log(
     `tauri launch fixture smoke passed: ${JSON.stringify({ ...fixtureResult, ...frontendResult, ...stableMigrationResult })}`,
