@@ -686,20 +686,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marker, source_db.to_string_lossy());
-        let backup_path: String = conn
+        let backup_path = conn
             .query_row(
                 "SELECT backup_path FROM sync_history WHERE skill_id = 'skill-1'",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0),
             )
+            .map(PathBuf::from)
             .unwrap();
-        assert!(backup_path.starts_with(
-            target_dir
-                .join("migration-backups/electron-123/backups")
-                .to_string_lossy()
-                .as_ref()
-        ));
-        assert!(Path::new(&backup_path).join("SKILL.md").exists());
+        assert!(backup_path.starts_with(target_dir.join("migration-backups/electron-123/backups")));
+        assert!(backup_path.join("SKILL.md").exists());
         fs::remove_dir_all(root).ok();
     }
 
@@ -1026,20 +1022,17 @@ mod tests {
             .join("migration-backups/electron-111/backups/skill-1/SKILL.md")
             .exists());
 
-        let imported_backup_path: String = Connection::open(&import.target_db)
+        let imported_backup_path = Connection::open(&import.target_db)
             .unwrap()
             .query_row(
                 "SELECT backup_path FROM sync_history WHERE skill_id = 'skill-1'",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, String>(0),
             )
+            .map(PathBuf::from)
             .unwrap();
-        assert!(imported_backup_path.starts_with(
-            target_dir
-                .join("migration-backups/electron-111/backups")
-                .to_string_lossy()
-                .as_ref()
-        ));
+        assert!(imported_backup_path
+            .starts_with(target_dir.join("migration-backups/electron-111/backups")));
 
         let rollback = rollback_stable_import(&target_dir, 222).expect("rollback should succeed");
 

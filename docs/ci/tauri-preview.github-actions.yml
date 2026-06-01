@@ -23,6 +23,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-24.04, windows-latest]
+    env:
+      MYSKILLS_SMOKE_TIMEOUT_MS: 45000
 
     steps:
       - name: Checkout
