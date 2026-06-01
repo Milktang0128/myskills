@@ -99,15 +99,30 @@ async function waitFor(predicate, timeout) {
   return false;
 }
 
+function waitForChildExit(child, timeout) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeout);
+    child.once('exit', onExit);
+  });
+}
+
 async function terminate(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill('SIGTERM');
-  await Promise.race([
-    new Promise((resolve) => child.once('exit', resolve)),
-    sleep(1500).then(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    }),
-  ]);
+  const exitedAfterTerm = await waitForChildExit(child, 1500);
+  if (!exitedAfterTerm && child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL');
+    await waitForChildExit(child, 3000);
+  }
+  await sleep(250);
 }
 
 async function cleanupTempRoot(tempRoot) {
