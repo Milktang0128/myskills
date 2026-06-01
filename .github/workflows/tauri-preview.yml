@@ -17,7 +17,9 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-24.04, windows-latest]
     env:
-      MYSKILLS_SMOKE_TIMEOUT_MS: 45000
+      # Windows packaged launches can spend a while initializing WebView/runtime
+      # state on cold GitHub runners before the fixture DB is observable.
+      MYSKILLS_SMOKE_TIMEOUT_MS: 90000
 
     steps:
       - name: Checkout
