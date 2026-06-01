@@ -20,6 +20,14 @@ import type {
   CoverageMatrix,
   CreateFromClusterRequest,
   CreateFromClusterResult,
+  CreateSkillDraft,
+  CreateSkillExecuteResult,
+  CreateSkillGenerateResult,
+  CreateSkillPlanResult,
+  CreateSkillQuestion,
+  CreateSkillReviewReport,
+  CreateSkillSpec,
+  CreateSkillStartResult,
   ElectronMigrationCandidate,
   ElectronMigrationConfirmationResult,
   LibraryOverview,
@@ -143,6 +151,15 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.ai.acceptSuggestion]: 'ai_accept_suggestion',
   [IPC.ai.dismissSuggestion]: 'ai_dismiss_suggestion',
   [IPC.ai.queueStatus]: 'ai_queue_status',
+  [IPC.ai.createSkillStart]: 'ai_create_skill_start',
+  [IPC.ai.createSkillGet]: 'ai_create_skill_get',
+  [IPC.ai.createSkillRefine]: 'ai_create_skill_refine',
+  [IPC.ai.createSkillAnswer]: 'ai_create_skill_answer',
+  [IPC.ai.createSkillGenerate]: 'ai_create_skill_generate',
+  [IPC.ai.createSkillReview]: 'ai_create_skill_review',
+  [IPC.ai.createSkillPlan]: 'ai_create_skill_plan',
+  [IPC.ai.createSkillExecute]: 'ai_create_skill_execute',
+  [IPC.ai.createSkillDiscard]: 'ai_create_skill_discard',
   [IPC.ai.bulkCategorize]: 'ai_bulk_categorize',
   [IPC.ai.applyBulkCategorization]: 'ai_apply_bulk_categorization',
   [IPC.ai.libraryOverviewGet]: 'ai_library_overview_get',
@@ -372,6 +389,38 @@ export const api = {
       bridge().invoke(IPC.ai.dismissSuggestion, { suggestionId }) as Promise<{ ok: true }>,
     queueStatus: () =>
       bridge().invoke(IPC.ai.queueStatus) as Promise<{ pending: number; schedulerRunning: boolean }>,
+    createSkill: {
+      start: (input: { prompt: string; language?: 'zh' | 'en' }) =>
+        bridge().invoke(IPC.ai.createSkillStart, input) as Promise<CreateSkillStartResult>,
+      get: (draftId: string) =>
+        bridge().invoke(IPC.ai.createSkillGet, { draftId }) as Promise<CreateSkillDraft>,
+      refine: (input: { draftId: string; skillSpec: CreateSkillSpec; targetBasename?: string }) =>
+        bridge().invoke(IPC.ai.createSkillRefine, input) as Promise<CreateSkillDraft>,
+      answer: (input: { draftId: string; questionId: string; answer: string }) =>
+        bridge().invoke(IPC.ai.createSkillAnswer, input) as Promise<{
+          draft: CreateSkillDraft;
+          nextQuestion: CreateSkillQuestion | null;
+          aiUsed: boolean;
+        }>,
+      generate: (input: { draftId: string; skillSpec?: CreateSkillSpec }) =>
+        bridge().invoke(IPC.ai.createSkillGenerate, input) as Promise<CreateSkillGenerateResult>,
+      review: (input: { draftId: string; markdown?: string; targetBasename?: string }) =>
+        bridge().invoke(IPC.ai.createSkillReview, input) as Promise<{
+          draft: CreateSkillDraft;
+          review: CreateSkillReviewReport;
+        }>,
+      plan: (input: {
+        draftId: string;
+        markdown?: string;
+        targetBasename: string;
+        targetPlatformIds: PlatformId[];
+        targetScenarioIds?: number[];
+      }) => bridge().invoke(IPC.ai.createSkillPlan, input) as Promise<CreateSkillPlanResult>,
+      execute: (input: { draftId: string; token: string; targetScenarioIds?: number[] }) =>
+        bridge().invoke(IPC.ai.createSkillExecute, input) as Promise<CreateSkillExecuteResult>,
+      discard: (draftId: string) =>
+        bridge().invoke(IPC.ai.createSkillDiscard, { draftId }) as Promise<{ ok: true }>,
+    },
     /**
      * Build a categorization plan for a set of skills. ONE LLM call (or a
      * few batches for large sets). Returns a plan the user previews + edits

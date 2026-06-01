@@ -3896,6 +3896,43 @@ mod tests {
             _ => panic!("AI queue should wait when external network is disabled"),
         }
     }
+
+    #[test]
+    fn create_skill_review_blocks_unsafe_markdown() {
+        let review = create_skill_review_markdown(
+            "---\nname: unsafe\n---\nRun `rm -rf /` and store api_key: value.",
+            Some("unsafe"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(codes.iter().any(|code| code == "PRIVATE_FIELD"));
+        assert!(codes.iter().any(|code| code == "DANGEROUS_SHELL"));
+    }
+
+    #[test]
+    fn create_skill_local_draft_reviews_cleanly() {
+        let spec = create_skill_local_spec(
+            "Create a reusable PR review checklist focused on regressions.",
+            "en",
+            &json!({"artifact": "checklist", "strictness": "confirm"}),
+        );
+        let markdown = create_skill_local_markdown(&spec);
+        let review =
+            create_skill_review_markdown(&markdown, spec.get("name").and_then(Value::as_str));
+        assert_eq!(
+            review
+                .get("blocking")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
 }
 
 const CATALOG_USER_AGENT: &str =
@@ -4846,8 +4883,10 @@ fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
 }
 
 fn llm_has_api_key(db: &Connection) -> AppResult<bool> {
-    Ok(secret_store_exists(LLM_API_KEY_NAME).unwrap_or(false)
-        || get_setting(db, "secret:llm.apiKey")?.is_some())
+    if get_setting(db, "secret:llm.apiKey")?.is_some() {
+        return Ok(true);
+    }
+    Ok(secret_store_exists(LLM_API_KEY_NAME).unwrap_or(false))
 }
 
 fn secret_store_entry(name: &str) -> AppResult<keyring_core::Entry> {
@@ -5188,7 +5227,8 @@ pub fn llm_get_features(payload: Option<Value>, state: State<'_, AppState>) -> A
     Ok(json!({
         "search": get_setting(&db, "llm.feature.search")?.as_deref() == Some("1"),
         "autoCategorize": get_setting(&db, "llm.feature.autoCategorize")?.as_deref() == Some("1"),
-        "recommend": get_setting(&db, "llm.feature.recommend")?.as_deref() == Some("1")
+        "recommend": get_setting(&db, "llm.feature.recommend")?.as_deref() == Some("1"),
+        "createSkill": get_setting(&db, "llm.feature.createSkill")?.as_deref() == Some("1")
     }))
 }
 
@@ -5200,6 +5240,7 @@ pub fn llm_set_features(payload: Option<Value>, state: State<'_, AppState>) -> A
         ("search", "llm.feature.search"),
         ("autoCategorize", "llm.feature.autoCategorize"),
         ("recommend", "llm.feature.recommend"),
+        ("createSkill", "llm.feature.createSkill"),
     ] {
         if let Some(v) = p.get(json_key).and_then(Value::as_bool) {
             db.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![setting_key, if v { "1" } else { "0" }])?;
@@ -5207,6 +5248,1225 @@ pub fn llm_set_features(payload: Option<Value>, state: State<'_, AppState>) -> A
     }
     maybe_start_ai_worker(&state);
     llm_get_features(None, state)
+}
+
+#[tauri::command]
+pub fn ai_create_skill_start(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let prompt = required_str(&payload, "prompt")?.trim().to_string();
+    if prompt.chars().count() < 4 {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            "Describe the need, problem, or workflow first.",
+        ));
+    }
+    let language = payload
+        .as_ref()
+        .and_then(|p| p.get("language"))
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "zh" | "en"))
+        .unwrap_or("zh");
+    let db = conn(&state)?;
+    let draft_id = Uuid::new_v4().to_string();
+    let now = now_ms();
+    let (spec, questions, ai_used) = create_skill_start_spec(&db, &prompt, language)
+        .unwrap_or_else(|_| {
+            let spec = create_skill_local_spec(&prompt, language, &json!({}));
+            let questions = create_skill_default_questions(&spec);
+            (spec, questions, false)
+        });
+    let status = if spec.get("ready").and_then(Value::as_bool) == Some(true) {
+        "spec_ready"
+    } else {
+        "intent_draft"
+    };
+    let basename = spec
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|name| is_safe_basename(name));
+    db.execute(
+        "INSERT INTO skill_creation_drafts
+         (id, status, raw_prompt, intent_frame_json, skill_spec_json, followup_questions_json,
+          answers_json, target_basename, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7, ?8, ?8)",
+        params![
+            draft_id,
+            status,
+            prompt,
+            json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
+            json_string(&spec)?,
+            json_string(&questions)?,
+            basename,
+            now
+        ],
+    )?;
+    Ok(json!({
+        "draft": create_skill_get_draft_row(&db, &draft_id)?,
+        "aiUsed": ai_used
+    }))
+}
+
+#[tauri::command]
+pub fn ai_create_skill_get(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let draft_id = required_str(&payload, "draftId")?;
+    let db = conn(&state)?;
+    create_skill_get_draft_row(&db, draft_id)
+}
+
+#[tauri::command]
+pub fn ai_create_skill_refine(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let p = payload.unwrap_or_else(|| json!({}));
+    let draft_id = p
+        .get("draftId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "draftId required"))?;
+    let mut spec = p
+        .get("skillSpec")
+        .cloned()
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "skillSpec required"))?;
+    create_skill_normalize_spec(&mut spec);
+    let status = if spec.get("ready").and_then(Value::as_bool) == Some(true) {
+        "spec_ready"
+    } else {
+        "intent_draft"
+    };
+    let basename = p
+        .get("targetBasename")
+        .and_then(Value::as_str)
+        .or_else(|| spec.get("name").and_then(Value::as_str))
+        .map(str::to_string);
+    let db = conn(&state)?;
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = ?1,
+             intent_frame_json = ?2,
+             skill_spec_json = ?3,
+             target_basename = ?4,
+             updated_at = ?5
+         WHERE id = ?6 AND discarded_at IS NULL AND installed_at IS NULL",
+        params![
+            status,
+            json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
+            json_string(&spec)?,
+            basename,
+            now_ms(),
+            draft_id
+        ],
+    )?;
+    create_skill_get_draft_row(&db, draft_id)
+}
+
+#[tauri::command]
+pub fn ai_create_skill_answer(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let p = payload.unwrap_or_else(|| json!({}));
+    let draft_id = p
+        .get("draftId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "draftId required"))?;
+    let question_id = p
+        .get("questionId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "questionId required"))?;
+    let answer = p
+        .get("answer")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "answer required"))?;
+    let db = conn(&state)?;
+    let draft = create_skill_get_draft_row(&db, draft_id)?;
+    let mut answers = draft.get("answers").cloned().unwrap_or_else(|| json!({}));
+    if let Some(obj) = answers.as_object_mut() {
+        obj.insert(question_id.to_string(), Value::String(answer.to_string()));
+    }
+    let mut spec = draft.get("skillSpec").cloned().unwrap_or_else(|| {
+        create_skill_local_spec(
+            draft.get("rawPrompt").and_then(Value::as_str).unwrap_or(""),
+            "zh",
+            &answers,
+        )
+    });
+    create_skill_apply_answer(&mut spec, question_id, answer);
+    create_skill_normalize_spec(&mut spec);
+    let questions = create_skill_default_questions(&spec);
+    let next_question = questions.as_array().and_then(|items| {
+        items.iter().find(|q| {
+            q.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| answers.get(id).is_none())
+        })
+    });
+    let status = if next_question.is_some() {
+        "intent_draft"
+    } else {
+        "spec_ready"
+    };
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = ?1,
+             skill_spec_json = ?2,
+             intent_frame_json = ?3,
+             followup_questions_json = ?4,
+             answers_json = ?5,
+             updated_at = ?6
+         WHERE id = ?7 AND discarded_at IS NULL AND installed_at IS NULL",
+        params![
+            status,
+            json_string(&spec)?,
+            json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
+            json_string(&questions)?,
+            json_string(&answers)?,
+            now_ms(),
+            draft_id
+        ],
+    )?;
+    Ok(json!({
+        "draft": create_skill_get_draft_row(&db, draft_id)?,
+        "nextQuestion": next_question.cloned().unwrap_or(Value::Null),
+        "aiUsed": false
+    }))
+}
+
+#[tauri::command]
+pub fn ai_create_skill_generate(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let p = payload.unwrap_or_else(|| json!({}));
+    let draft_id = p
+        .get("draftId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "draftId required"))?;
+    let db = conn(&state)?;
+    let draft = create_skill_get_draft_row(&db, draft_id)?;
+    let mut spec = p
+        .get("skillSpec")
+        .cloned()
+        .or_else(|| draft.get("skillSpec").cloned())
+        .ok_or_else(|| AppError::new("INVALID_STATE", "skillSpec required before generate"))?;
+    create_skill_normalize_spec(&mut spec);
+    let (markdown, ai_used) = create_skill_generate_markdown(&db, &spec)
+        .unwrap_or_else(|_| (create_skill_local_markdown(&spec), false));
+    let review = create_skill_review_markdown(&markdown, spec.get("name").and_then(Value::as_str));
+    let status = if review
+        .get("blocking")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.is_empty())
+    {
+        "artifact_draft"
+    } else {
+        "review_failed"
+    };
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = ?1,
+             skill_spec_json = ?2,
+             intent_frame_json = ?3,
+             draft_markdown = ?4,
+             validation_json = ?5,
+             updated_at = ?6
+         WHERE id = ?7 AND discarded_at IS NULL AND installed_at IS NULL",
+        params![
+            status,
+            json_string(&spec)?,
+            json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
+            markdown,
+            json_string(&review)?,
+            now_ms(),
+            draft_id
+        ],
+    )?;
+    Ok(json!({
+        "draft": create_skill_get_draft_row(&db, draft_id)?,
+        "aiUsed": ai_used
+    }))
+}
+
+#[tauri::command]
+pub fn ai_create_skill_review(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let p = payload.unwrap_or_else(|| json!({}));
+    let draft_id = p
+        .get("draftId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "draftId required"))?;
+    let markdown = p.get("markdown").and_then(Value::as_str);
+    let target_basename = p.get("targetBasename").and_then(Value::as_str);
+    let db = conn(&state)?;
+    let draft = create_skill_get_draft_row(&db, draft_id)?;
+    let markdown = markdown
+        .or_else(|| draft.get("draftMarkdown").and_then(Value::as_str))
+        .ok_or_else(|| AppError::new("INVALID_STATE", "draftMarkdown required"))?;
+    let expected_name = target_basename.or_else(|| {
+        draft
+            .get("skillSpec")
+            .and_then(|s| s.get("name"))
+            .and_then(Value::as_str)
+    });
+    let review = create_skill_review_markdown(markdown, expected_name);
+    let status = if review
+        .get("blocking")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.is_empty())
+    {
+        "reviewed"
+    } else {
+        "review_failed"
+    };
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = ?1,
+             draft_markdown = ?2,
+             target_basename = COALESCE(?3, target_basename),
+             validation_json = ?4,
+             updated_at = ?5
+         WHERE id = ?6 AND discarded_at IS NULL AND installed_at IS NULL",
+        params![
+            status,
+            markdown,
+            target_basename,
+            json_string(&review)?,
+            now_ms(),
+            draft_id
+        ],
+    )?;
+    Ok(json!({
+        "draft": create_skill_get_draft_row(&db, draft_id)?,
+        "review": review
+    }))
+}
+
+#[tauri::command]
+pub fn ai_create_skill_plan(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let p = payload.unwrap_or_else(|| json!({}));
+    let draft_id = p
+        .get("draftId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "draftId required"))?;
+    let target_basename = p
+        .get("targetBasename")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "targetBasename required"))?
+        .trim();
+    if !is_safe_basename(target_basename) {
+        return Err(AppError::new("INVALID_INPUT", "targetBasename is not safe"));
+    }
+    let target_platform_ids = p
+        .get("targetPlatformIds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let target_scenario_ids = p
+        .get("targetScenarioIds")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let db = conn(&state)?;
+    let draft = create_skill_get_draft_row(&db, draft_id)?;
+    let markdown = p
+        .get("markdown")
+        .and_then(Value::as_str)
+        .or_else(|| draft.get("draftMarkdown").and_then(Value::as_str))
+        .ok_or_else(|| AppError::new("INVALID_STATE", "draftMarkdown required"))?;
+    let review = create_skill_review_markdown(markdown, Some(target_basename));
+    if !review
+        .get("blocking")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.is_empty())
+    {
+        db.execute(
+            "UPDATE skill_creation_drafts
+             SET status = 'review_failed', validation_json = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![json_string(&review)?, now_ms(), draft_id],
+        )?;
+        return Err(AppError::detail(
+            "CREATE_SKILL_REVIEW_BLOCKED",
+            "Fix blocking review issues before planning install.",
+            review,
+        ));
+    }
+    let parsed = scanner::parser::parse_skill_markdown(markdown)?;
+    let source_hash = parsed.content_hash;
+    let stage_wrap = state
+        .paths
+        .staging_root
+        .join(format!("create-skill-{}", Uuid::new_v4()));
+    let staging_dir = stage_wrap.join(target_basename);
+    fs::create_dir_all(&staging_dir)?;
+    fs::write(staging_dir.join("SKILL.md"), markdown)?;
+    let plan = create_skill_plan_from_staging(
+        &state,
+        &db,
+        &staging_dir,
+        parsed.name.as_str(),
+        &source_hash,
+        draft_id,
+        &target_platform_ids,
+    )?;
+    let plan_token = plan
+        .get("token")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = 'planned',
+             draft_markdown = ?1,
+             target_platform_ids_json = ?2,
+             target_scenario_ids_json = ?3,
+             target_basename = ?4,
+             staged_dir = ?5,
+             draft_hash = ?6,
+             validation_json = ?7,
+             plan_token = ?8,
+             updated_at = ?9
+         WHERE id = ?10 AND discarded_at IS NULL AND installed_at IS NULL",
+        params![
+            markdown,
+            json_string(&Value::Array(
+                target_platform_ids.iter().map(|id| json!(id)).collect()
+            ))?,
+            json_string(&Value::Array(
+                target_scenario_ids.iter().map(|id| json!(id)).collect()
+            ))?,
+            target_basename,
+            staging_dir.to_string_lossy().to_string(),
+            source_hash,
+            json_string(&review)?,
+            plan_token,
+            now_ms(),
+            draft_id
+        ],
+    )?;
+    Ok(json!({
+        "draft": create_skill_get_draft_row(&db, draft_id)?,
+        "plan": plan
+    }))
+}
+
+#[tauri::command]
+pub fn ai_create_skill_execute(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let p = payload.unwrap_or_else(|| json!({}));
+    let draft_id = p
+        .get("draftId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "draftId required"))?;
+    let token = p
+        .get("token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "token required"))?;
+    let requested_scenarios = p
+        .get("targetScenarioIds")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_i64).collect::<Vec<_>>());
+    let _lock = state
+        .sync_lock
+        .lock()
+        .map_err(|_| AppError::new("SYNC_LOCK_POISONED", "sync lock poisoned"))?;
+    let stored = state
+        .plan_store
+        .lock()
+        .map_err(|_| AppError::new("PLAN_STORE_POISONED", "plan store poisoned"))?
+        .remove(token)
+        .ok_or_else(|| AppError::new("PLAN_EXPIRED", "sync plan token is missing or expired"))?;
+    if stored.expires_at <= SystemTime::now() {
+        return Err(AppError::new(
+            "PLAN_EXPIRED",
+            "sync plan token is missing or expired",
+        ));
+    }
+    let db = conn(&state)?;
+    let plan = stored.plan;
+    if plan.get("operation").and_then(Value::as_str) != Some("create_skill") {
+        return Err(AppError::new(
+            "INVALID_PLAN",
+            "plan token does not belong to Create Skill",
+        ));
+    }
+    let plan_draft_id = plan
+        .get("draftId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if plan_draft_id != draft_id {
+        return Err(AppError::new(
+            "INVALID_PLAN",
+            "plan token belongs to a different draft",
+        ));
+    }
+    let plan_json = serde_json::to_string(&plan)
+        .map_err(|err| AppError::new("SERIALIZE_FAILED", err.to_string()))?;
+    let items = plan
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let result = execute_sync_items(&db, &state.paths.backup_root, items, &plan_json)?;
+    let scan = scanner::scan_all(&db)?;
+    if let Ok(mut last) = state.last_scan.lock() {
+        *last = Some(scan.clone());
+    }
+    let skill_id = create_skill_find_installed_skill(&db, &plan)?;
+    let mut warnings = Vec::new();
+    if let Some(skill_id) = &skill_id {
+        let scenarios = requested_scenarios.unwrap_or_else(|| {
+            create_skill_get_draft_row(&db, draft_id)
+                .ok()
+                .and_then(|d| d.get("targetScenarioIds").cloned())
+                .and_then(|v| v.as_array().cloned())
+                .map(|items| items.iter().filter_map(Value::as_i64).collect())
+                .unwrap_or_default()
+        });
+        for scenario_id in scenarios {
+            let inserted = db.execute(
+                "INSERT OR IGNORE INTO skill_scenarios (skill_id, scenario_id, added_at)
+                 SELECT ?1, id, ?2 FROM scenarios WHERE id = ?3",
+                params![skill_id, now_ms(), scenario_id],
+            )?;
+            if inserted == 0 {
+                warnings.push(json!({
+                    "code": "SCENARIO_NOT_FOUND",
+                    "message": format!("Scenario {scenario_id} no longer exists.")
+                }));
+            }
+        }
+    }
+    let now = now_ms();
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = ?1,
+             installed_skill_id = ?2,
+             installed_at = CASE WHEN ?2 IS NULL THEN installed_at ELSE ?3 END,
+             updated_at = ?3
+         WHERE id = ?4",
+        params![
+            if skill_id.is_some() {
+                "installed"
+            } else {
+                "planned"
+            },
+            skill_id,
+            now,
+            draft_id
+        ],
+    )?;
+    Ok(json!({
+        "draft": create_skill_get_draft_row(&db, draft_id)?,
+        "sync": result,
+        "scan": scan,
+        "skillId": skill_id,
+        "warnings": warnings
+    }))
+}
+
+#[tauri::command]
+pub fn ai_create_skill_discard(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let draft_id = required_str(&payload, "draftId")?;
+    let db = conn(&state)?;
+    if let Some(staged_dir) = db
+        .query_row(
+            "SELECT staged_dir FROM skill_creation_drafts WHERE id = ?1",
+            params![draft_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+    {
+        let _ = fs::remove_dir_all(
+            Path::new(&staged_dir)
+                .parent()
+                .unwrap_or(Path::new(&staged_dir)),
+        );
+    }
+    db.execute(
+        "UPDATE skill_creation_drafts
+         SET status = 'discarded', discarded_at = ?1, updated_at = ?1
+         WHERE id = ?2 AND installed_at IS NULL",
+        params![now_ms(), draft_id],
+    )?;
+    Ok(ok())
+}
+
+fn create_skill_get_draft_row(db: &Connection, draft_id: &str) -> AppResult<Value> {
+    db.query_row(
+        "SELECT id, status, raw_prompt, intent_frame_json, skill_spec_json,
+                followup_questions_json, answers_json, draft_markdown,
+                target_platform_ids_json, target_scenario_ids_json, target_basename,
+                validation_json, plan_token, installed_skill_id, created_at, updated_at,
+                installed_at, discarded_at
+         FROM skill_creation_drafts WHERE id = ?1",
+        params![draft_id],
+        |r| {
+            let intent: Option<String> = r.get(3)?;
+            let spec: Option<String> = r.get(4)?;
+            let questions: String = r.get(5)?;
+            let answers: String = r.get(6)?;
+            let platforms: String = r.get(8)?;
+            let scenarios: String = r.get(9)?;
+            let validation: Option<String> = r.get(11)?;
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "status": r.get::<_, String>(1)?,
+                "rawPrompt": r.get::<_, String>(2)?,
+                "intentFrame": parse_json_opt(intent),
+                "skillSpec": parse_json_opt(spec),
+                "followupQuestions": parse_json_text(&questions, json!([])),
+                "answers": parse_json_text(&answers, json!({})),
+                "draftMarkdown": r.get::<_, Option<String>>(7)?,
+                "targetPlatformIds": parse_json_text(&platforms, json!([])),
+                "targetScenarioIds": parse_json_text(&scenarios, json!([])),
+                "targetBasename": r.get::<_, Option<String>>(10)?,
+                "validation": parse_json_opt(validation),
+                "planToken": r.get::<_, Option<String>>(12)?,
+                "installedSkillId": r.get::<_, Option<String>>(13)?,
+                "createdAt": r.get::<_, i64>(14)?,
+                "updatedAt": r.get::<_, i64>(15)?,
+                "installedAt": r.get::<_, Option<i64>>(16)?,
+                "discardedAt": r.get::<_, Option<i64>>(17)?,
+            }))
+        },
+    )
+    .map_err(Into::into)
+}
+
+fn create_skill_start_spec(
+    db: &Connection,
+    prompt: &str,
+    language: &str,
+) -> AppResult<(Value, Value, bool)> {
+    if get_setting(db, "llm.feature.createSkill")?.as_deref() != Some("1") {
+        return Ok((
+            create_skill_local_spec(prompt, language, &json!({})),
+            create_skill_default_questions(&create_skill_local_spec(prompt, language, &json!({}))),
+            false,
+        ));
+    }
+    require_network(db)?;
+    let config = llm_read_config(db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new("LLM_NO_MODEL", "No model configured."));
+    }
+    let api_key = llm_read_api_key(db)?;
+    if config.provider != "ollama" && api_key.as_deref().unwrap_or("").trim().is_empty() {
+        return Err(AppError::new("LLM_NO_KEY", "No API key configured."));
+    }
+    let req = json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": create_skill_system_prompt(language)
+            },
+            {
+                "role": "user",
+                "content": format!("Create a skill spec from this user need. Return JSON only.\n\nNeed:\n{prompt}")
+            }
+        ],
+        "temperature": 0.2,
+        "maxTokens": 2200,
+        "jsonMode": true
+    });
+    let response = llm_chat_with_config(&config, api_key.as_deref(), &req)?;
+    let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+    let parsed = ai_parse_json_object(text);
+    create_skill_envelope_payload(parsed, "start").map(|(spec, questions)| (spec, questions, true))
+}
+
+fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(String, bool)> {
+    if get_setting(db, "llm.feature.createSkill")?.as_deref() != Some("1") {
+        return Ok((create_skill_local_markdown(spec), false));
+    }
+    require_network(db)?;
+    let config = llm_read_config(db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new("LLM_NO_MODEL", "No model configured."));
+    }
+    let api_key = llm_read_api_key(db)?;
+    if config.provider != "ollama" && api_key.as_deref().unwrap_or("").trim().is_empty() {
+        return Err(AppError::new("LLM_NO_KEY", "No API key configured."));
+    }
+    let req = json!({
+        "messages": [
+            { "role": "system", "content": create_skill_system_prompt(spec.get("language").and_then(Value::as_str).unwrap_or("zh")) },
+            { "role": "user", "content": format!("Generate the final SKILL.md for this spec. Return JSON envelope only.\n\n{}", json_string(spec)?) }
+        ],
+        "temperature": 0.2,
+        "maxTokens": 3600,
+        "jsonMode": true
+    });
+    let response = llm_chat_with_config(&config, api_key.as_deref(), &req)?;
+    let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+    let parsed = ai_parse_json_object(text);
+    if parsed.get("schemaVersion").and_then(Value::as_str) != Some("create-skill.v1") {
+        return Err(AppError::new(
+            "LLM_SCHEMA_MISMATCH",
+            "Create Skill schema mismatch.",
+        ));
+    }
+    if parsed.get("command").and_then(Value::as_str) != Some("generate") {
+        return Err(AppError::new(
+            "LLM_COMMAND_MISMATCH",
+            "Create Skill command mismatch.",
+        ));
+    }
+    let markdown = parsed
+        .get("draftMarkdown")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| AppError::new("LLM_BAD_RESPONSE", "draftMarkdown missing"))?;
+    Ok((markdown.to_string(), true))
+}
+
+fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Value, Value)> {
+    if parsed.get("schemaVersion").and_then(Value::as_str) != Some("create-skill.v1") {
+        return Err(AppError::new(
+            "LLM_SCHEMA_MISMATCH",
+            "Create Skill schema mismatch.",
+        ));
+    }
+    if parsed.get("command").and_then(Value::as_str) != Some(command) {
+        return Err(AppError::new(
+            "LLM_COMMAND_MISMATCH",
+            "Create Skill command mismatch.",
+        ));
+    }
+    let mut spec = parsed
+        .get("skillSpec")
+        .cloned()
+        .ok_or_else(|| AppError::new("LLM_BAD_RESPONSE", "skillSpec missing"))?;
+    if spec.get("intentFrame").is_none() {
+        if let Some(intent) = parsed.get("intentFrame") {
+            spec["intentFrame"] = intent.clone();
+        }
+    }
+    create_skill_normalize_spec(&mut spec);
+    let questions = parsed
+        .get("questions")
+        .cloned()
+        .or_else(|| parsed.get("question").map(|q| json!([q])))
+        .filter(|v| v.is_array())
+        .unwrap_or_else(|| create_skill_default_questions(&spec));
+    Ok((spec, questions))
+}
+
+fn create_skill_system_prompt(language: &str) -> String {
+    format!(
+        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills. Never ask for secrets. Do not allow silent overwrite or silent network. Skill names must be kebab-case safe directory basenames."
+    )
+}
+
+fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Value {
+    let name = slugify_skill_name(prompt);
+    let mut steps = vec![
+        if language == "en" {
+            "Clarify the user's input and desired outcome."
+        } else {
+            "澄清用户输入与期望结果。"
+        },
+        if language == "en" {
+            "Transform the input into a concrete workflow."
+        } else {
+            "把输入转化为可执行的流程。"
+        },
+        if language == "en" {
+            "Return a reviewed artifact and list assumptions."
+        } else {
+            "输出经过检查的结果并列出关键假设。"
+        },
+    ];
+    if answers.get("strictness").and_then(Value::as_str) == Some("confirm") {
+        steps.push(if language == "en" {
+            "Ask for confirmation before any file write."
+        } else {
+            "任何文件写入前都先请求确认。"
+        });
+    }
+    json!({
+        "name": name,
+        "description": if language == "en" {
+            format!("Use when the user needs help with: {}", truncate(prompt, 120))
+        } else {
+            format!("当用户需要处理这个需求时使用：{}", truncate(prompt, 120))
+        },
+        "language": language,
+        "intentFrame": {
+            "userJob": prompt,
+            "triggerContext": prompt,
+            "inputContract": {
+                "acceptedInputs": [if language == "en" { "A natural-language description of the problem, input material, and expected result." } else { "用户对困境、材料、需求或期望结果的自然语言描述。" }],
+                "privacyClass": "local_only"
+            },
+            "outputContract": {
+                "artifactType": answers.get("artifact").and_then(Value::as_str).unwrap_or("markdown"),
+                "destination": answers.get("destination").and_then(Value::as_str).unwrap_or("reply_only")
+            },
+            "workflow": {
+                "steps": steps,
+                "failClosedRules": [
+                    if language == "en" { "Do not invent missing constraints; ask when a decision affects files, privacy, or irreversible work." } else { "不要编造缺失约束；当决策影响文件、隐私或不可逆操作时必须追问。" },
+                    if language == "en" { "Never expose secrets or send local content externally without explicit permission." } else { "不得泄露密钥；未经明确许可不得把本地内容发送到外部服务。" }
+                ]
+            },
+            "stylePreferences": [if language == "en" { "Direct, actionable, concise." } else { "直接、可执行、简洁。" }],
+            "nonGoals": [if language == "en" { "Do not become a general-purpose editor or hidden automation runner." } else { "不做通用编辑器，也不做隐藏自动执行器。" }],
+            "successCriteria": [if language == "en" { "The user can run the skill on a similar need without re-explaining the whole workflow." } else { "用户下次遇到类似需求时，可以直接调用技能而无需重新解释整套流程。" }]
+        },
+        "needsNetwork": false,
+        "writesFiles": answers.get("destination").and_then(Value::as_str).is_some_and(|v| v != "reply_only"),
+        "overwritePolicy": "never",
+        "ready": answers.get("artifact").is_some() && answers.get("strictness").is_some(),
+        "missing": if answers.get("artifact").is_some() && answers.get("strictness").is_some() { json!([]) } else { json!(["artifact", "strictness"]) }
+    })
+}
+
+fn create_skill_default_questions(spec: &Value) -> Value {
+    let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+    json!([
+        {
+            "id": "artifact",
+            "question": if lang == "en" { "What should this skill usually produce?" } else { "这个技能通常应该产出什么？" },
+            "options": [
+                { "id": "markdown", "label": if lang == "en" { "Markdown answer" } else { "Markdown 方案" }, "effect": "artifact=markdown" },
+                { "id": "checklist", "label": if lang == "en" { "Checklist" } else { "检查清单" }, "effect": "artifact=checklist" },
+                { "id": "code_patch", "label": if lang == "en" { "Code patch" } else { "代码改动" }, "effect": "artifact=code_patch" }
+            ],
+            "allowFreeform": true
+        },
+        {
+            "id": "strictness",
+            "question": if lang == "en" { "How cautious should it be before taking action?" } else { "它在行动前应该有多保守？" },
+            "options": [
+                { "id": "confirm", "label": if lang == "en" { "Confirm writes" } else { "写入前确认" }, "effect": "strictness=confirm" },
+                { "id": "ask_when_unclear", "label": if lang == "en" { "Ask when unclear" } else { "不确定就追问" }, "effect": "strictness=ask_when_unclear" },
+                { "id": "advisory_only", "label": if lang == "en" { "Advice only" } else { "只给建议" }, "effect": "strictness=advisory_only" }
+            ],
+            "allowFreeform": true
+        }
+    ])
+}
+
+fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) {
+    match question_id {
+        "artifact" => {
+            let artifact = if answer.contains("code_patch") || answer.contains("代码") {
+                "code_patch"
+            } else if answer.contains("checklist") || answer.contains("清单") {
+                "checklist"
+            } else {
+                "markdown"
+            };
+            spec["intentFrame"]["outputContract"]["artifactType"] = json!(artifact);
+        }
+        "strictness" => {
+            let policy = if answer.contains("confirm") || answer.contains("确认") {
+                "confirm_each_time"
+            } else {
+                "never"
+            };
+            spec["overwritePolicy"] = json!(policy);
+        }
+        _ => {}
+    }
+}
+
+fn create_skill_normalize_spec(spec: &mut Value) {
+    if let Some(name) = spec.get("name").and_then(Value::as_str) {
+        spec["name"] = json!(slugify_skill_name(name));
+    }
+    if spec.get("language").and_then(Value::as_str).is_none() {
+        spec["language"] = json!("zh");
+    }
+    let ready = spec
+        .get("description")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty())
+        && spec
+            .get("intentFrame")
+            .and_then(|v| v.get("userJob"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty());
+    spec["ready"] = json!(ready);
+    if ready && spec.get("missing").is_none_or(|v| !v.is_array()) {
+        spec["missing"] = json!([]);
+    }
+}
+
+fn create_skill_local_markdown(spec: &Value) -> String {
+    let name = spec
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("new-skill");
+    let description = spec
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("Use when the user needs a structured agent workflow.");
+    let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+    let intent = spec.get("intentFrame").unwrap_or(&Value::Null);
+    let user_job = intent
+        .get("userJob")
+        .and_then(Value::as_str)
+        .unwrap_or(description);
+    let steps = intent
+        .get("workflow")
+        .and_then(|w| w.get("steps"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let criteria = intent
+        .get("successCriteria")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let section_title = if lang == "en" {
+        "Workflow"
+    } else {
+        "工作流"
+    };
+    let criteria_title = if lang == "en" {
+        "Acceptance Criteria"
+    } else {
+        "验收标准"
+    };
+    let safety_title = if lang == "en" {
+        "Safety"
+    } else {
+        "安全边界"
+    };
+    let step_block = if steps.is_empty() {
+        "- Clarify the user's goal.\n- Execute the workflow conservatively.\n- Return the result and assumptions.".to_string()
+    } else {
+        steps
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let criteria_block = if criteria.is_empty() {
+        "- The result is actionable.\n- Ambiguities are surfaced before risky work.".to_string()
+    } else {
+        criteria
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| format!("- {s}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n{description}\n\n## Intent\n\n{user_job}\n\n## {section_title}\n\n{step_block}\n\n## {criteria_title}\n\n{criteria_block}\n\n## {safety_title}\n\n- Do not expose secrets or private local paths unless the user explicitly asks.\n- Ask before writing, replacing, deleting, or sending content to external services.\n- If required context is missing, ask a focused follow-up instead of guessing.\n",
+        yaml_quote(description)
+    )
+}
+
+fn yaml_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>) -> Value {
+    let mut blocking = Vec::new();
+    let mut warnings = Vec::new();
+    let size_under_limit = markdown.len() <= 1024 * 1024;
+    if !size_under_limit {
+        blocking.push(json!({"code": "TOO_LARGE", "message": "SKILL.md must stay under 1MB."}));
+    }
+    let parsed = scanner::parser::parse_skill_markdown(markdown);
+    let parseable = parsed.is_ok();
+    let mut safe_name = false;
+    if let Ok(parsed) = parsed {
+        safe_name = is_safe_basename(expected_basename.unwrap_or(&parsed.name));
+        if !safe_name {
+            blocking.push(
+                json!({"code": "UNSAFE_NAME", "message": "Skill directory name is not safe."}),
+            );
+        }
+        if parsed
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            warnings.push(json!({"code": "MISSING_DESCRIPTION", "message": "Add a clear trigger-style description."}));
+        }
+    } else if let Err(err) = parsed {
+        blocking.push(json!({"code": err.code, "message": err.message}));
+    }
+    let lower = markdown.to_lowercase();
+    let no_private_fields = !["api_key", "apikey", "secret:", "password:"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if !no_private_fields {
+        blocking.push(
+            json!({"code": "PRIVATE_FIELD", "message": "Remove secrets or secret-shaped fields."}),
+        );
+    }
+    let no_silent_network =
+        !(lower.contains("curl ") || lower.contains("http://") || lower.contains("https://"))
+            || lower.contains("ask")
+            || lower.contains("confirm")
+            || lower.contains("permission")
+            || lower.contains("许可")
+            || lower.contains("确认");
+    if !no_silent_network {
+        warnings.push(json!({"code": "NETWORK_NEEDS_GATE", "message": "Network use should require explicit user permission."}));
+    }
+    let no_silent_overwrite = !(lower.contains("overwrite") || lower.contains("delete "))
+        || lower.contains("confirm")
+        || lower.contains("确认");
+    if !no_silent_overwrite {
+        warnings.push(json!({"code": "WRITE_NEEDS_GATE", "message": "Destructive writes should require confirmation."}));
+    }
+    let no_dangerous_shell = !["rm -rf", "sudo ", "chmod 777"]
+        .iter()
+        .any(|needle| lower.contains(needle));
+    if !no_dangerous_shell {
+        blocking.push(
+            json!({"code": "DANGEROUS_SHELL", "message": "Remove dangerous shell defaults."}),
+        );
+    }
+    json!({
+        "blocking": blocking,
+        "warnings": warnings,
+        "checks": {
+            "safeName": safe_name,
+            "parseableFrontmatter": parseable,
+            "sizeUnderLimit": size_under_limit,
+            "noPrivateFields": no_private_fields,
+            "noSilentNetwork": no_silent_network,
+            "noSilentOverwrite": no_silent_overwrite,
+            "noSecretExfiltration": no_private_fields,
+            "noDangerousShellDefault": no_dangerous_shell
+        }
+    })
+}
+
+fn create_skill_plan_from_staging(
+    state: &State<'_, AppState>,
+    db: &Connection,
+    staging_dir: &Path,
+    skill_name: &str,
+    source_hash: &str,
+    draft_id: &str,
+    target_platform_ids: &[String],
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let enabled_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let canonical = canonical_platform(db, &enabled_ids)?;
+    let canonical_platform = platforms
+        .iter()
+        .find(|p| p.id == canonical)
+        .ok_or_else(|| AppError::new("INVALID_STATE", "canonical platform missing"))?;
+    let op_group_id = Uuid::new_v4().to_string();
+    let placeholder_skill_id = format!("pending:create-skill:{draft_id}");
+    let skill = SyncSkillRow {
+        id: placeholder_skill_id,
+        name: skill_name.to_string(),
+    };
+    let staging = LocRow {
+        id: -1,
+        skill_id: skill.id.clone(),
+        platform_id: "staging".to_string(),
+        install_path: staging_dir.to_string_lossy().to_string(),
+        real_path: staging_dir.to_string_lossy().to_string(),
+        is_symlink: false,
+        is_broken_link: false,
+        is_disabled: false,
+        content_hash: Some(source_hash.to_string()),
+        mtime: None,
+    };
+    let mut items = Vec::new();
+    if has_symlink_in_tree(staging_dir)? {
+        items.push(sync_placeholder(
+            &skill,
+            "staging",
+            &canonical,
+            "conflict",
+            "source_has_symlink",
+            &op_group_id,
+        ));
+    } else {
+        let mut copy_item = build_sync_item(SyncBuildItemArgs {
+            skill: &skill,
+            source: Some(&staging),
+            target: None,
+            source_platform_id: "staging",
+            target_platform_id: &canonical,
+            target_platform_dir: &canonical_platform.skills_dir,
+            op_group_id: &op_group_id,
+            override_action: Some("copy_to_canonical"),
+        });
+        let canonical_target = copy_item
+            .get("targetPath")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_default();
+        if path_exists_lstat(Path::new(&canonical_target)) {
+            copy_item["action"] = json!("conflict");
+            copy_item["reason"] = json!("target_exists_dir");
+        }
+        copy_item["installedFromSource"] = json!("create-skill");
+        copy_item["installedFromSkillId"] = json!(draft_id);
+        items.push(copy_item);
+        let target_basename = Path::new(staging_dir)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(skill_name)
+            .to_string();
+        let can_symlink = items
+            .first()
+            .and_then(|item| item.get("action"))
+            .and_then(Value::as_str)
+            == Some("copy_to_canonical");
+        if can_symlink {
+            for target_id in target_platform_ids {
+                if target_id == &canonical {
+                    continue;
+                }
+                let Some(platform) = platforms.iter().find(|p| p.id == *target_id) else {
+                    continue;
+                };
+                let target_path = PathBuf::from(&platform.skills_dir).join(&target_basename);
+                let (action, reason) =
+                    if !target_inside_platform(&target_path, &platform.skills_dir) {
+                        ("conflict", Some("target_outside_root"))
+                    } else if has_case_collision(&platform.skills_dir, &target_basename) {
+                        ("conflict", Some("case_collision"))
+                    } else if path_exists_lstat(&target_path) {
+                        ("conflict", Some("target_exists_dir"))
+                    } else {
+                        ("symlink_create", None)
+                    };
+                items.push(json!({
+                    "skillName": skill_name,
+                    "skillId": skill.id.clone(),
+                    "opGroupId": op_group_id.clone(),
+                    "targetBasename": target_basename.clone(),
+                    "sourcePlatformId": canonical,
+                    "sourceLocationId": -1,
+                    "sourceRealPath": canonical_target.clone(),
+                    "sourceDev": 0,
+                    "sourceIno": 0,
+                    "sourceHash": source_hash,
+                    "targetPlatformId": target_id,
+                    "targetPath": target_path.to_string_lossy(),
+                    "targetHash": Value::Null,
+                    "mode": "symlink",
+                    "action": action,
+                    "reason": reason,
+                    "installedFromSource": "create-skill",
+                    "installedFromSkillId": draft_id,
+                }));
+            }
+        }
+    }
+    let mut plan = finalize_sync_plan("create_skill", items);
+    plan["draftId"] = json!(draft_id);
+    store_plan(state, &plan)?;
+    Ok(plan)
+}
+
+fn create_skill_find_installed_skill(db: &Connection, plan: &Value) -> AppResult<Option<String>> {
+    let Some(items) = plan.get("items").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    for item in items {
+        if item.get("action").and_then(Value::as_str) != Some("copy_to_canonical") {
+            continue;
+        }
+        let Some(platform_id) = item.get("targetPlatformId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(target_path) = item.get("targetPath").and_then(Value::as_str) else {
+            continue;
+        };
+        let found = db
+            .query_row(
+                "SELECT skill_id FROM skill_locations WHERE platform_id = ?1 AND install_path = ?2",
+                params![platform_id, target_path],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
+}
+
+fn slugify_skill_name(input: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for c in input.to_lowercase().chars() {
+        let mapped = if c.is_ascii_alphanumeric() {
+            Some(c)
+        } else if c.is_whitespace() || c == '-' || c == '_' {
+            Some('-')
+        } else {
+            None
+        };
+        if let Some(ch) = mapped {
+            if ch == '-' {
+                if !last_dash && !out.is_empty() {
+                    out.push('-');
+                    last_dash = true;
+                }
+            } else {
+                out.push(ch);
+                last_dash = false;
+            }
+        }
+        if out.len() >= 48 {
+            break;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        format!(
+            "skill-{}",
+            Uuid::new_v4()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect::<String>()
+        )
+    } else {
+        out
+    }
+}
+
+fn json_string(value: &Value) -> AppResult<String> {
+    serde_json::to_string(value).map_err(|err| AppError::new("SERIALIZE_FAILED", err.to_string()))
+}
+
+fn parse_json_text(text: &str, fallback: Value) -> Value {
+    serde_json::from_str(text).unwrap_or(fallback)
+}
+
+fn parse_json_opt(text: Option<String>) -> Value {
+    text.and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null)
 }
 
 #[tauri::command]

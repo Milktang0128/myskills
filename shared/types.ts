@@ -383,7 +383,7 @@ export interface SyncPlan {
   /** Used to drop expired plans. */
   expiresAt: number;
   /** The intended high-level user operation, for telemetry/UI. */
-  operation: 'sync_from_canonical' | 'promote_to_canonical' | 'disable' | 'enable';
+  operation: 'sync_from_canonical' | 'promote_to_canonical' | 'disable' | 'enable' | 'create_skill';
   items: SyncPlanItem[];
 }
 
@@ -391,6 +391,122 @@ export interface SyncExecuteResult {
   applied: SyncPlanItem[];
   skipped: SyncPlanItem[];
   failed: Array<{ item: SyncPlanItem; message: string }>;
+}
+
+/* ---------------------------------------------------------------------------
+ * Create Skill types
+ *
+ * Create Skill is an AI-assisted compiler from user intent into a reviewed
+ * SKILL.md artifact. The renderer may edit every intermediate artifact, but
+ * filesystem writes still go through SyncPlan -> confirm -> execute.
+ * ------------------------------------------------------------------------- */
+
+export type CreateSkillDraftStatus =
+  | 'intent_draft'
+  | 'spec_ready'
+  | 'artifact_draft'
+  | 'review_failed'
+  | 'reviewed'
+  | 'planned'
+  | 'installed'
+  | 'discarded';
+
+export interface CreateSkillIntentFrame {
+  userJob: string;
+  triggerContext: string;
+  inputContract: {
+    acceptedInputs: string[];
+    privacyClass: 'local_only' | 'may_send_summary' | 'may_send_content';
+  };
+  outputContract: {
+    artifactType: 'markdown' | 'report' | 'checklist' | 'code_patch' | 'file' | 'other';
+    destination: 'reply_only' | 'same_folder' | 'user_selected';
+  };
+  workflow: {
+    steps: string[];
+    failClosedRules: string[];
+  };
+  stylePreferences: string[];
+  nonGoals: string[];
+  successCriteria: string[];
+}
+
+export interface CreateSkillSpec {
+  name: string;
+  description: string;
+  language: 'zh' | 'en';
+  intentFrame: CreateSkillIntentFrame;
+  needsNetwork: boolean;
+  writesFiles: boolean;
+  overwritePolicy: 'never' | 'confirm_each_time';
+  ready: boolean;
+  missing: string[];
+}
+
+export interface CreateSkillQuestion {
+  id: string;
+  question: string;
+  options: Array<{ id: string; label: string; effect: string }>;
+  allowFreeform: boolean;
+}
+
+export interface CreateSkillReviewReport {
+  blocking: Array<{ code: string; message: string; path?: string }>;
+  warnings: Array<{ code: string; message: string }>;
+  checks: {
+    safeName: boolean;
+    parseableFrontmatter: boolean;
+    sizeUnderLimit: boolean;
+    noPrivateFields: boolean;
+    noSilentNetwork: boolean;
+    noSilentOverwrite: boolean;
+    noSecretExfiltration: boolean;
+    noDangerousShellDefault: boolean;
+  };
+}
+
+export interface CreateSkillDraft {
+  id: string;
+  status: CreateSkillDraftStatus;
+  rawPrompt: string;
+  intentFrame: CreateSkillIntentFrame | null;
+  skillSpec: CreateSkillSpec | null;
+  followupQuestions: CreateSkillQuestion[];
+  answers: Record<string, string>;
+  draftMarkdown: string | null;
+  targetPlatformIds: PlatformId[];
+  targetScenarioIds: number[];
+  targetBasename: string | null;
+  validation: CreateSkillReviewReport | null;
+  planToken: string | null;
+  installedSkillId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  installedAt: number | null;
+  discardedAt: number | null;
+}
+
+export interface CreateSkillStartResult {
+  draft: CreateSkillDraft;
+  aiUsed: boolean;
+}
+
+export interface CreateSkillGenerateResult {
+  draft: CreateSkillDraft;
+  aiUsed: boolean;
+}
+
+export interface CreateSkillPlanResult {
+  draft: CreateSkillDraft;
+  plan: SyncPlan;
+}
+
+export interface CreateSkillExecuteResult {
+  draft: CreateSkillDraft;
+  sync: SyncExecuteResult;
+  scan: ScanResult;
+  skillId: string | null;
+  warnings: Array<{ code: string; message: string }>;
 }
 
 /**
@@ -504,6 +620,7 @@ export interface LlmFeatureToggles {
   search: boolean;
   autoCategorize: boolean;
   recommend: boolean;
+  createSkill: boolean;
 }
 
 /**

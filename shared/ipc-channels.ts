@@ -105,6 +105,15 @@ export const IPC = {
     acceptSuggestion: 'ai:acceptSuggestion',
     dismissSuggestion: 'ai:dismissSuggestion',
     queueStatus: 'ai:queueStatus',
+    createSkillStart: 'ai:createSkill:start',
+    createSkillGet: 'ai:createSkill:get',
+    createSkillRefine: 'ai:createSkill:refine',
+    createSkillAnswer: 'ai:createSkill:answer',
+    createSkillGenerate: 'ai:createSkill:generate',
+    createSkillReview: 'ai:createSkill:review',
+    createSkillPlan: 'ai:createSkill:plan',
+    createSkillExecute: 'ai:createSkill:execute',
+    createSkillDiscard: 'ai:createSkill:discard',
     /** Build a bulk-categorization plan for the given skills. One LLM call. */
     bulkCategorize: 'ai:bulkCategorize',
     /** Apply a (possibly user-edited) bulk plan in a single DB transaction. */

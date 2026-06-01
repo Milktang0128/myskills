@@ -147,6 +147,31 @@ CREATE TABLE IF NOT EXISTS library_overview (
   model          TEXT,
   language       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS skill_creation_drafts (
+  id                       TEXT PRIMARY KEY,
+  status                   TEXT NOT NULL,
+  raw_prompt               TEXT NOT NULL,
+  intent_frame_json         TEXT,
+  skill_spec_json           TEXT,
+  followup_questions_json   TEXT NOT NULL DEFAULT '[]',
+  answers_json              TEXT NOT NULL DEFAULT '{}',
+  draft_markdown            TEXT,
+  target_platform_ids_json  TEXT NOT NULL DEFAULT '[]',
+  target_scenario_ids_json  TEXT NOT NULL DEFAULT '[]',
+  target_basename           TEXT,
+  staged_dir                TEXT,
+  draft_hash                TEXT,
+  validation_json           TEXT,
+  plan_token                TEXT,
+  installed_skill_id        TEXT REFERENCES skills(id) ON DELETE SET NULL,
+  created_at                INTEGER NOT NULL,
+  updated_at                INTEGER NOT NULL,
+  installed_at              INTEGER,
+  discarded_at              INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skill_creation_status ON skill_creation_drafts(status);
+CREATE INDEX IF NOT EXISTS idx_skill_creation_updated ON skill_creation_drafts(updated_at);
 "#;
 
 pub const IDEMPOTENT_MIGRATIONS: &[(i64, &str, &str)] = &[
@@ -159,4 +184,30 @@ pub const IDEMPOTENT_MIGRATIONS: &[(i64, &str, &str)] = &[
     (8, "catalog_descriptions_cache", ""),
     (9, "library_overview", ""),
     (10, "sync_history_op_group", "CREATE INDEX IF NOT EXISTS idx_history_op_group ON sync_history(op_group_id);"),
+    (11, "skill_creation_drafts", r#"
+CREATE TABLE IF NOT EXISTS skill_creation_drafts (
+  id                       TEXT PRIMARY KEY,
+  status                   TEXT NOT NULL,
+  raw_prompt               TEXT NOT NULL,
+  intent_frame_json         TEXT,
+  skill_spec_json           TEXT,
+  followup_questions_json   TEXT NOT NULL DEFAULT '[]',
+  answers_json              TEXT NOT NULL DEFAULT '{}',
+  draft_markdown            TEXT,
+  target_platform_ids_json  TEXT NOT NULL DEFAULT '[]',
+  target_scenario_ids_json  TEXT NOT NULL DEFAULT '[]',
+  target_basename           TEXT,
+  staged_dir                TEXT,
+  draft_hash                TEXT,
+  validation_json           TEXT,
+  plan_token                TEXT,
+  installed_skill_id        TEXT REFERENCES skills(id) ON DELETE SET NULL,
+  created_at                INTEGER NOT NULL,
+  updated_at                INTEGER NOT NULL,
+  installed_at              INTEGER,
+  discarded_at              INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skill_creation_status ON skill_creation_drafts(status);
+CREATE INDEX IF NOT EXISTS idx_skill_creation_updated ON skill_creation_drafts(updated_at);
+"#),
 ];

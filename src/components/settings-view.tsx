@@ -84,6 +84,7 @@ export function SettingsView({ onChanged }: Props) {
     search: false,
     autoCategorize: false,
     recommend: false,
+    createSkill: false,
   });
   const [llmDraft, setLlmDraft] = useState<{ provider: LlmProvider; model: string; baseUrl: string }>(
     { provider: 'openai', model: '', baseUrl: '' },
@@ -871,6 +872,12 @@ export function SettingsView({ onChanged }: Props) {
                   onChange={(v) => toggleFeature('recommend', v)}
                   disabled={!networkAllowed}
                   label={t('settings.ai.feature.recommendLong')}
+                />
+                <FeatureToggleRow
+                  checked={llmFeatures.createSkill}
+                  onChange={(v) => toggleFeature('createSkill', v)}
+                  disabled={!networkAllowed}
+                  label={t('settings.ai.feature.createSkillLong')}
                 />
               </div>
 

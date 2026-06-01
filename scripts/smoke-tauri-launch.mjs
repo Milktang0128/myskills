@@ -16,6 +16,7 @@ const expectedFrontendSequence = [
   'library-kanban',
   'library-ai-lens',
   'discover',
+  'create-skill',
   'scenarios',
   'history',
   'settings',

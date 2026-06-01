@@ -21,6 +21,7 @@ import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { HistoryView } from '@/components/history-view';
 import { ScenariosView } from '@/components/scenarios-view';
 import { SettingsView } from '@/components/settings-view';
+import { CreateSkillView } from '@/components/create-skill/create-skill-view';
 import { Toast } from '@/components/ui/toast';
 import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -77,6 +78,7 @@ export default function Workspace() {
   const [llmConfigured, setLlmConfigured] = useState(false);
   const [bulkCatOpen, setBulkCatOpen] = useState(false);
   const [discoverMode, setDiscoverMode] = useState<SearchMode>('keyword');
+  const [createSeed, setCreateSeed] = useState('');
   const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
   const [frontendSmokeActive, setFrontendSmokeActive] = useState(false);
   // True once a cached library overview exists. Drives the one-shot Day-0
@@ -246,6 +248,11 @@ export default function Workspace() {
         selector: '[data-smoke-view="discover"]',
       },
       {
+        name: 'create-skill',
+        click: () => clickSmokeAction('nav-create'),
+        selector: '[data-smoke-view="create-skill"]',
+      },
+      {
         name: 'scenarios',
         click: () => clickSmokeAction('nav-scenarios'),
         selector: '[data-smoke-view="scenarios"]',
@@ -391,6 +398,7 @@ export default function Workspace() {
   const showSearchInput =
     sidebarView !== 'history' &&
     sidebarView !== 'scenarios' &&
+    sidebarView !== 'create' &&
     !(sidebarView === 'library' && effectiveLibraryView === 'ai-lens');
 
   // Sub-toolbar — Library only, and only when filter is at default.
@@ -411,6 +419,10 @@ export default function Workspace() {
         }}
         onSelectDiscover={() => {
           setSidebarView('discover');
+          setSelectedId(null);
+        }}
+        onSelectCreateSkill={() => {
+          setSidebarView('create');
           setSelectedId(null);
         }}
         filter={filter}
@@ -557,6 +569,23 @@ export default function Workspace() {
               onToast={showToast}
             />
           </div>
+        ) : sidebarView === 'create' ? (
+          <CreateSkillView
+            seed={createSeed}
+            platforms={platforms}
+            scenarios={scenarios}
+            canonicalPlatform={canonicalPlatform}
+            onToast={showToast}
+            onInstalled={(skillId, name) => {
+              setSidebarView('library');
+              setFilter({ scope: 'all' });
+              setLibraryView('list');
+              setSearch(name);
+              setSelectedId(skillId);
+              refreshMeta();
+              refreshSkills();
+            }}
+          />
         ) : sidebarView === 'history' ? (
           <div data-smoke-view="history" className="contents">
             <HistoryView />

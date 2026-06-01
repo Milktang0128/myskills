@@ -101,7 +101,31 @@ fn ensure_schema_compatibility(conn: &Connection) -> AppResult<()> {
           model          TEXT,
           language       TEXT
         );
+        CREATE TABLE IF NOT EXISTS skill_creation_drafts (
+          id                       TEXT PRIMARY KEY,
+          status                   TEXT NOT NULL,
+          raw_prompt               TEXT NOT NULL,
+          intent_frame_json         TEXT,
+          skill_spec_json           TEXT,
+          followup_questions_json   TEXT NOT NULL DEFAULT '[]',
+          answers_json              TEXT NOT NULL DEFAULT '{}',
+          draft_markdown            TEXT,
+          target_platform_ids_json  TEXT NOT NULL DEFAULT '[]',
+          target_scenario_ids_json  TEXT NOT NULL DEFAULT '[]',
+          target_basename           TEXT,
+          staged_dir                TEXT,
+          draft_hash                TEXT,
+          validation_json           TEXT,
+          plan_token                TEXT,
+          installed_skill_id        TEXT REFERENCES skills(id) ON DELETE SET NULL,
+          created_at                INTEGER NOT NULL,
+          updated_at                INTEGER NOT NULL,
+          installed_at              INTEGER,
+          discarded_at              INTEGER
+        );
         CREATE INDEX IF NOT EXISTS idx_history_op_group ON sync_history(op_group_id);
+        CREATE INDEX IF NOT EXISTS idx_skill_creation_status ON skill_creation_drafts(status);
+        CREATE INDEX IF NOT EXISTS idx_skill_creation_updated ON skill_creation_drafts(updated_at);
         "#,
     )?;
 
@@ -188,6 +212,7 @@ fn seed_defaults(conn: &Connection) -> AppResult<()> {
         ("llm.feature.search", "0"),
         ("llm.feature.autoCategorize", "0"),
         ("llm.feature.recommend", "0"),
+        ("llm.feature.createSkill", "0"),
         ("ai.categorize.minIntervalMs", "10000"),
     ];
     for (key, value) in settings {
@@ -278,6 +303,10 @@ mod tests {
         assert!(column_exists(&conn, "sync_history", "installed_from_source").unwrap());
         assert!(column_exists(&conn, "sync_history", "installed_from_skill_id").unwrap());
         assert!(column_exists(&conn, "sync_history", "op_group_id").unwrap());
+        assert!(table_exists(&conn, "skill_creation_drafts").unwrap());
+        assert!(column_exists(&conn, "skill_creation_drafts", "draft_markdown").unwrap());
+        assert!(column_exists(&conn, "skill_creation_drafts", "target_platform_ids_json").unwrap());
+        assert!(column_exists(&conn, "skill_creation_drafts", "installed_skill_id").unwrap());
         assert!(table_exists(&conn, "ai_scenario_suggestions").unwrap());
         assert!(table_exists(&conn, "catalog_descriptions").unwrap());
         assert!(table_exists(&conn, "library_overview").unwrap());

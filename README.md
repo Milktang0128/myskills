@@ -164,10 +164,10 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 |---|---|---|
 | **v0.1** | MVP-A — read-only inventory, scenarios, Discover, optional AI | shipping |
 | v0.2 | Tauri rewrite — cross-platform shell, Rust backend, feature parity with Electron `v0.1.x` | active preview branch |
-| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness, signed multi-platform release automation | planned |
+| v0.3+ | Create Skill wizard, project/plugin-level skill scanning, multi-machine awareness, signed multi-platform release automation | planned |
 
 **Not planned:**
-- In-app skill editor — use your usual editor on the realpath
+- General-purpose in-app skill editor — Create Skill may generate and install a reviewed `SKILL.md`, but long-form editing stays in your usual editor
 - Cloud sync — MySkills stays local-only by design
 - Running skills inside MySkills — execution stays with the agent tools
 

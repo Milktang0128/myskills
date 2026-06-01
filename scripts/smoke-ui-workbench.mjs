@@ -254,6 +254,7 @@ let llmFeatures = {
   search: false,
   autoCategorize: false,
   recommend: false,
+  createSkill: false,
 };
 
 let llmConfig = {
@@ -263,6 +264,7 @@ let llmConfig = {
   baseUrl: null,
 };
 let migrationConfirmationPath = null;
+let createSkillDraft = null;
 
 const migrationCandidates = [
   {
@@ -391,6 +393,97 @@ const catalogInstallPlan = {
     },
   ],
 };
+
+const createSkillPlan = {
+  token: 'ui-smoke-create-token',
+  generatedAt: now,
+  expiresAt: now + 300000,
+  operation: 'create_skill',
+  draftId: 'ui-smoke-create-draft',
+  items: [
+    {
+      skillName: 'ui-smoke-created-skill',
+      skillId: 'pending:create-skill:ui-smoke-create-draft',
+      opGroupId: 'ui-smoke-create',
+      targetBasename: 'ui-smoke-created-skill',
+      sourcePlatformId: 'staging',
+      sourceLocationId: -1,
+      sourceRealPath: '/tmp/myskills/staging/ui-smoke-created-skill',
+      sourceDev: 0,
+      sourceIno: 0,
+      sourceHash: 'create-hash',
+      targetPlatformId: 'shared',
+      targetPath: '/tmp/myskills/shared/ui-smoke-created-skill',
+      targetHash: null,
+      mode: 'symlink',
+      action: 'copy_to_canonical',
+      installedFromSource: 'create-skill',
+      installedFromSkillId: 'ui-smoke-create-draft',
+    },
+  ],
+};
+
+function makeCreateSkillDraft(overrides = {}) {
+  return {
+    id: 'ui-smoke-create-draft',
+    status: 'intent_draft',
+    rawPrompt: 'Create a PR review checklist skill.',
+    intentFrame: {
+      userJob: 'Create a PR review checklist skill.',
+      triggerContext: 'PR review',
+      inputContract: { acceptedInputs: ['PR diff'], privacyClass: 'local_only' },
+      outputContract: { artifactType: 'checklist', destination: 'reply_only' },
+      workflow: { steps: ['Inspect diff', 'Check tests', 'Report risks'], failClosedRules: ['Ask before writes'] },
+      stylePreferences: ['Concise'],
+      nonGoals: ['Do not merge code'],
+      successCriteria: ['Risks are visible'],
+    },
+    skillSpec: {
+      name: 'ui-smoke-created-skill',
+      description: 'Use when reviewing PRs for regressions and test gaps.',
+      language: 'en',
+      intentFrame: {
+        userJob: 'Create a PR review checklist skill.',
+        triggerContext: 'PR review',
+        inputContract: { acceptedInputs: ['PR diff'], privacyClass: 'local_only' },
+        outputContract: { artifactType: 'checklist', destination: 'reply_only' },
+        workflow: { steps: ['Inspect diff', 'Check tests', 'Report risks'], failClosedRules: ['Ask before writes'] },
+        stylePreferences: ['Concise'],
+        nonGoals: ['Do not merge code'],
+        successCriteria: ['Risks are visible'],
+      },
+      needsNetwork: false,
+      writesFiles: false,
+      overwritePolicy: 'never',
+      ready: true,
+      missing: [],
+    },
+    followupQuestions: [
+      {
+        id: 'strictness',
+        question: 'How cautious should it be before taking action?',
+        options: [
+          { id: 'confirm', label: 'Confirm writes', effect: 'strictness=confirm' },
+          { id: 'ask_when_unclear', label: 'Ask when unclear', effect: 'strictness=ask_when_unclear' },
+        ],
+        allowFreeform: true,
+      },
+    ],
+    answers: {},
+    draftMarkdown: null,
+    targetPlatformIds: [],
+    targetScenarioIds: [],
+    targetBasename: 'ui-smoke-created-skill',
+    validation: null,
+    planToken: null,
+    installedSkillId: null,
+    createdAt: now,
+    updatedAt: now,
+    installedAt: null,
+    discardedAt: null,
+    ...overrides,
+  };
+}
 
 function syncPlanItem(overrides) {
   return {
@@ -576,6 +669,91 @@ function invoke(command, payload = {}) {
       return Promise.resolve(llmFeatures);
     case 'llm_test_connection':
       return Promise.resolve({ ok: false, message: 'network disabled in UI smoke' });
+    case 'ai_create_skill_start':
+      createSkillDraft = makeCreateSkillDraft({ rawPrompt: payload.prompt });
+      return Promise.resolve({ draft: createSkillDraft, aiUsed: false });
+    case 'ai_create_skill_refine':
+      createSkillDraft = makeCreateSkillDraft({
+        ...createSkillDraft,
+        status: 'spec_ready',
+        skillSpec: payload.skillSpec,
+        intentFrame: payload.skillSpec.intentFrame,
+        targetBasename: payload.targetBasename,
+      });
+      return Promise.resolve(createSkillDraft);
+    case 'ai_create_skill_answer':
+      createSkillDraft = makeCreateSkillDraft({
+        ...createSkillDraft,
+        status: 'spec_ready',
+        answers: { ...(createSkillDraft?.answers ?? {}), [payload.questionId]: payload.answer },
+      });
+      return Promise.resolve({ draft: createSkillDraft, nextQuestion: null, aiUsed: false });
+    case 'ai_create_skill_generate':
+      createSkillDraft = makeCreateSkillDraft({
+        ...createSkillDraft,
+        status: 'artifact_draft',
+        draftMarkdown:
+          '---\nname: ui-smoke-created-skill\ndescription: Use when reviewing PRs for regressions and test gaps.\n---\n\n# ui-smoke-created-skill\n\nReview PRs for regressions and missing tests.\n',
+        validation: {
+          blocking: [],
+          warnings: [],
+          checks: {
+            safeName: true,
+            parseableFrontmatter: true,
+            sizeUnderLimit: true,
+            noPrivateFields: true,
+            noSilentNetwork: true,
+            noSilentOverwrite: true,
+            noSecretExfiltration: true,
+            noDangerousShellDefault: true,
+          },
+        },
+      });
+      return Promise.resolve({ draft: createSkillDraft, aiUsed: false });
+    case 'ai_create_skill_review':
+      createSkillDraft = makeCreateSkillDraft({
+        ...createSkillDraft,
+        status: 'reviewed',
+        draftMarkdown: payload.markdown,
+        validation: {
+          blocking: [],
+          warnings: [],
+          checks: {
+            safeName: true,
+            parseableFrontmatter: true,
+            sizeUnderLimit: true,
+            noPrivateFields: true,
+            noSilentNetwork: true,
+            noSilentOverwrite: true,
+            noSecretExfiltration: true,
+            noDangerousShellDefault: true,
+          },
+        },
+      });
+      return Promise.resolve({ draft: createSkillDraft, review: createSkillDraft.validation });
+    case 'ai_create_skill_plan':
+      createSkillDraft = makeCreateSkillDraft({
+        ...createSkillDraft,
+        status: 'planned',
+        planToken: createSkillPlan.token,
+        targetPlatformIds: payload.targetPlatformIds,
+        targetScenarioIds: payload.targetScenarioIds ?? [],
+      });
+      return Promise.resolve({ draft: createSkillDraft, plan: createSkillPlan });
+    case 'ai_create_skill_execute':
+      createSkillDraft = makeCreateSkillDraft({
+        ...createSkillDraft,
+        status: 'installed',
+        installedSkillId: 'skill-created-ui-smoke',
+        installedAt: now,
+      });
+      return Promise.resolve({
+        draft: createSkillDraft,
+        sync: { applied: createSkillPlan.items, skipped: [], failed: [] },
+        scan: { totalFound: 6, newSkills: 1, updatedSkills: 0, removedSkills: 0, errors: [], durationMs: 12, scannedAt: now },
+        skillId: 'skill-created-ui-smoke',
+        warnings: [],
+      });
     case 'ai_library_overview_get':
       return Promise.resolve({ overview: null, language: payload.language ?? 'en', generatedAt: null });
     case 'scenarios_export':
@@ -648,6 +826,14 @@ function clickButton(label) {
   button.click();
 }
 
+function hasEnabledButton(label) {
+  return [...document.querySelectorAll('button')].some((candidate) => {
+    if (candidate.disabled) return false;
+    const candidateText = normalizeText(candidate.textContent ?? '');
+    return candidate.getAttribute('aria-label') === label || candidateText === label || candidateText.includes(label);
+  });
+}
+
 function setInputValue(id, value) {
   const input = document.getElementById(id);
   if (!(input instanceof HTMLInputElement)) {
@@ -658,6 +844,18 @@ function setInputValue(id, value) {
   setter?.call(input, value);
   input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
   input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function setTextareaBySmokeAction(action, value) {
+  const textarea = document.querySelector(`textarea[data-smoke-action="${action}"]`);
+  if (!(textarea instanceof HTMLTextAreaElement)) {
+    throw new Error(`Could not find textarea [data-smoke-action="${action}"]\n\n${text()}`);
+  }
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+  textarea.focus();
+  setter?.call(textarea, value);
+  textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+  textarea.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 function setSelectValue(id, value) {
@@ -730,6 +928,7 @@ async function renderWorkspace() {
   installGlobal('HTMLElement', window.HTMLElement);
   installGlobal('HTMLButtonElement', window.HTMLButtonElement);
   installGlobal('HTMLInputElement', window.HTMLInputElement);
+  installGlobal('HTMLTextAreaElement', window.HTMLTextAreaElement);
   installGlobal('HTMLSelectElement', window.HTMLSelectElement);
   installGlobal('Node', window.Node);
   installGlobal('Event', window.Event);
@@ -876,6 +1075,21 @@ try {
   clickButton('Cancel');
   await waitFor('discover install plan close', () => !text().includes('Apply 1 write'));
 
+  clickButton('Create Skill');
+  await waitFor('create skill view', () => text().includes('Create Skill') && text().includes('Generate outline'));
+  setTextareaBySmokeAction('create-skill-input', 'Create a PR review checklist skill.');
+  clickButton('Generate outline');
+  await waitFor('create skill outline', () => text().includes('Directory / skill name') && text().includes('ui-smoke-created-skill'));
+  clickButton('Generate draft now');
+  await waitFor('create skill draft', () => text().includes('Review PRs for regressions and missing tests.'));
+  clickButton('Review draft');
+  await waitFor('create skill review', () => text().includes('Local safety checks passed'));
+  await waitFor('create skill plan button enabled', () => hasEnabledButton('Create install plan'));
+  clickButton('Create install plan');
+  await waitFor('create skill plan', () => text().includes('Create skill') && text().includes('Apply 1 write'));
+  clickButton('Apply 1 write');
+  await waitFor('create skill done', () => text().includes('Skill was written, scanned, and added to the library.'));
+
   clickButton('Manage scenarios');
   await waitFor('scenarios view', () => text().includes('New') && text().includes('Research workflow'));
   expectText('scenarios view', 'Import');
@@ -927,6 +1141,8 @@ try {
   await waitFor('auto categorize feature enabled', () => llmFeatures.autoCategorize === true);
   clickButton('Recommend missing skills for active scenarios');
   await waitFor('recommend feature enabled', () => llmFeatures.recommend === true);
+  clickButton('Assist Create Skill with outlines, questions, and drafts');
+  await waitFor('create skill feature enabled', () => llmFeatures.createSkill === true);
   clickButton('Test connection');
   await waitFor('LLM test result', () => text().includes('Failed: network disabled in UI smoke'));
   clickButton('Allow external network requests');
@@ -938,7 +1154,7 @@ try {
   if (consoleErrors.length > 0) {
     throw new Error(`UI smoke captured console errors:\n${consoleErrors.join('\n')}`);
   }
-  console.log('ui workbench smoke passed: matrix, sync confirm, library, kanban, discover, scenarios, history, settings, and LLM settings rendered from mocked Tauri bridge');
+  console.log('ui workbench smoke passed: matrix, sync confirm, library, kanban, discover, create skill, scenarios, history, settings, and LLM settings rendered from mocked Tauri bridge');
 } finally {
   cleanup();
 }

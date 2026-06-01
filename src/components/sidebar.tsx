@@ -14,6 +14,7 @@ import {
   Grid3x3,
   Globe,
   EyeOff,
+  FilePlus2,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -33,7 +34,14 @@ import { cn } from '@/lib/utils';
  * sub-toggle keeps the navigation concerns clean: this component only
  * decides which page-level surface is showing.
  */
-export type SidebarView = 'library' | 'matrix' | 'discover' | 'history' | 'scenarios' | 'settings';
+export type SidebarView =
+  | 'library'
+  | 'matrix'
+  | 'discover'
+  | 'create'
+  | 'history'
+  | 'scenarios'
+  | 'settings';
 
 interface Props {
   view: SidebarView;
@@ -54,6 +62,8 @@ interface Props {
   onSelectHistory: () => void;
   /** Switch the workspace to the Settings view. */
   onSelectSettings: () => void;
+  /** Switch the workspace to Create Skill. */
+  onSelectCreateSkill: () => void;
 }
 
 interface ScopeItem {
@@ -79,6 +89,7 @@ export function Sidebar({
   onSelectScenarios,
   onSelectHistory,
   onSelectSettings,
+  onSelectCreateSkill,
 }: Props) {
   const t = useT();
   const scopes = useMemo<ScopeItem[]>(
@@ -159,6 +170,14 @@ export function Sidebar({
             smokeAction="nav-discover"
           >
             {t('sidebar.discover')}
+          </SidebarRow>
+          <SidebarRow
+            active={view === 'create'}
+            onClick={onSelectCreateSkill}
+            icon={<FilePlus2 className="h-4 w-4" />}
+            smokeAction="nav-create"
+          >
+            {t('sidebar.createSkill')}
           </SidebarRow>
           {/* Scope filters that don't fit kanban/lens — they always route
               into list view (the sub-toolbar collapses when filter ≠ default). */}
