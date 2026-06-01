@@ -717,6 +717,10 @@ export const en = {
   'onboarding.finish': 'Get started',
   'onboarding.stepN': 'Step {{n}} of {{total}}',
   'onboarding.optional': 'Optional',
+  'onboarding.scan.continue': 'Scan and continue',
+  'onboarding.scan.running': 'Scanning…',
+  'onboarding.scan.error': 'First scan failed: {{message}}',
+  'onboarding.scan.summary': 'First scan complete: {{total}} skills found, {{errors}} errors.',
 
   'onboarding.welcome.brand': 'MySkills',
   'onboarding.welcome.tagline': 'AI skill hub for Claude Code, Codex, and beyond.',

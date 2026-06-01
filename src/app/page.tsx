@@ -676,6 +676,7 @@ export default function Workspace() {
         <OnboardingWizard
           onDone={() => {
             setOnboardingDone(true);
+            refreshSkills();
             refreshMeta();
           }}
         />

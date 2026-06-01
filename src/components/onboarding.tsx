@@ -9,8 +9,8 @@
  *   1. Language — pick EN or 中. Updates immediately so the rest of the
  *      wizard is in the chosen language.
  *   2. Platforms — probe known candidates, let user enable each one and
- *      see live skill counts.
- *   3. Canonical — pick which enabled platform is source-of-truth.
+ *      see live skill counts. Continuing from this step runs the first DB scan.
+ *   3. Canonical — pick which enabled platform is source-of-truth from scanned data.
  *   4. LLM (optional) — provider + model + API key + test connection.
  *
  * Design notes
@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, Loader2, X } from 'lucide-react';
-import type { LlmProvider, Platform, PlatformId } from '@shared/types';
+import type { LlmProvider, Platform, PlatformId, ScanResult } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -46,6 +46,9 @@ export function OnboardingWizard({ onDone }: Props) {
   const t = useT();
   const [stepIdx, setStepIdx] = useState(0);
   const [completing, setCompleting] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
+  const [advanceError, setAdvanceError] = useState<string | null>(null);
+  const [initialScanResult, setInitialScanResult] = useState<ScanResult | null>(null);
   const step = STEP_ORDER[stepIdx]!;
 
   const goNext = useCallback(() => {
@@ -54,6 +57,24 @@ export function OnboardingWizard({ onDone }: Props) {
   const goBack = useCallback(() => {
     setStepIdx((i) => Math.max(i - 1, 0));
   }, []);
+
+  const handleNext = useCallback(async () => {
+    setAdvanceError(null);
+    if (step === 'platforms') {
+      setAdvancing(true);
+      try {
+        const result = await api.scan.run();
+        setInitialScanResult(result);
+        goNext();
+      } catch (err) {
+        setAdvanceError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setAdvancing(false);
+      }
+      return;
+    }
+    goNext();
+  }, [goNext, step]);
 
   // Pressing Escape always closes without writing the completion timestamp.
   // The user can find "Re-run Onboarding" in Settings → About if they regret it.
@@ -119,20 +140,31 @@ export function OnboardingWizard({ onDone }: Props) {
         <div className="flex-1 overflow-y-auto px-8 py-4">
           {step === 'language' && <LanguageStep />}
           {step === 'platforms' && <PlatformsStep />}
-          {step === 'canonical' && <CanonicalStep />}
+          {step === 'canonical' && <CanonicalStep initialScanResult={initialScanResult} />}
           {step === 'llm' && <LlmStep />}
         </div>
 
+        {advanceError && (
+          <div className="shrink-0 border-t bg-destructive/5 px-5 py-2 text-xs text-destructive">
+            {t('onboarding.scan.error', { message: advanceError })}
+          </div>
+        )}
+
         {/* Footer: back / next */}
         <footer className="flex shrink-0 items-center justify-between border-t px-5 py-3">
-          <Button variant="ghost" size="sm" onClick={goBack} disabled={stepIdx === 0}>
+          <Button variant="ghost" size="sm" onClick={goBack} disabled={stepIdx === 0 || advancing}>
             <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
             {t('onboarding.back')}
           </Button>
           {stepIdx < STEP_ORDER.length - 1 ? (
-            <Button size="sm" onClick={goNext}>
-              {t('onboarding.next')}
-              <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+            <Button size="sm" onClick={handleNext} disabled={advancing}>
+              {advancing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              {advancing
+                ? t('onboarding.scan.running')
+                : step === 'platforms'
+                ? t('onboarding.scan.continue')
+                : t('onboarding.next')}
+              {!advancing && <ArrowRight className="ml-1.5 h-3.5 w-3.5" />}
             </Button>
           ) : (
             <Button size="sm" onClick={finish} disabled={completing}>
@@ -440,7 +472,7 @@ function PlatformsStep() {
 // Step 3: Choose canonical
 // ─────────────────────────────────────────────────────────────────────────
 
-function CanonicalStep() {
+function CanonicalStep({ initialScanResult }: { initialScanResult: ScanResult | null }) {
   const t = useT();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [canonical, setCanonical] = useState<string>('shared');
@@ -486,6 +518,15 @@ function CanonicalStep() {
         <h2 className="text-xl font-semibold tracking-tight">{t('onboarding.canonical.title')}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{t('onboarding.canonical.subtitle')}</p>
       </header>
+
+      {initialScanResult && (
+        <p className="rounded-md border border-emerald-500/30 bg-emerald-50/40 px-3 py-2 text-[11px] text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300">
+          {t('onboarding.scan.summary', {
+            total: initialScanResult.totalFound,
+            errors: initialScanResult.errors.length,
+          })}
+        </p>
+      )}
 
       <div className="space-y-2">
         {platforms.map((p) => {

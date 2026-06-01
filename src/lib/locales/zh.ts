@@ -717,6 +717,10 @@ export const zh: Dict = {
   'onboarding.finish': '开始使用',
   'onboarding.stepN': '第 {{n}} / {{total}} 步',
   'onboarding.optional': '可选',
+  'onboarding.scan.continue': '扫描并继续',
+  'onboarding.scan.running': '正在扫描…',
+  'onboarding.scan.error': '首次扫描失败：{{message}}',
+  'onboarding.scan.summary': '首次扫描完成：发现 {{total}} 个技能，{{errors}} 个错误。',
 
   'onboarding.welcome.brand': 'MySkills',
   'onboarding.welcome.tagline': '为 Claude Code、Codex 等而生的 AI 技能聚合器。',
