@@ -856,7 +856,10 @@ mod tests {
     fn discover_electron_candidates_reports_valid_and_invalid_without_mutation() {
         let root = temp_dir("discover");
         let home = root.join("home");
-        let valid_dir = home.join("Library/Application Support/MySkills");
+        let valid_dir = default_electron_user_data_dirs(&home)
+            .into_iter()
+            .next()
+            .expect("default electron data dir");
         let invalid_dir = root.join("custom-invalid");
         fs::create_dir_all(&valid_dir).unwrap();
         fs::create_dir_all(&invalid_dir).unwrap();

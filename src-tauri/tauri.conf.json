@@ -26,7 +26,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["../build/icon-rgba.png", "../build/icon.icns"],
+    "icon": ["../build/icon-rgba.png", "../build/icon.icns", "icons/icon.ico"],
     "category": "DeveloperTool"
   }
 }
