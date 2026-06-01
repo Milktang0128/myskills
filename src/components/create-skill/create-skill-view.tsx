@@ -793,7 +793,24 @@ function QualityChecklist({
   copy: Copy;
 }) {
   const checks = review?.checks;
-  const items = [
+  const safetyItems = [
+    {
+      label: copy.safetyParseable,
+      ok: checks == null ? true : checks.parseableFrontmatter && checks.safeName && checks.nameMatchesBasename,
+    },
+    {
+      label: copy.safetySecrets,
+      ok: checks == null ? true : checks.noPrivateFields && checks.noSecretExfiltration,
+    },
+    {
+      label: copy.safetyActions,
+      ok:
+        checks == null
+          ? true
+          : checks.noSilentNetwork && checks.noSilentOverwrite && checks.noDangerousShellDefault,
+    },
+  ];
+  const qualityItems = [
     {
       label: copy.qualityTrigger,
       ok: checks?.triggerDescription ?? spec.description.trim().length > 20,
@@ -816,26 +833,38 @@ function QualityChecklist({
         checks?.hasBoundaries ??
         spec.intentFrame.workflow.failClosedRules.length + spec.intentFrame.nonGoals.length > 0,
     },
-    {
-      label: copy.qualitySafe,
-      ok:
-        checks == null
-          ? true
-          : checks.safeName &&
-            checks.noPrivateFields &&
-            checks.noSilentNetwork &&
-            checks.noSilentOverwrite &&
-            checks.noDangerousShellDefault,
-    },
   ];
   return (
-    <div className="space-y-1 border bg-background p-3 text-xs">
+    <div className="space-y-3 border bg-background p-3 text-xs">
+      <ChecklistGroup title={copy.safetyGateTitle} items={safetyItems} failTone="danger" />
+      <ChecklistGroup title={copy.creativeQualityTitle} items={qualityItems} failTone="warning" />
+    </div>
+  );
+}
+
+function ChecklistGroup({
+  title,
+  items,
+  failTone,
+}: {
+  title: string;
+  items: Array<{ label: string; ok: boolean }>;
+  failTone: 'danger' | 'warning';
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="font-medium text-muted-foreground">{title}</div>
       {items.map((item) => (
         <div key={item.label} className="flex items-center gap-2">
           {item.ok ? (
             <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
           ) : (
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+            <AlertTriangle
+              className={cn(
+                'h-3.5 w-3.5',
+                failTone === 'danger' ? 'text-destructive' : 'text-amber-600',
+              )}
+            />
           )}
           <span>{item.label}</span>
         </div>
@@ -940,12 +969,16 @@ interface Copy {
   selectedPlatforms: string;
   noWriteUntilConfirm: string;
   qualityTitle: string;
+  safetyGateTitle: string;
+  creativeQualityTitle: string;
+  safetyParseable: string;
+  safetySecrets: string;
+  safetyActions: string;
   qualityTrigger: string;
   qualityInputs: string;
   qualityWorkflow: string;
   qualityOutput: string;
   qualityBoundaries: string;
-  qualitySafe: string;
   planInstall: string;
   done: string;
   openLibrary: string;
@@ -999,12 +1032,16 @@ const zhCopy: Copy = {
   selectedPlatforms: '平台数',
   noWriteUntilConfirm: '这里只是目标摘要；确认安装计划之前不会写入任何 skill 目录。',
   qualityTitle: '专业性检查',
+  safetyGateTitle: '安全门槛',
+  creativeQualityTitle: '质量建议',
+  safetyParseable: '格式与目录安全',
+  safetySecrets: '不包含密钥',
+  safetyActions: '联网 / 写入 / 危险命令受控',
   qualityTrigger: '触发描述清晰',
   qualityInputs: '输入范围明确',
-  qualityWorkflow: '工作流可执行',
+  qualityWorkflow: '执行指导清楚',
   qualityOutput: '产物定义明确',
   qualityBoundaries: '边界清楚',
-  qualitySafe: '安全门槛通过',
   planInstall: '创建安装计划',
   done: '技能已写入并重新扫描纳管。',
   openLibrary: '在资源库查看',
@@ -1065,12 +1102,16 @@ const enCopy: Copy = {
   selectedPlatforms: 'Platforms',
   noWriteUntilConfirm: 'This is only a target summary; no skill directory is written before you confirm the install plan.',
   qualityTitle: 'Quality checks',
+  safetyGateTitle: 'Safety gate',
+  creativeQualityTitle: 'Quality suggestions',
+  safetyParseable: 'Format and directory are safe',
+  safetySecrets: 'No secrets included',
+  safetyActions: 'Network / writes / dangerous commands are gated',
   qualityTrigger: 'Clear trigger description',
   qualityInputs: 'Input scope is explicit',
-  qualityWorkflow: 'Workflow is executable',
+  qualityWorkflow: 'Executable guidance is clear',
   qualityOutput: 'Output is defined',
   qualityBoundaries: 'Boundaries are clear',
-  qualitySafe: 'Safety gate passes',
   planInstall: 'Create install plan',
   done: 'Skill was written, scanned, and added to the library.',
   openLibrary: 'Open in Library',

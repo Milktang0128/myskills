@@ -3940,10 +3940,67 @@ mod tests {
     }
 
     #[test]
-    fn create_skill_review_blocks_weak_trigger_and_missing_workflow() {
+    fn create_skill_review_warns_on_weak_trigger_and_missing_structure() {
         let review = create_skill_review_markdown(
             "---\nname: weak-skill\ndescription: Help with anything.\n---\n\n# weak-skill\n\nSome notes.",
             Some("weak-skill"),
+        );
+        let blocking = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .map(Vec::len);
+        let warnings = review
+            .get("warnings")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert_eq!(blocking, Some(0));
+        assert!(warnings
+            .iter()
+            .any(|code| code == "WEAK_TRIGGER_DESCRIPTION"));
+        assert!(warnings
+            .iter()
+            .any(|code| code == "MISSING_EXECUTABLE_WORKFLOW"));
+        assert!(warnings.iter().any(|code| code == "MISSING_BOUNDARIES"));
+    }
+
+    #[test]
+    fn create_skill_review_accepts_creative_section_names() {
+        let review = create_skill_review_markdown(
+            "---\nname: creative-review\ndescription: Use when shaping an unusual critique workflow from rough notes.\n---\n\n# creative-review\n\n## Materials\n\n- Rough notes\n\n## Critic Ritual\n\n1. Find the core tension.\n2. Name the strongest counter-reading.\n\n## Deliverable\n\n- A compact critique memo.\n\n## Guardrails\n\n- Ask before using external sources.\n",
+            Some("creative-review"),
+        );
+        assert_eq!(
+            review
+                .get("blocking")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            review
+                .get("checks")
+                .and_then(|checks| checks.get("hasWorkflow"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            review
+                .get("checks")
+                .and_then(|checks| checks.get("hasBoundaries"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn create_skill_review_blocks_silent_network_and_destructive_write() {
+        let review = create_skill_review_markdown(
+            "---\nname: unsafe-network\ndescription: Use when testing unsafe automation defaults.\n---\n\n# unsafe-network\n\n## Workflow\n\n1. Fetch https://example.com/data.\n2. Delete old output.\n\n## Output\n\n- Updated data.\n",
+            Some("unsafe-network"),
         );
         let codes = review
             .get("blocking")
@@ -3953,11 +4010,8 @@ mod tests {
             .into_iter()
             .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
             .collect::<Vec<_>>();
-        assert!(codes.iter().any(|code| code == "WEAK_TRIGGER_DESCRIPTION"));
-        assert!(codes
-            .iter()
-            .any(|code| code == "MISSING_EXECUTABLE_WORKFLOW"));
-        assert!(codes.iter().any(|code| code == "MISSING_BOUNDARIES"));
+        assert!(codes.iter().any(|code| code == "NETWORK_NEEDS_GATE"));
+        assert!(codes.iter().any(|code| code == "WRITE_NEEDS_GATE"));
     }
 
     #[test]
@@ -6016,7 +6070,7 @@ fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Val
 
 fn create_skill_system_prompt(language: &str) -> String {
     format!(
-        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. SKILL.md must stay short, procedural, and directly executable: accepted inputs, workflow, output, boundaries, and quality bar. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames."
+        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. Prefer a short procedural SKILL.md with accepted inputs, workflow, output, boundaries, and quality bar, but choose a different structure when it better fits the skill. Preserve useful creative framing as long as triggering, inputs, execution guidance, safety boundaries, and expected output are clear. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames."
     )
 }
 
@@ -6523,6 +6577,27 @@ fn create_skill_frontmatter_keys(markdown: &str) -> Vec<String> {
         .collect()
 }
 
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn count_procedural_lines(markdown: &str) -> usize {
+    markdown
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed
+                    .split_once('.')
+                    .is_some_and(|(prefix, _)| prefix.chars().all(|c| c.is_ascii_digit()))
+                || trimmed
+                    .split_once('、')
+                    .is_some_and(|(prefix, _)| prefix.chars().all(|c| c.is_ascii_digit()))
+        })
+        .count()
+}
+
 fn yaml_quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
@@ -6564,7 +6639,7 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
                 warnings.push(json!({"code": "MISSING_DESCRIPTION", "message": "Add a clear trigger-style description."}));
             }
             if !trigger_description {
-                blocking.push(json!({"code": "WEAK_TRIGGER_DESCRIPTION", "message": "Use a trigger-style description that says when to use this skill and for what task."}));
+                warnings.push(json!({"code": "WEAK_TRIGGER_DESCRIPTION", "message": "Prefer a trigger-style description that says when to use this skill and for what task."}));
             }
         }
         Err(err) => {
@@ -6579,38 +6654,70 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
         warnings.push(json!({"code": "EXTRA_FRONTMATTER", "message": "Keep generated skills to name and description frontmatter unless compatibility requires more."}));
     }
     let lower = markdown.to_lowercase();
-    let has_inputs =
-        lower.contains("## inputs") || lower.contains("## input") || lower.contains("## 输入");
+    let has_inputs = contains_any(
+        &lower,
+        &[
+            "## inputs",
+            "## input",
+            "## materials",
+            "## 输入",
+            "accepted inputs",
+            "输入材料",
+        ],
+    );
     if !has_inputs {
         warnings.push(json!({"code": "MISSING_INPUTS", "message": "Add an Inputs section so users know what to provide."}));
     }
-    let has_workflow = (lower.contains("## workflow") || lower.contains("## 工作流"))
-        && markdown
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim_start();
-                trimmed.starts_with("1.")
-                    || trimmed.starts_with("2.")
-                    || trimmed.starts_with("3.")
-                    || trimmed.starts_with("- ")
-            })
-            .count()
-            >= 3;
+    let procedural_lines = count_procedural_lines(markdown);
+    let has_workflow = procedural_lines >= 2
+        || contains_any(
+            &lower,
+            &[
+                "## workflow",
+                "## process",
+                "## procedure",
+                "## steps",
+                "## 工作流",
+                "## 流程",
+                "## 步骤",
+                "操作步骤",
+            ],
+        );
     if !has_workflow {
-        blocking.push(json!({"code": "MISSING_EXECUTABLE_WORKFLOW", "message": "Add a Workflow section with at least three concrete steps."}));
+        warnings.push(json!({"code": "MISSING_EXECUTABLE_WORKFLOW", "message": "Add executable guidance. The structure can be creative, but the agent still needs clear steps or decision rules."}));
     }
-    let has_output = lower.contains("## output")
-        || lower.contains("## 输出")
-        || lower.contains("## deliverable");
+    let has_output = contains_any(
+        &lower,
+        &[
+            "## output",
+            "## outputs",
+            "## deliverable",
+            "## result",
+            "## 输出",
+            "## 产物",
+            "交付",
+        ],
+    );
     if !has_output {
         warnings.push(json!({"code": "MISSING_OUTPUT", "message": "Add the expected output artifact and delivery shape."}));
     }
-    let has_boundaries = lower.contains("## boundaries")
-        || lower.contains("## safety")
-        || lower.contains("## 安全边界")
-        || lower.contains("## 边界");
+    let has_boundaries = contains_any(
+        &lower,
+        &[
+            "## boundaries",
+            "## boundary",
+            "## safety",
+            "## guardrails",
+            "## constraints",
+            "## non-goals",
+            "## 安全边界",
+            "## 边界",
+            "## 约束",
+            "不做",
+        ],
+    );
     if !has_boundaries {
-        blocking.push(json!({"code": "MISSING_BOUNDARIES", "message": "Add boundaries for privacy, network, file writes, and unclear constraints."}));
+        warnings.push(json!({"code": "MISSING_BOUNDARIES", "message": "Add boundaries for privacy, network, file writes, and unclear constraints."}));
     }
     let concise_body = markdown.len() <= 12_000;
     if !concise_body {
@@ -6643,13 +6750,13 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
             || lower.contains("许可")
             || lower.contains("确认");
     if !no_silent_network {
-        warnings.push(json!({"code": "NETWORK_NEEDS_GATE", "message": "Network use should require explicit user permission."}));
+        blocking.push(json!({"code": "NETWORK_NEEDS_GATE", "message": "Network use must require explicit user permission."}));
     }
     let no_silent_overwrite = !(lower.contains("overwrite") || lower.contains("delete "))
         || lower.contains("confirm")
         || lower.contains("确认");
     if !no_silent_overwrite {
-        warnings.push(json!({"code": "WRITE_NEEDS_GATE", "message": "Destructive writes should require confirmation."}));
+        blocking.push(json!({"code": "WRITE_NEEDS_GATE", "message": "Destructive writes must require confirmation."}));
     }
     let no_dangerous_shell = !["rm -rf", "sudo ", "chmod 777"]
         .iter()
