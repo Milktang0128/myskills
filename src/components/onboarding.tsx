@@ -41,6 +41,8 @@ interface Props {
 
 type Step = 'language' | 'platforms' | 'canonical' | 'llm';
 const STEP_ORDER: Step[] = ['language', 'platforms', 'canonical', 'llm'];
+type PlatformsStepStatus = { loading: boolean; enabledCount: number; busy: boolean };
+type CanonicalStepStatus = { canContinue: boolean };
 
 export function OnboardingWizard({ onDone }: Props) {
   const t = useT();
@@ -49,6 +51,14 @@ export function OnboardingWizard({ onDone }: Props) {
   const [advancing, setAdvancing] = useState(false);
   const [advanceError, setAdvanceError] = useState<string | null>(null);
   const [initialScanResult, setInitialScanResult] = useState<ScanResult | null>(null);
+  const [platformsStatus, setPlatformsStatus] = useState<PlatformsStepStatus>({
+    loading: true,
+    enabledCount: 0,
+    busy: false,
+  });
+  const [canonicalStatus, setCanonicalStatus] = useState<CanonicalStepStatus>({
+    canContinue: false,
+  });
   const step = STEP_ORDER[stepIdx]!;
 
   const goNext = useCallback(() => {
@@ -80,11 +90,11 @@ export function OnboardingWizard({ onDone }: Props) {
   // The user can find "Re-run Onboarding" in Settings → About if they regret it.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onDone();
+      if (e.key === 'Escape' && !advancing) onDone();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onDone]);
+  }, [advancing, onDone]);
 
   const finish = useCallback(async () => {
     setCompleting(true);
@@ -115,9 +125,10 @@ export function OnboardingWizard({ onDone }: Props) {
           </div>
           <button
             onClick={onDone}
+            disabled={advancing}
             className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label={t('onboarding.skipAll')}
-            title={t('onboarding.skipAll')}
+            aria-label={advancing ? t('onboarding.scan.closeDisabled') : t('onboarding.skipAll')}
+            title={advancing ? t('onboarding.scan.closeDisabled') : t('onboarding.skipAll')}
           >
             <X className="h-4 w-4" />
           </button>
@@ -139,8 +150,10 @@ export function OnboardingWizard({ onDone }: Props) {
         {/* Step body */}
         <div className="flex-1 overflow-y-auto px-8 py-4">
           {step === 'language' && <LanguageStep />}
-          {step === 'platforms' && <PlatformsStep />}
-          {step === 'canonical' && <CanonicalStep initialScanResult={initialScanResult} />}
+          {step === 'platforms' && <PlatformsStep onStatusChange={setPlatformsStatus} />}
+          {step === 'canonical' && (
+            <CanonicalStep initialScanResult={initialScanResult} onStatusChange={setCanonicalStatus} />
+          )}
           {step === 'llm' && <LlmStep />}
         </div>
 
@@ -157,10 +170,25 @@ export function OnboardingWizard({ onDone }: Props) {
             {t('onboarding.back')}
           </Button>
           {stepIdx < STEP_ORDER.length - 1 ? (
-            <Button size="sm" onClick={handleNext} disabled={advancing}>
+            <Button
+              size="sm"
+              onClick={handleNext}
+              disabled={
+                advancing ||
+                (step === 'platforms' &&
+                  (platformsStatus.loading || platformsStatus.busy || platformsStatus.enabledCount === 0)) ||
+                (step === 'canonical' && !canonicalStatus.canContinue)
+              }
+            >
               {advancing && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               {advancing
                 ? t('onboarding.scan.running')
+                : step === 'platforms' && platformsStatus.loading
+                ? t('onboarding.platforms.scanning')
+                : step === 'platforms' && platformsStatus.busy
+                ? t('onboarding.platforms.updating')
+                : step === 'platforms' && platformsStatus.enabledCount === 0
+                ? t('onboarding.scan.enableFirst')
                 : step === 'platforms'
                 ? t('onboarding.scan.continue')
                 : t('onboarding.next')}
@@ -247,11 +275,12 @@ interface ProbedCandidate {
   alreadyRegistered: boolean;
 }
 
-function PlatformsStep() {
+function PlatformsStep({ onStatusChange }: { onStatusChange: (status: PlatformsStepStatus) => void }) {
   const t = useT();
   const [loading, setLoading] = useState(true);
   const [candidates, setCandidates] = useState<ProbedCandidate[]>([]);
   const [registered, setRegistered] = useState<Set<string>>(new Set());
+  const [enabledCount, setEnabledCount] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Custom platform form state. Hidden by default — power-user feature.
   const [customOpen, setCustomOpen] = useState(false);
@@ -274,6 +303,7 @@ function PlatformsStep() {
       );
       setCandidates(probes);
       setRegistered(new Set(plats.map((p) => p.id)));
+      setEnabledCount(plats.filter((p) => p.enabled).length);
     } finally {
       setLoading(false);
     }
@@ -282,6 +312,10 @@ function PlatformsStep() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    onStatusChange({ loading, enabledCount, busy: busyId !== null || customBusy });
+  }, [busyId, customBusy, enabledCount, loading, onStatusChange]);
 
   async function enable(cand: ProbedCandidate) {
     setBusyId(cand.id);
@@ -312,8 +346,6 @@ function PlatformsStep() {
     }
   }
 
-  const enabledCount = candidates.filter((c) => registered.has(c.id) || c.alreadyRegistered).length;
-
   return (
     <div className="space-y-4">
       <header>
@@ -333,8 +365,8 @@ function PlatformsStep() {
             const skillsHint = !cand.exists
               ? t('onboarding.platforms.notInstalled')
               : cand.skillCount === 1
-              ? t('onboarding.platforms.found', { count: cand.skillCount })
-              : t('onboarding.platforms.foundMany', { count: cand.skillCount });
+              ? t('onboarding.platforms.detected', { count: cand.skillCount })
+              : t('onboarding.platforms.detectedMany', { count: cand.skillCount });
             // Localized display label + description: built-in generic concepts
             // like 'shared' get translated. Product-name platforms (Claude
             // Code etc.) keep their English brand/description.
@@ -472,35 +504,62 @@ function PlatformsStep() {
 // Step 3: Choose canonical
 // ─────────────────────────────────────────────────────────────────────────
 
-function CanonicalStep({ initialScanResult }: { initialScanResult: ScanResult | null }) {
+function CanonicalStep({
+  initialScanResult,
+  onStatusChange,
+}: {
+  initialScanResult: ScanResult | null;
+  onStatusChange: (status: CanonicalStepStatus) => void;
+}) {
   const t = useT();
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [canonical, setCanonical] = useState<string>('shared');
   const [skillCounts, setSkillCounts] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const [pls, c, stats] = await Promise.all([
-        api.platforms.list(),
-        api.settings.get('canonical_platform'),
-        api.settings.stats(),
-      ]);
-      // Sort enabled platforms with the cross-tool agents folder ('shared')
-      // pinned at the top — matches the discovery list order in step 2 and
-      // matches our recommendation in `onboarding.canonical.sharedHint`.
-      // Stable for the rest so users don't get surprises if they've reordered
-      // platforms elsewhere.
-      const enabled = pls.filter((p) => p.enabled);
-      const reordered = [
-        ...enabled.filter((p) => p.id === 'shared'),
-        ...enabled.filter((p) => p.id !== 'shared'),
-      ];
-      setPlatforms(reordered);
-      if (c) setCanonical(c);
-      setSkillCounts(stats.byPlatform ?? {});
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const [pls, c, stats] = await Promise.all([
+          api.platforms.list(),
+          api.settings.get('canonical_platform'),
+          api.settings.stats(),
+        ]);
+        if (cancelled) return;
+        // Sort enabled platforms with the cross-tool agents folder ('shared')
+        // pinned at the top — matches the discovery list order in step 2 and
+        // matches our recommendation in `onboarding.canonical.sharedHint`.
+        // Stable for the rest so users don't get surprises if they've reordered
+        // platforms elsewhere.
+        const enabled = pls.filter((p) => p.enabled);
+        const reordered = [
+          ...enabled.filter((p) => p.id === 'shared'),
+          ...enabled.filter((p) => p.id !== 'shared'),
+        ];
+        setPlatforms(reordered);
+        if (c) setCanonical(c);
+        setSkillCounts(stats.byPlatform ?? {});
+      } catch (err) {
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    onStatusChange({ canContinue: !loading && !loadError && platforms.length > 0 });
+  }, [loadError, loading, onStatusChange, platforms.length]);
+
+  const scanSummary = initialScanResult ? getScanSummary(initialScanResult, t) : null;
 
   async function pick(id: PlatformId) {
     setSaving(true);
@@ -519,16 +578,34 @@ function CanonicalStep({ initialScanResult }: { initialScanResult: ScanResult | 
         <p className="mt-1 text-sm text-muted-foreground">{t('onboarding.canonical.subtitle')}</p>
       </header>
 
-      {initialScanResult && (
-        <p className="rounded-md border border-emerald-500/30 bg-emerald-50/40 px-3 py-2 text-[11px] text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300">
-          {t('onboarding.scan.summary', {
-            total: initialScanResult.totalFound,
-            errors: initialScanResult.errors.length,
-          })}
+      {scanSummary && (
+        <p
+          className={cn(
+            'rounded-md border px-3 py-2 text-[11px]',
+            scanSummary.tone === 'success'
+              ? 'border-emerald-500/30 bg-emerald-50/40 text-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300'
+              : 'border-amber-500/30 bg-amber-50/50 text-amber-800 dark:bg-amber-950/20 dark:text-amber-300',
+          )}
+        >
+          {scanSummary.message}
         </p>
       )}
 
-      <div className="space-y-2">
+      {loading ? (
+        <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          {t('onboarding.canonical.loading')}
+        </div>
+      ) : loadError ? (
+        <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-3 text-xs text-destructive">
+          {t('onboarding.canonical.error', { message: loadError })}
+        </p>
+      ) : platforms.length === 0 ? (
+        <p className="rounded-md border border-amber-500/30 bg-amber-50/50 px-3 py-3 text-xs text-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+          {t('onboarding.canonical.empty')}
+        </p>
+      ) : (
+        <div className="space-y-2">
         {platforms.map((p) => {
           const active = p.id === canonical;
           // Same localization trick as the wizard's platforms step — the
@@ -571,13 +648,30 @@ function CanonicalStep({ initialScanResult }: { initialScanResult: ScanResult | 
             </button>
           );
         })}
-      </div>
+        </div>
+      )}
 
       <p className="rounded-md border bg-secondary/30 px-3 py-2 text-[11px] text-muted-foreground">
         💡 {t('onboarding.canonical.sharedHint')}
       </p>
     </div>
   );
+}
+
+function getScanSummary(result: ScanResult, t: ReturnType<typeof useT>) {
+  if (result.totalFound === 0) {
+    return { tone: 'warning' as const, message: t('onboarding.scan.summary.empty') };
+  }
+  if (result.errors.length > 0) {
+    return {
+      tone: 'warning' as const,
+      message: t('onboarding.scan.summary.errors', { errors: result.errors.length }),
+    };
+  }
+  return {
+    tone: 'success' as const,
+    message: t('onboarding.scan.summary.success', { total: result.totalFound }),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -80,6 +80,9 @@ jobs:
       - name: Workbench UI smoke
         run: npm run smoke:ui:workbench
 
+      - name: Onboarding UI smoke
+        run: npm run smoke:ui:onboarding
+
       - name: Tauri build
         if: runner.os != 'Windows'
         run: npm run build:tauri

@@ -27,6 +27,7 @@
     "smoke:tauri:fixtures": "node scripts/create-tauri-smoke-fixtures.mjs",
     "smoke:tauri:migration": "cargo test --manifest-path src-tauri/Cargo.toml migration::tests::stable_migration_drill_imports_copy_and_rolls_back_without_source_mutation -- --exact",
     "smoke:ui:workbench": "node scripts/smoke-ui-workbench.mjs",
+    "smoke:ui:onboarding": "node scripts/smoke-ui-onboarding.mjs",
     "build:electron:legacy": "next build && npm run build:electron",
     "build:electron": "tsc -p electron/tsconfig.json && node electron/build-preload.mjs",
     "package:electron:legacy": "npm run build:electron:legacy && electron-builder --mac",
