@@ -693,7 +693,7 @@ function invoke(command, payload = {}) {
         ...createSkillDraft,
         status: 'artifact_draft',
         draftMarkdown:
-          '---\nname: ui-smoke-created-skill\ndescription: Use when reviewing PRs for regressions and test gaps.\n---\n\n# ui-smoke-created-skill\n\nReview PRs for regressions and missing tests.\n',
+          '---\nname: ui-smoke-created-skill\ndescription: Use when reviewing PRs for regressions and test gaps.\n---\n\n# ui-smoke-created-skill\n\n## Inputs\n\n- PR diff\n\n## Workflow\n\n1. Inspect diff\n2. Check tests\n3. Report risks\n\n## Output\n\n- Checklist\n\n## Boundaries\n\n- Ask before writes\n\n## Quality Bar\n\n- Risks are visible\n',
         validation: {
           blocking: [],
           warnings: [],
@@ -701,6 +701,15 @@ function invoke(command, payload = {}) {
             safeName: true,
             parseableFrontmatter: true,
             sizeUnderLimit: true,
+            triggerDescription: true,
+            hasInputs: true,
+            hasWorkflow: true,
+            hasOutput: true,
+            hasBoundaries: true,
+            conciseBody: true,
+            frontmatterOnlyNameDescription: true,
+            nameMatchesBasename: true,
+            nameIsKebabCase: true,
             noPrivateFields: true,
             noSilentNetwork: true,
             noSilentOverwrite: true,
@@ -722,6 +731,15 @@ function invoke(command, payload = {}) {
             safeName: true,
             parseableFrontmatter: true,
             sizeUnderLimit: true,
+            triggerDescription: true,
+            hasInputs: true,
+            hasWorkflow: true,
+            hasOutput: true,
+            hasBoundaries: true,
+            conciseBody: true,
+            frontmatterOnlyNameDescription: true,
+            nameMatchesBasename: true,
+            nameIsKebabCase: true,
             noPrivateFields: true,
             noSilentNetwork: true,
             noSilentOverwrite: true,
@@ -1081,7 +1099,7 @@ try {
   clickButton('Generate outline');
   await waitFor('create skill outline', () => text().includes('Directory / skill name') && text().includes('ui-smoke-created-skill'));
   clickButton('Generate draft now');
-  await waitFor('create skill draft', () => text().includes('Review PRs for regressions and missing tests.'));
+  await waitFor('create skill draft', () => text().includes('SKILL.md') && text().includes('Local safety checks passed'));
   clickButton('Review draft');
   await waitFor('create skill review', () => text().includes('Local safety checks passed'));
   await waitFor('create skill plan button enabled', () => hasEnabledButton('Create install plan'));

@@ -94,6 +94,7 @@ What MySkills puts where:
 - **AI Lens** clusters your library into themes; you can promote any cluster into a real scenario in one click
 - **Auto-categorize** new skills into scenarios you've defined
 - **AI search** in Discover re-ranks catalog results against a natural-language need
+- **Create Skill** turns a rough need into an editable outline, narrows key choices, generates a locally reviewed `SKILL.md`, and installs only after confirmation
 - Each feature has its own toggle. Keys live in the system credential store.
 
 <p align="center">
@@ -163,8 +164,8 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 | Version | Theme | Status |
 |---|---|---|
 | **v0.1** | MVP-A — read-only inventory, scenarios, Discover, optional AI | shipping |
-| v0.2 | Tauri rewrite — cross-platform shell, Rust backend, feature parity with Electron `v0.1.x` | active preview branch |
-| v0.3+ | Create Skill wizard, project/plugin-level skill scanning, multi-machine awareness, signed multi-platform release automation | planned |
+| v0.2 | Tauri rewrite — cross-platform shell, Rust backend, feature parity with Electron `v0.1.x`, plus Create Skill preview | active preview branch |
+| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness, signed multi-platform release automation | planned |
 
 **Not planned:**
 - General-purpose in-app skill editor — Create Skill may generate and install a reviewed `SKILL.md`, but long-form editing stays in your usual editor

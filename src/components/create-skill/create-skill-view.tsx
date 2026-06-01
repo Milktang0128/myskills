@@ -56,6 +56,7 @@ export function CreateSkillView({
   const [executeResult, setExecuteResult] = useState<CreateSkillExecuteResult | null>(null);
   const [targetPlatformIds, setTargetPlatformIds] = useState<PlatformId[]>([canonicalPlatform]);
   const [targetScenarioIds, setTargetScenarioIds] = useState<number[]>([]);
+  const [manualMode, setManualMode] = useState(false);
 
   useEffect(() => {
     if (!seed) return;
@@ -92,6 +93,7 @@ export function CreateSkillView({
       setMarkdown(result.draft.draftMarkdown ?? '');
       setReview(result.draft.validation);
       setStep('outline');
+      setManualMode(!result.aiUsed);
       if (!result.aiUsed) onToast(copy.localMode);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -151,6 +153,7 @@ export function CreateSkillView({
       setMarkdown(result.draft.draftMarkdown ?? '');
       setReview(result.draft.validation);
       setStep('draft');
+      setManualMode(!result.aiUsed);
       if (!result.aiUsed) onToast(copy.localDraft);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -213,7 +216,60 @@ export function CreateSkillView({
       intentFrame: {
         ...spec.intentFrame,
         userJob: value,
+      },
+    });
+  }
+
+  function setTriggerContext(value: string) {
+    if (!spec) return;
+    setSpec({
+      ...spec,
+      intentFrame: {
+        ...spec.intentFrame,
         triggerContext: value,
+      },
+    });
+  }
+
+  function setAcceptedInputs(value: string) {
+    if (!spec) return;
+    setSpec({
+      ...spec,
+      intentFrame: {
+        ...spec.intentFrame,
+        inputContract: {
+          ...spec.intentFrame.inputContract,
+          acceptedInputs: lines(value),
+        },
+      },
+    });
+  }
+
+  function setOutputArtifact(value: CreateSkillSpec['intentFrame']['outputContract']['artifactType']) {
+    if (!spec) return;
+    setSpec({
+      ...spec,
+      intentFrame: {
+        ...spec.intentFrame,
+        outputContract: {
+          ...spec.intentFrame.outputContract,
+          artifactType: value,
+        },
+      },
+    });
+  }
+
+  function setOutputDestination(value: CreateSkillSpec['intentFrame']['outputContract']['destination']) {
+    if (!spec) return;
+    setSpec({
+      ...spec,
+      writesFiles: value !== 'reply_only',
+      intentFrame: {
+        ...spec.intentFrame,
+        outputContract: {
+          ...spec.intentFrame.outputContract,
+          destination: value,
+        },
       },
     });
   }
@@ -232,6 +288,32 @@ export function CreateSkillView({
     });
   }
 
+  function setBoundaryAndNonGoals(value: string) {
+    if (!spec) return;
+    setSpec({
+      ...spec,
+      intentFrame: {
+        ...spec.intentFrame,
+        workflow: {
+          ...spec.intentFrame.workflow,
+          failClosedRules: lines(value),
+        },
+        nonGoals: [],
+      },
+    });
+  }
+
+  function setCriteria(value: string) {
+    if (!spec) return;
+    setSpec({
+      ...spec,
+      intentFrame: {
+        ...spec.intentFrame,
+        successCriteria: lines(value),
+      },
+    });
+  }
+
   function resetAll() {
     setStep('input');
     setPrompt('');
@@ -241,6 +323,7 @@ export function CreateSkillView({
     setReview(null);
     setPlan(null);
     setExecuteResult(null);
+    setManualMode(false);
     setTargetScenarioIds([]);
     setTargetPlatformIds([canonicalPlatform]);
   }
@@ -297,6 +380,11 @@ export function CreateSkillView({
 
             {step === 'outline' && spec && (
               <section className="space-y-4">
+                {manualMode && (
+                  <Notice tone="info" icon={<Sparkles className="h-4 w-4" />}>
+                    {copy.manualModeNotice}
+                  </Notice>
+                )}
                 <Field label={copy.name}>
                   <input
                     value={spec.name}
@@ -311,6 +399,13 @@ export function CreateSkillView({
                     className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 </Field>
+                <Field label={copy.trigger}>
+                  <textarea
+                    value={spec.intentFrame.triggerContext}
+                    onChange={(e) => setTriggerContext(e.target.value)}
+                    className="min-h-[80px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </Field>
                 <Field label={copy.intent}>
                   <textarea
                     value={spec.intentFrame.userJob}
@@ -318,11 +413,63 @@ export function CreateSkillView({
                     className="min-h-[96px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 </Field>
+                <Field label={copy.inputs}>
+                  <textarea
+                    value={spec.intentFrame.inputContract.acceptedInputs.join('\n')}
+                    onChange={(e) => setAcceptedInputs(e.target.value)}
+                    className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </Field>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Field label={copy.outputArtifact}>
+                    <select
+                      value={spec.intentFrame.outputContract.artifactType}
+                      onChange={(e) =>
+                        setOutputArtifact(e.target.value as CreateSkillSpec['intentFrame']['outputContract']['artifactType'])
+                      }
+                      className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <option value="markdown">Markdown</option>
+                      <option value="checklist">Checklist</option>
+                      <option value="report">Report</option>
+                      <option value="code_patch">Code patch</option>
+                      <option value="file">File</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </Field>
+                  <Field label={copy.outputDestination}>
+                    <select
+                      value={spec.intentFrame.outputContract.destination}
+                      onChange={(e) =>
+                        setOutputDestination(e.target.value as CreateSkillSpec['intentFrame']['outputContract']['destination'])
+                      }
+                      className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <option value="reply_only">{copy.destinationReply}</option>
+                      <option value="same_folder">{copy.destinationSameFolder}</option>
+                      <option value="user_selected">{copy.destinationUserSelected}</option>
+                    </select>
+                  </Field>
+                </div>
                 <Field label={copy.workflow}>
                   <textarea
                     value={spec.intentFrame.workflow.steps.join('\n')}
                     onChange={(e) => setWorkflow(e.target.value)}
                     className="min-h-[132px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </Field>
+                <Field label={copy.boundaries}>
+                  <textarea
+                    value={[...spec.intentFrame.workflow.failClosedRules, ...spec.intentFrame.nonGoals].join('\n')}
+                    onChange={(e) => setBoundaryAndNonGoals(e.target.value)}
+                    className="min-h-[104px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </Field>
+                <Field label={copy.criteria}>
+                  <textarea
+                    value={spec.intentFrame.successCriteria.join('\n')}
+                    onChange={(e) => setCriteria(e.target.value)}
+                    className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 </Field>
                 <div className="flex gap-2">
@@ -363,6 +510,7 @@ export function CreateSkillView({
 
             {(step === 'draft' || step === 'install') && (
               <section className="space-y-4">
+                {spec && <SkillBehaviorSummary spec={spec} copy={copy} />}
                 <Field label="SKILL.md">
                   <textarea
                     value={markdown}
@@ -456,6 +604,7 @@ export function CreateSkillView({
               <section className="space-y-2">
                 <h2 className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{copy.installSummary}</h2>
                 <div className="space-y-1 border bg-background p-3 text-xs">
+                  <p className="pb-2 text-muted-foreground">{copy.noWriteUntilConfirm}</p>
                   <div className="flex justify-between gap-3">
                     <span className="text-muted-foreground">{copy.basename}</span>
                     <span className="truncate font-mono">{targetBasename}</span>
@@ -479,6 +628,13 @@ export function CreateSkillView({
                   {copy.planInstall}
                 </Button>
               </section>
+
+              {spec && (
+                <section className="space-y-2">
+                  <h2 className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{copy.qualityTitle}</h2>
+                  <QualityChecklist spec={spec} review={review} copy={copy} />
+                </section>
+              )}
             </div>
           </ScrollArea>
         </aside>
@@ -602,12 +758,98 @@ function ReviewPanel({ review, copy }: { review: CreateSkillReviewReport; copy: 
   );
 }
 
+function SkillBehaviorSummary({ spec, copy }: { spec: CreateSkillSpec; copy: Copy }) {
+  return (
+    <div className="grid gap-3 border bg-background p-4 text-xs md:grid-cols-2">
+      <SummaryItem label={copy.description} value={spec.description} />
+      <SummaryItem label={copy.trigger} value={spec.intentFrame.triggerContext} />
+      <SummaryItem label={copy.inputs} value={spec.intentFrame.inputContract.acceptedInputs.join('\n')} />
+      <SummaryItem
+        label={copy.outputArtifact}
+        value={`${spec.intentFrame.outputContract.artifactType} / ${spec.intentFrame.outputContract.destination}`}
+      />
+      <SummaryItem label={copy.boundaries} value={[...spec.intentFrame.workflow.failClosedRules, ...spec.intentFrame.nonGoals].join('\n')} />
+      <SummaryItem label={copy.criteria} value={spec.intentFrame.successCriteria.join('\n')} />
+    </div>
+  );
+}
+
+function SummaryItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <div className="font-medium text-muted-foreground">{label}</div>
+      <div className="whitespace-pre-wrap leading-5">{value || '-'}</div>
+    </div>
+  );
+}
+
+function QualityChecklist({
+  spec,
+  review,
+  copy,
+}: {
+  spec: CreateSkillSpec;
+  review: CreateSkillReviewReport | null;
+  copy: Copy;
+}) {
+  const checks = review?.checks;
+  const items = [
+    {
+      label: copy.qualityTrigger,
+      ok: checks?.triggerDescription ?? spec.description.trim().length > 20,
+    },
+    {
+      label: copy.qualityInputs,
+      ok: checks?.hasInputs ?? spec.intentFrame.inputContract.acceptedInputs.length > 0,
+    },
+    {
+      label: copy.qualityWorkflow,
+      ok: checks?.hasWorkflow ?? spec.intentFrame.workflow.steps.length >= 3,
+    },
+    {
+      label: copy.qualityOutput,
+      ok: checks?.hasOutput ?? Boolean(spec.intentFrame.outputContract.artifactType),
+    },
+    {
+      label: copy.qualityBoundaries,
+      ok:
+        checks?.hasBoundaries ??
+        spec.intentFrame.workflow.failClosedRules.length + spec.intentFrame.nonGoals.length > 0,
+    },
+    {
+      label: copy.qualitySafe,
+      ok:
+        checks == null
+          ? true
+          : checks.safeName &&
+            checks.noPrivateFields &&
+            checks.noSilentNetwork &&
+            checks.noSilentOverwrite &&
+            checks.noDangerousShellDefault,
+    },
+  ];
+  return (
+    <div className="space-y-1 border bg-background p-3 text-xs">
+      {items.map((item) => (
+        <div key={item.label} className="flex items-center gap-2">
+          {item.ok ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+          ) : (
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-600" />
+          )}
+          <span>{item.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Notice({
   tone,
   icon,
   children,
 }: {
-  tone: 'success' | 'danger';
+  tone: 'success' | 'danger' | 'info';
   icon: ReactNode;
   children: ReactNode;
 }) {
@@ -617,7 +859,9 @@ function Notice({
         'flex items-start gap-2 border px-3 py-2 text-xs',
         tone === 'success'
           ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200'
-          : 'border-destructive/30 bg-destructive/10 text-destructive',
+          : tone === 'info'
+            ? 'border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950/30 dark:text-sky-200'
+            : 'border-destructive/30 bg-destructive/10 text-destructive',
       )}
     >
       <span className="mt-0.5 shrink-0">{icon}</span>
@@ -664,10 +908,20 @@ interface Copy {
   start: string;
   localMode: string;
   localDraft: string;
+  manualModeNotice: string;
   name: string;
   description: string;
+  trigger: string;
   intent: string;
+  inputs: string;
+  outputArtifact: string;
+  outputDestination: string;
+  destinationReply: string;
+  destinationSameFolder: string;
+  destinationUserSelected: string;
   workflow: string;
+  boundaries: string;
+  criteria: string;
   continueQuestions: string;
   generateNow: string;
   questionsDone: string;
@@ -684,6 +938,14 @@ interface Copy {
   basename: string;
   mainSource: string;
   selectedPlatforms: string;
+  noWriteUntilConfirm: string;
+  qualityTitle: string;
+  qualityTrigger: string;
+  qualityInputs: string;
+  qualityWorkflow: string;
+  qualityOutput: string;
+  qualityBoundaries: string;
+  qualitySafe: string;
   planInstall: string;
   done: string;
   openLibrary: string;
@@ -705,10 +967,20 @@ const zhCopy: Copy = {
   start: '生成技能轮廓',
   localMode: 'AI 未启用，已进入可编辑的本地轮廓模式。',
   localDraft: 'AI 未启用，已生成本地模板草案；请检查后再安装。',
+  manualModeNotice: '当前是本地模板模式：不会调用外部模型，所有轮廓字段都可以手动调整。',
   name: '目录名 / 技能名',
   description: '触发描述',
+  trigger: '触发时机',
   intent: '用户输入 / 困境',
+  inputs: '适合输入',
+  outputArtifact: '期待产物',
+  outputDestination: '交付位置',
+  destinationReply: '仅回复',
+  destinationSameFolder: '同目录文件',
+  destinationUserSelected: '用户选择位置',
   workflow: '工作流步骤',
+  boundaries: '边界 / 不做什么',
+  criteria: '验收标准',
   continueQuestions: '继续追问',
   generateNow: '直接生成草案',
   questionsDone: '关键问题已回答，可以生成草案。',
@@ -725,6 +997,14 @@ const zhCopy: Copy = {
   basename: '目录名',
   mainSource: '主源',
   selectedPlatforms: '平台数',
+  noWriteUntilConfirm: '这里只是目标摘要；确认安装计划之前不会写入任何 skill 目录。',
+  qualityTitle: '专业性检查',
+  qualityTrigger: '触发描述清晰',
+  qualityInputs: '输入范围明确',
+  qualityWorkflow: '工作流可执行',
+  qualityOutput: '产物定义明确',
+  qualityBoundaries: '边界清楚',
+  qualitySafe: '安全门槛通过',
   planInstall: '创建安装计划',
   done: '技能已写入并重新扫描纳管。',
   openLibrary: '在资源库查看',
@@ -753,10 +1033,20 @@ const enCopy: Copy = {
   start: 'Generate outline',
   localMode: 'AI is not enabled; using an editable local outline.',
   localDraft: 'AI is not enabled; generated a local template draft for review.',
+  manualModeNotice: 'Local template mode: no external model is called, and every outline field remains editable.',
   name: 'Directory / skill name',
   description: 'Trigger description',
+  trigger: 'Trigger moment',
   intent: 'User input / problem',
+  inputs: 'Accepted inputs',
+  outputArtifact: 'Expected artifact',
+  outputDestination: 'Destination',
+  destinationReply: 'Reply only',
+  destinationSameFolder: 'Same-folder file',
+  destinationUserSelected: 'User-selected path',
   workflow: 'Workflow steps',
+  boundaries: 'Boundaries / non-goals',
+  criteria: 'Acceptance criteria',
   continueQuestions: 'Continue questions',
   generateNow: 'Generate draft now',
   questionsDone: 'Key questions are answered. Generate the draft next.',
@@ -773,6 +1063,14 @@ const enCopy: Copy = {
   basename: 'Basename',
   mainSource: 'Main source',
   selectedPlatforms: 'Platforms',
+  noWriteUntilConfirm: 'This is only a target summary; no skill directory is written before you confirm the install plan.',
+  qualityTitle: 'Quality checks',
+  qualityTrigger: 'Clear trigger description',
+  qualityInputs: 'Input scope is explicit',
+  qualityWorkflow: 'Workflow is executable',
+  qualityOutput: 'Output is defined',
+  qualityBoundaries: 'Boundaries are clear',
+  qualitySafe: 'Safety gate passes',
   planInstall: 'Create install plan',
   done: 'Skill was written, scanned, and added to the library.',
   openLibrary: 'Open in Library',

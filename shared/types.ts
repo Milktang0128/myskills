@@ -457,6 +457,15 @@ export interface CreateSkillReviewReport {
     safeName: boolean;
     parseableFrontmatter: boolean;
     sizeUnderLimit: boolean;
+    triggerDescription: boolean;
+    hasInputs: boolean;
+    hasWorkflow: boolean;
+    hasOutput: boolean;
+    hasBoundaries: boolean;
+    conciseBody: boolean;
+    frontmatterOnlyNameDescription: boolean;
+    nameMatchesBasename: boolean;
+    nameIsKebabCase: boolean;
     noPrivateFields: boolean;
     noSilentNetwork: boolean;
     noSilentOverwrite: boolean;

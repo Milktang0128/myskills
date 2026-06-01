@@ -3920,7 +3920,12 @@ mod tests {
         let spec = create_skill_local_spec(
             "Create a reusable PR review checklist focused on regressions.",
             "en",
-            &json!({"artifact": "checklist", "strictness": "confirm"}),
+            &json!({
+                "target_context": "code_review",
+                "input_scope": "codebase",
+                "artifact": "checklist",
+                "strictness": "confirm"
+            }),
         );
         let markdown = create_skill_local_markdown(&spec);
         let review =
@@ -3932,6 +3937,44 @@ mod tests {
                 .map(Vec::len),
             Some(0)
         );
+    }
+
+    #[test]
+    fn create_skill_review_blocks_weak_trigger_and_missing_workflow() {
+        let review = create_skill_review_markdown(
+            "---\nname: weak-skill\ndescription: Help with anything.\n---\n\n# weak-skill\n\nSome notes.",
+            Some("weak-skill"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(codes.iter().any(|code| code == "WEAK_TRIGGER_DESCRIPTION"));
+        assert!(codes
+            .iter()
+            .any(|code| code == "MISSING_EXECUTABLE_WORKFLOW"));
+        assert!(codes.iter().any(|code| code == "MISSING_BOUNDARIES"));
+    }
+
+    #[test]
+    fn create_skill_review_blocks_name_basename_mismatch() {
+        let review = create_skill_review_markdown(
+            "---\nname: actual-skill\ndescription: Use when reviewing pull requests for regressions and test gaps.\n---\n\n# actual-skill\n\n## Inputs\n\n- PR diff\n\n## Workflow\n\n1. Inspect diff\n2. Check tests\n3. Report risks\n\n## Output\n\n- Checklist\n\n## Boundaries\n\n- Ask before writes.\n",
+            Some("expected-skill"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(codes.iter().any(|code| code == "NAME_BASENAME_MISMATCH"));
     }
 }
 
@@ -5973,27 +6016,48 @@ fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Val
 
 fn create_skill_system_prompt(language: &str) -> String {
     format!(
-        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills. Never ask for secrets. Do not allow silent overwrite or silent network. Skill names must be kebab-case safe directory basenames."
+        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. SKILL.md must stay short, procedural, and directly executable: accepted inputs, workflow, output, boundaries, and quality bar. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames."
     )
 }
 
 fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Value {
     let name = slugify_skill_name(prompt);
+    let context = answers
+        .get("target_context")
+        .and_then(Value::as_str)
+        .unwrap_or("general_agent_workflow");
+    let input_scope = answers
+        .get("input_scope")
+        .and_then(Value::as_str)
+        .unwrap_or("rough_need");
+    let artifact = answers
+        .get("artifact")
+        .and_then(Value::as_str)
+        .unwrap_or("markdown");
+    let destination = answers
+        .get("destination")
+        .and_then(Value::as_str)
+        .unwrap_or("reply_only");
     let mut steps = vec![
         if language == "en" {
-            "Clarify the user's input and desired outcome."
+            "Restate the user's need as a concrete job-to-be-done and list missing constraints."
         } else {
-            "澄清用户输入与期望结果。"
+            "把用户需求复述成一个明确的待完成任务，并列出缺失约束。"
         },
         if language == "en" {
-            "Transform the input into a concrete workflow."
+            "Identify the input material, target audience, expected artifact, and acceptance criteria."
         } else {
-            "把输入转化为可执行的流程。"
+            "识别输入材料、目标对象、期望产物和验收标准。"
         },
         if language == "en" {
-            "Return a reviewed artifact and list assumptions."
+            "Execute the workflow step by step, surfacing assumptions before risky or irreversible work."
         } else {
-            "输出经过检查的结果并列出关键假设。"
+            "按步骤执行工作流，在风险或不可逆操作前先暴露假设。"
+        },
+        if language == "en" {
+            "Return the artifact with a short quality check and remaining open questions."
+        } else {
+            "输出产物，并附上简短质量检查和仍未解决的问题。"
         },
     ];
     if answers.get("strictness").and_then(Value::as_str) == Some("confirm") {
@@ -6003,24 +6067,48 @@ fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Val
             "任何文件写入前都先请求确认。"
         });
     }
+    let accepted_input = match (language, input_scope) {
+        ("en", "files_or_links") => "User-provided files, paths, links, and a short description of the desired result.",
+        ("en", "codebase") => "Repository context, changed files, command output, and the user's review goal.",
+        ("en", "materials") => "Source notes, drafts, transcripts, references, or other user-selected material.",
+        ("en", _) => "A rough natural-language description of the problem, recurring need, or desired result.",
+        (_, "files_or_links") => "用户提供的文件、路径、链接，以及对期望结果的简短描述。",
+        (_, "codebase") => "代码仓库上下文、变更文件、命令输出，以及用户的审查目标。",
+        (_, "materials") => "用户选择的笔记、草稿、转录稿、参考资料或其他素材。",
+        (_, _) => "用户对困境、反复需求或期望结果的粗略自然语言描述。",
+    };
+    let description = if language == "en" {
+        format!(
+            "Use when the user needs a repeatable workflow for {}: {}",
+            context_label(context, language),
+            truncate(prompt, 96)
+        )
+    } else {
+        format!(
+            "当用户需要一个可复用的{}技能时使用：{}",
+            context_label(context, language),
+            truncate(prompt, 96)
+        )
+    };
+    let missing = ["target_context", "input_scope", "artifact", "strictness"]
+        .iter()
+        .filter(|key| answers.get(**key).and_then(Value::as_str).is_none())
+        .map(|key| json!(key))
+        .collect::<Vec<_>>();
     json!({
         "name": name,
-        "description": if language == "en" {
-            format!("Use when the user needs help with: {}", truncate(prompt, 120))
-        } else {
-            format!("当用户需要处理这个需求时使用：{}", truncate(prompt, 120))
-        },
+        "description": description,
         "language": language,
         "intentFrame": {
             "userJob": prompt,
             "triggerContext": prompt,
             "inputContract": {
-                "acceptedInputs": [if language == "en" { "A natural-language description of the problem, input material, and expected result." } else { "用户对困境、材料、需求或期望结果的自然语言描述。" }],
+                "acceptedInputs": [accepted_input],
                 "privacyClass": "local_only"
             },
             "outputContract": {
-                "artifactType": answers.get("artifact").and_then(Value::as_str).unwrap_or("markdown"),
-                "destination": answers.get("destination").and_then(Value::as_str).unwrap_or("reply_only")
+                "artifactType": artifact,
+                "destination": destination
             },
             "workflow": {
                 "steps": steps,
@@ -6034,16 +6122,36 @@ fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Val
             "successCriteria": [if language == "en" { "The user can run the skill on a similar need without re-explaining the whole workflow." } else { "用户下次遇到类似需求时，可以直接调用技能而无需重新解释整套流程。" }]
         },
         "needsNetwork": false,
-        "writesFiles": answers.get("destination").and_then(Value::as_str).is_some_and(|v| v != "reply_only"),
+        "writesFiles": destination != "reply_only",
         "overwritePolicy": "never",
-        "ready": answers.get("artifact").is_some() && answers.get("strictness").is_some(),
-        "missing": if answers.get("artifact").is_some() && answers.get("strictness").is_some() { json!([]) } else { json!(["artifact", "strictness"]) }
+        "ready": missing.is_empty(),
+        "missing": missing
     })
 }
 
 fn create_skill_default_questions(spec: &Value) -> Value {
     let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
     json!([
+        {
+            "id": "target_context",
+            "question": if lang == "en" { "Where will this skill be most useful?" } else { "这个技能主要服务哪类工作？" },
+            "options": [
+                { "id": "general_agent_workflow", "label": if lang == "en" { "General agent work" } else { "通用 Agent 工作" }, "effect": "target_context=general_agent_workflow" },
+                { "id": "code_review", "label": if lang == "en" { "Code / review" } else { "代码 / 审查" }, "effect": "target_context=code_review" },
+                { "id": "writing", "label": if lang == "en" { "Writing" } else { "写作处理" }, "effect": "target_context=writing" }
+            ],
+            "allowFreeform": true
+        },
+        {
+            "id": "input_scope",
+            "question": if lang == "en" { "What input should the skill expect from the user?" } else { "用户调用时通常会提供什么输入？" },
+            "options": [
+                { "id": "rough_need", "label": if lang == "en" { "Rough need" } else { "粗略需求" }, "effect": "input_scope=rough_need" },
+                { "id": "files_or_links", "label": if lang == "en" { "Files / links" } else { "文件 / 链接" }, "effect": "input_scope=files_or_links" },
+                { "id": "codebase", "label": if lang == "en" { "Repo context" } else { "仓库上下文" }, "effect": "input_scope=codebase" }
+            ],
+            "allowFreeform": true
+        },
         {
             "id": "artifact",
             "question": if lang == "en" { "What should this skill usually produce?" } else { "这个技能通常应该产出什么？" },
@@ -6069,6 +6177,61 @@ fn create_skill_default_questions(spec: &Value) -> Value {
 
 fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) {
     match question_id {
+        "target_context" => {
+            let context = if answer.contains("code_review")
+                || answer.contains("代码")
+                || answer.contains("审查")
+            {
+                "code_review"
+            } else if answer.contains("writing") || answer.contains("写作") {
+                "writing"
+            } else {
+                "general_agent_workflow"
+            };
+            let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+            let user_job = spec
+                .get("intentFrame")
+                .and_then(|i| i.get("userJob"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            spec["description"] = json!(if lang == "en" {
+                format!(
+                    "Use when the user needs a repeatable workflow for {}: {}",
+                    context_label(context, lang),
+                    truncate(user_job, 96)
+                )
+            } else {
+                format!(
+                    "当用户需要一个可复用的{}技能时使用：{}",
+                    context_label(context, lang),
+                    truncate(user_job, 96)
+                )
+            });
+        }
+        "input_scope" => {
+            let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+            let input = if answer.contains("codebase") || answer.contains("仓库") {
+                if lang == "en" {
+                    "Repository context, changed files, command output, and the user's review goal."
+                } else {
+                    "代码仓库上下文、变更文件、命令输出，以及用户的审查目标。"
+                }
+            } else if answer.contains("files_or_links")
+                || answer.contains("文件")
+                || answer.contains("链接")
+            {
+                if lang == "en" {
+                    "User-provided files, paths, links, and a short description of the desired result."
+                } else {
+                    "用户提供的文件、路径、链接，以及对期望结果的简短描述。"
+                }
+            } else if lang == "en" {
+                "A rough natural-language description of the problem, recurring need, or desired result."
+            } else {
+                "用户对困境、反复需求或期望结果的粗略自然语言描述。"
+            };
+            spec["intentFrame"]["inputContract"]["acceptedInputs"] = json!([input]);
+        }
         "artifact" => {
             let artifact = if answer.contains("code_patch") || answer.contains("代码") {
                 "code_patch"
@@ -6086,8 +6249,47 @@ fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) 
                 "never"
             };
             spec["overwritePolicy"] = json!(policy);
+            if policy == "confirm_each_time" {
+                let rules = spec["intentFrame"]["workflow"]["failClosedRules"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let confirm_rule = if spec.get("language").and_then(Value::as_str) == Some("en") {
+                    "Ask for explicit confirmation before file writes, deletion, overwrite, network calls, or secret handling."
+                } else {
+                    "文件写入、删除、覆盖、联网调用或密钥处理前必须明确确认。"
+                };
+                let mut next = rules;
+                if !next.iter().any(|v| v.as_str() == Some(confirm_rule)) {
+                    next.push(json!(confirm_rule));
+                }
+                spec["intentFrame"]["workflow"]["failClosedRules"] = json!(next);
+            }
         }
         _ => {}
+    }
+    create_skill_remove_missing(spec, question_id);
+}
+
+fn create_skill_remove_missing(spec: &mut Value, question_id: &str) {
+    if let Some(items) = spec.get("missing").and_then(Value::as_array) {
+        let next = items
+            .iter()
+            .filter(|item| item.as_str() != Some(question_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        spec["missing"] = json!(next);
+    }
+}
+
+fn context_label(context: &str, language: &str) -> &'static str {
+    match (language, context) {
+        ("en", "code_review") => "code and review work",
+        ("en", "writing") => "writing and editing work",
+        ("en", _) => "agent work",
+        (_, "code_review") => "代码与审查",
+        (_, "writing") => "写作处理",
+        (_, _) => "Agent 工作",
     }
 }
 
@@ -6098,7 +6300,7 @@ fn create_skill_normalize_spec(spec: &mut Value) {
     if spec.get("language").and_then(Value::as_str).is_none() {
         spec["language"] = json!("zh");
     }
-    let ready = spec
+    let required_content_ready = spec
         .get("description")
         .and_then(Value::as_str)
         .is_some_and(|s| !s.trim().is_empty())
@@ -6107,6 +6309,11 @@ fn create_skill_normalize_spec(spec: &mut Value) {
             .and_then(|v| v.get("userJob"))
             .and_then(Value::as_str)
             .is_some_and(|s| !s.trim().is_empty());
+    let ready = required_content_ready
+        && spec
+            .get("missing")
+            .and_then(Value::as_array)
+            .is_none_or(|items| items.is_empty());
     spec["ready"] = json!(ready);
     if ready && spec.get("missing").is_none_or(|v| !v.is_array()) {
         spec["missing"] = json!([]);
@@ -6128,6 +6335,17 @@ fn create_skill_local_markdown(spec: &Value) -> String {
         .get("userJob")
         .and_then(Value::as_str)
         .unwrap_or(description);
+    let inputs = intent
+        .get("inputContract")
+        .and_then(|c| c.get("acceptedInputs"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let output = intent
+        .get("outputContract")
+        .and_then(|c| c.get("artifactType"))
+        .and_then(Value::as_str)
+        .unwrap_or("markdown");
     let steps = intent
         .get("workflow")
         .and_then(|w| w.get("steps"))
@@ -6139,31 +6357,53 @@ fn create_skill_local_markdown(spec: &Value) -> String {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let rules = intent
+        .get("workflow")
+        .and_then(|w| w.get("failClosedRules"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let non_goals = intent
+        .get("nonGoals")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let section_title = if lang == "en" {
         "Workflow"
     } else {
         "工作流"
     };
-    let criteria_title = if lang == "en" {
-        "Acceptance Criteria"
-    } else {
-        "验收标准"
-    };
     let safety_title = if lang == "en" {
-        "Safety"
+        "Boundaries"
     } else {
         "安全边界"
     };
+    let input_title = if lang == "en" { "Inputs" } else { "输入" };
+    let output_title = if lang == "en" { "Output" } else { "输出" };
+    let quality_title = if lang == "en" {
+        "Quality Bar"
+    } else {
+        "质量标准"
+    };
     let step_block = if steps.is_empty() {
-        "- Clarify the user's goal.\n- Execute the workflow conservatively.\n- Return the result and assumptions.".to_string()
+        "2. Clarify the user's goal.\n3. Execute the workflow conservatively.\n4. Return the result and assumptions.".to_string()
     } else {
         steps
             .iter()
             .filter_map(Value::as_str)
-            .map(|s| format!("- {s}"))
+            .enumerate()
+            .map(|(index, s)| format!("{}. {s}", index + 2))
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let input_block = list_block(
+        &inputs,
+        if lang == "en" {
+            "A rough description of the need and desired result."
+        } else {
+            "用户对需求和期望结果的粗略描述。"
+        },
+    );
     let criteria_block = if criteria.is_empty() {
         "- The result is actionable.\n- Ambiguities are surfaced before risky work.".to_string()
     } else {
@@ -6174,10 +6414,113 @@ fn create_skill_local_markdown(spec: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let boundary_block = [
+        list_block(
+            &rules,
+            if lang == "en" {
+                "Ask before file writes, deletion, external network, or irreversible work."
+            } else {
+                "文件写入、删除、外部联网或不可逆操作前必须追问。"
+            },
+        ),
+        list_block(
+            &non_goals,
+            if lang == "en" {
+                "Do not act as a hidden automation runner."
+            } else {
+                "不做隐藏自动执行器。"
+            },
+        ),
+    ]
+    .join("\n");
     format!(
-        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n{description}\n\n## Intent\n\n{user_job}\n\n## {section_title}\n\n{step_block}\n\n## {criteria_title}\n\n{criteria_block}\n\n## {safety_title}\n\n- Do not expose secrets or private local paths unless the user explicitly asks.\n- Ask before writing, replacing, deleting, or sending content to external services.\n- If required context is missing, ask a focused follow-up instead of guessing.\n",
+        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n## {input_title}\n\n{input_block}\n\n## {section_title}\n\n1. Confirm the task framing: {user_job}\n{step_block}\n\n## {output_title}\n\n- Produce `{output}` unless the user asks for a different concrete artifact.\n- State assumptions, skipped work, and any remaining decision points.\n\n## {safety_title}\n\n{boundary_block}\n\n## {quality_title}\n\n{criteria_block}\n",
         yaml_quote(description)
     )
+}
+
+fn list_block(items: &[Value], fallback: &str) -> String {
+    let lines = items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("- {s}"))
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        format!("- {fallback}")
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn is_skill_kebab_name(name: &str) -> bool {
+    let len = name.len();
+    if len == 0 || len > 64 {
+        return false;
+    }
+    let mut previous_hyphen = false;
+    for (index, c) in name.chars().enumerate() {
+        let allowed = c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+        if !allowed {
+            return false;
+        }
+        if c == '-' {
+            if index == 0 || previous_hyphen {
+                return false;
+            }
+            previous_hyphen = true;
+        } else {
+            previous_hyphen = false;
+        }
+    }
+    !previous_hyphen
+}
+
+fn description_trigger_clear(description: &str) -> bool {
+    let trimmed = description.trim();
+    if trimmed.len() < 24 || trimmed.len() > 260 {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let has_trigger = lower.starts_with("use when")
+        || lower.contains(" use when ")
+        || trimmed.starts_with("当用户")
+        || trimmed.starts_with("用于")
+        || trimmed.contains("适用于")
+        || trimmed.contains("时使用");
+    let too_generic = [
+        "needs help with",
+        "help with:",
+        "general assistant",
+        "anything",
+        "处理这个需求",
+        "通用助手",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle) || trimmed.contains(needle));
+    has_trigger && !too_generic
+}
+
+fn create_skill_frontmatter_keys(markdown: &str) -> Vec<String> {
+    let normalized = markdown.replace("\r\n", "\n");
+    let Some(rest) = normalized.strip_prefix("---\n") else {
+        return Vec::new();
+    };
+    let Some(end) = rest.find("\n---") else {
+        return Vec::new();
+    };
+    rest[..end]
+        .lines()
+        .filter_map(|line| {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                return None;
+            }
+            line.split_once(':')
+                .map(|(key, _)| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
+        .collect()
 }
 
 fn yaml_quote(value: &str) -> String {
@@ -6191,29 +6534,99 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
     if !size_under_limit {
         blocking.push(json!({"code": "TOO_LARGE", "message": "SKILL.md must stay under 1MB."}));
     }
-    let parsed = scanner::parser::parse_skill_markdown(markdown);
-    let parseable = parsed.is_ok();
+    let parsed_result = scanner::parser::parse_skill_markdown(markdown);
+    let parseable = parsed_result.is_ok();
     let mut safe_name = false;
-    if let Ok(parsed) = parsed {
-        safe_name = is_safe_basename(expected_basename.unwrap_or(&parsed.name));
-        if !safe_name {
-            blocking.push(
-                json!({"code": "UNSAFE_NAME", "message": "Skill directory name is not safe."}),
-            );
+    let mut trigger_description = false;
+    let mut name_matches_basename = expected_basename.is_none();
+    let mut name_is_kebab = false;
+    match parsed_result {
+        Ok(parsed) => {
+            safe_name = is_safe_basename(expected_basename.unwrap_or(&parsed.name));
+            name_is_kebab = is_skill_kebab_name(&parsed.name);
+            if let Some(expected) = expected_basename {
+                name_matches_basename = expected == parsed.name;
+            }
+            if !safe_name {
+                blocking.push(
+                    json!({"code": "UNSAFE_NAME", "message": "Skill directory name is not safe."}),
+                );
+            }
+            if !name_is_kebab {
+                blocking.push(json!({"code": "NAME_NOT_KEBAB_CASE", "message": "Skill name must use lowercase kebab-case, for example pr-review-checklist."}));
+            }
+            if !name_matches_basename {
+                blocking.push(json!({"code": "NAME_BASENAME_MISMATCH", "message": "Frontmatter name must match the selected directory name."}));
+            }
+            let description = parsed.description.as_deref().unwrap_or("").trim();
+            trigger_description = description_trigger_clear(description);
+            if description.is_empty() {
+                warnings.push(json!({"code": "MISSING_DESCRIPTION", "message": "Add a clear trigger-style description."}));
+            }
+            if !trigger_description {
+                blocking.push(json!({"code": "WEAK_TRIGGER_DESCRIPTION", "message": "Use a trigger-style description that says when to use this skill and for what task."}));
+            }
         }
-        if parsed
-            .description
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            warnings.push(json!({"code": "MISSING_DESCRIPTION", "message": "Add a clear trigger-style description."}));
+        Err(err) => {
+            blocking.push(json!({"code": err.code, "message": err.message}));
         }
-    } else if let Err(err) = parsed {
-        blocking.push(json!({"code": err.code, "message": err.message}));
+    }
+    let frontmatter_keys = create_skill_frontmatter_keys(markdown);
+    let frontmatter_only_name_description = frontmatter_keys
+        .iter()
+        .all(|key| key == "name" || key == "description");
+    if !frontmatter_only_name_description {
+        warnings.push(json!({"code": "EXTRA_FRONTMATTER", "message": "Keep generated skills to name and description frontmatter unless compatibility requires more."}));
     }
     let lower = markdown.to_lowercase();
+    let has_inputs =
+        lower.contains("## inputs") || lower.contains("## input") || lower.contains("## 输入");
+    if !has_inputs {
+        warnings.push(json!({"code": "MISSING_INPUTS", "message": "Add an Inputs section so users know what to provide."}));
+    }
+    let has_workflow = (lower.contains("## workflow") || lower.contains("## 工作流"))
+        && markdown
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("1.")
+                    || trimmed.starts_with("2.")
+                    || trimmed.starts_with("3.")
+                    || trimmed.starts_with("- ")
+            })
+            .count()
+            >= 3;
+    if !has_workflow {
+        blocking.push(json!({"code": "MISSING_EXECUTABLE_WORKFLOW", "message": "Add a Workflow section with at least three concrete steps."}));
+    }
+    let has_output = lower.contains("## output")
+        || lower.contains("## 输出")
+        || lower.contains("## deliverable");
+    if !has_output {
+        warnings.push(json!({"code": "MISSING_OUTPUT", "message": "Add the expected output artifact and delivery shape."}));
+    }
+    let has_boundaries = lower.contains("## boundaries")
+        || lower.contains("## safety")
+        || lower.contains("## 安全边界")
+        || lower.contains("## 边界");
+    if !has_boundaries {
+        blocking.push(json!({"code": "MISSING_BOUNDARIES", "message": "Add boundaries for privacy, network, file writes, and unclear constraints."}));
+    }
+    let concise_body = markdown.len() <= 12_000;
+    if !concise_body {
+        warnings.push(json!({"code": "BODY_TOO_LONG", "message": "Keep SKILL.md concise; move detailed background into references when needed."}));
+    }
+    if [
+        "readme",
+        "changelog",
+        "installation guide",
+        "quick reference",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        warnings.push(json!({"code": "EXTRANEOUS_DOCS", "message": "Avoid generating extra docs unless a skill resource is explicitly needed."}));
+    }
     let no_private_fields = !["api_key", "apikey", "secret:", "password:"]
         .iter()
         .any(|needle| lower.contains(needle));
@@ -6253,6 +6666,15 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
             "safeName": safe_name,
             "parseableFrontmatter": parseable,
             "sizeUnderLimit": size_under_limit,
+            "triggerDescription": trigger_description,
+            "hasInputs": has_inputs,
+            "hasWorkflow": has_workflow,
+            "hasOutput": has_output,
+            "hasBoundaries": has_boundaries,
+            "conciseBody": concise_body,
+            "frontmatterOnlyNameDescription": frontmatter_only_name_description,
+            "nameMatchesBasename": name_matches_basename,
+            "nameIsKebabCase": name_is_kebab,
             "noPrivateFields": no_private_fields,
             "noSilentNetwork": no_silent_network,
             "noSilentOverwrite": no_silent_overwrite,
