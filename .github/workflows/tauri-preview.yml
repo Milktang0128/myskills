@@ -91,11 +91,11 @@ jobs:
 
       - name: Stable migration packaged smoke
         if: runner.os != 'Linux'
-        run: npm run smoke:tauri:launch -- --stable-migration-smoke --frontend-smoke
+        run: npm run smoke:tauri:launch -- --stable-migration-smoke
 
       - name: Stable migration packaged smoke (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm run smoke:tauri:launch -- --stable-migration-smoke --frontend-smoke
+        run: xvfb-run -a npm run smoke:tauri:launch -- --stable-migration-smoke
 
       - name: Mounted DMG fixture smoke
         if: runner.os == 'macOS'
