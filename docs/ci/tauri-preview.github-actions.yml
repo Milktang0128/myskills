@@ -81,7 +81,12 @@ jobs:
         run: npm run smoke:ui:workbench
 
       - name: Tauri build
+        if: runner.os != 'Windows'
         run: npm run build:tauri
+
+      - name: Tauri build (Windows NSIS)
+        if: runner.os == 'Windows'
+        run: npm run build:tauri -- --bundles nsis
 
       - name: Packaged fixture smoke
         if: runner.os != 'Linux'
