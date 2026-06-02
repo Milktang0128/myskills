@@ -9,9 +9,14 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { IPC, type IpcChannel, type IpcEventChannel } from '@shared/ipc-channels';
 import type {
   AiScenarioSuggestion,
+  AppUpdateInfo,
+  AppUpdateInstallProgress,
   AppStats,
   BulkCategorizeApplyResult,
   BulkCategorizePlan,
@@ -231,7 +236,65 @@ function bridge(): BridgeApi {
   return window.myskills;
 }
 
+let pendingUpdate: Update | null = null;
+
+function updateToInfo(update: Update | null, currentVersion?: string): AppUpdateInfo {
+  if (!update) {
+    return {
+      available: false,
+      currentVersion: currentVersion ?? '',
+      version: null,
+    };
+  }
+  return {
+    available: true,
+    currentVersion: update.currentVersion,
+    version: update.version,
+    date: update.date,
+    body: update.body,
+  };
+}
+
 export const api = {
+  app: {
+    version: async () => getVersion(),
+  },
+  updates: {
+    check: async () => {
+      const update = await check();
+      pendingUpdate = update;
+      if (update) return updateToInfo(update);
+      const currentVersion = await getVersion().catch(() => '');
+      return updateToInfo(null, currentVersion);
+    },
+    downloadAndInstall: async (onProgress?: (progress: AppUpdateInstallProgress) => void) => {
+      if (!pendingUpdate) throw new Error('No pending update. Check for updates first.');
+      let downloadedBytes = 0;
+      await pendingUpdate.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          downloadedBytes = 0;
+          onProgress?.({
+            event: 'Started',
+            downloadedBytes,
+            contentLength: event.data.contentLength,
+          });
+        } else if (event.event === 'Progress') {
+          downloadedBytes += event.data.chunkLength;
+          onProgress?.({
+            event: 'Progress',
+            downloadedBytes,
+          });
+        } else {
+          onProgress?.({
+            event: 'Finished',
+            downloadedBytes,
+          });
+        }
+      });
+      pendingUpdate = null;
+    },
+    relaunch: async () => relaunch(),
+  },
   platforms: {
     list: () => bridge().invoke(IPC.platforms.list) as Promise<Platform[]>,
     update: (id: string, skillsDir: string) =>

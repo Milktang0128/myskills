@@ -1,3 +1,10 @@
 {
-  "identifier": "com.kanbenzhi.myskills"
+  "identifier": "com.kanbenzhi.myskills",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/Milktang0128/myskills/releases/download/stable/latest.json"
+      ]
+    }
+  }
 }

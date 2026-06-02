@@ -985,6 +985,18 @@ function uiSmokePlugin() {
         path: 'tauri-event',
         namespace: 'ui-smoke',
       }));
+      build.onResolve({ filter: /^@tauri-apps\/api\/app$/ }, () => ({
+        path: 'tauri-app',
+        namespace: 'ui-smoke',
+      }));
+      build.onResolve({ filter: /^@tauri-apps\/plugin-updater$/ }, () => ({
+        path: 'tauri-updater',
+        namespace: 'ui-smoke',
+      }));
+      build.onResolve({ filter: /^@tauri-apps\/plugin-process$/ }, () => ({
+        path: 'tauri-process',
+        namespace: 'ui-smoke',
+      }));
       build.onResolve({ filter: /^@\// }, (args) => ({
         path: resolveSourcePath(path.join(root, 'src', args.path.slice(2))),
       }));
@@ -996,7 +1008,25 @@ function uiSmokePlugin() {
           return {
             loader: 'js',
             contents:
-              'export async function invoke(command, options = {}) { return globalThis.__MYSKILLS_UI_SMOKE__.invoke(command, options.payload ?? {}); }',
+              'export class Resource {} export class Channel {} export async function invoke(command, options = {}) { return globalThis.__MYSKILLS_UI_SMOKE__.invoke(command, options.payload ?? {}); }',
+          };
+        }
+        if (args.path === 'tauri-app') {
+          return {
+            loader: 'js',
+            contents: 'export async function getVersion() { return "0.2.0-tauri.0"; }',
+          };
+        }
+        if (args.path === 'tauri-updater') {
+          return {
+            loader: 'js',
+            contents: 'export async function check() { return null; }',
+          };
+        }
+        if (args.path === 'tauri-process') {
+          return {
+            loader: 'js',
+            contents: 'export async function relaunch() {}',
           };
         }
         return {
@@ -1133,6 +1163,8 @@ try {
   clickButton('Settings');
   await waitFor('settings view', () => text().includes('Allow external network requests'));
   expectText('settings view', 'Platforms');
+  expectText('settings view', 'App updates');
+  expectText('settings view', 'Check for updates');
   expectText('settings view', 'Network enabled');
   expectText('settings view', 'AI integration');
   expectText('settings migration discovery', 'Electron migration');

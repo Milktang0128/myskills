@@ -519,6 +519,20 @@ export interface CreateSkillExecuteResult {
   warnings: Array<{ code: string; message: string }>;
 }
 
+export interface AppUpdateInfo {
+  available: boolean;
+  currentVersion: string;
+  version: string | null;
+  date?: string;
+  body?: string;
+}
+
+export interface AppUpdateInstallProgress {
+  event: 'Started' | 'Progress' | 'Finished';
+  downloadedBytes: number;
+  contentLength?: number;
+}
+
 /**
  * IPC error envelope. Main always rejects with this shape on handler error
  * so the renderer can render structured errors instead of raw Error objects.

@@ -28,5 +28,16 @@
     "targets": "all",
     "icon": ["../build/icon-rgba.png", "../build/icon.icns", "icons/icon.ico"],
     "category": "DeveloperTool"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYyNEUyMzJFQUJCOUY0QjYKUldTMjlMbXJMaU5PWWpvc0UxZGhhRmo4Tk5zZmhIdk11MnlmU2QrUUo5SjRiRzg2MFlER1BZY1gK",
+      "endpoints": [
+        "https://github.com/Milktang0128/myskills/releases/download/tauri-preview/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

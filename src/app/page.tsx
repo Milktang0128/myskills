@@ -87,6 +87,7 @@ export default function Workspace() {
 
   const reqIdRef = useRef(0);
   const frontendSmokeRanRef = useRef(false);
+  const updateCheckRanRef = useRef(false);
 
   // Filter is "at default" when nothing's been narrowed — all scope + no
   // scenario + no platform. The sub-toolbar only renders in this state; any
@@ -179,6 +180,25 @@ export default function Workspace() {
     if (!bridgeReady) return;
     refreshMeta();
   }, [bridgeReady, refreshMeta]);
+
+  useEffect(() => {
+    if (!bridgeReady || frontendSmokeActive || updateCheckRanRef.current) return;
+    updateCheckRanRef.current = true;
+    const id = window.setTimeout(() => {
+      api.updates
+        .check()
+        .then((update) => {
+          if (update.available && update.version) {
+            showToast(t('updates.toast.available', { version: update.version }));
+          }
+        })
+        .catch(() => {
+          // Background update checks are opportunistic. Settings exposes the
+          // explicit check path with visible errors.
+        });
+    }, 30000);
+    return () => window.clearTimeout(id);
+  }, [bridgeReady, frontendSmokeActive, t]);
 
   useEffect(() => {
     if (!bridgeReady) return;

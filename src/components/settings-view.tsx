@@ -10,6 +10,7 @@ import {
   CloudOff,
   FileX2,
   Database,
+  Download,
   Plus,
   Trash2,
   Check,
@@ -17,10 +18,13 @@ import {
   Wifi,
   Sparkles,
   KeyRound,
+  Power,
   ShieldCheck,
   Boxes,
 } from 'lucide-react';
 import type {
+  AppUpdateInfo,
+  AppUpdateInstallProgress,
   AppStats,
   ElectronMigrationCandidate,
   LlmConfig,
@@ -98,6 +102,13 @@ export function SettingsView({ onChanged }: Props) {
   const [discoveringMigration, setDiscoveringMigration] = useState(false);
   const [confirmingMigrationPath, setConfirmingMigrationPath] = useState<string | null>(null);
   const [migrationConfirmation, setMigrationConfirmation] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState('');
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateInstalled, setUpdateInstalled] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<AppUpdateInstallProgress | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [pls, st, ls, c, cands, netRaw, cfg, feats, migration] = await Promise.all([
@@ -175,6 +186,14 @@ export function SettingsView({ onChanged }: Props) {
       offEnd();
     };
   }, [bridgeReady, refresh]);
+
+  useEffect(() => {
+    if (!bridgeReady) return;
+    api.app
+      .version()
+      .then(setAppVersion)
+      .catch(() => {});
+  }, [bridgeReady]);
 
   const errorsByKind = useMemo(() => {
     const map = new Map<string, ScanResult['errors']>();
@@ -358,6 +377,40 @@ export function SettingsView({ onChanged }: Props) {
   async function toggleFeature(key: keyof LlmFeatureToggles, next: boolean) {
     const updated = await api.llm.setFeatures({ [key]: next });
     setLlmFeatures(updated);
+  }
+
+  async function checkForUpdate() {
+    setCheckingUpdate(true);
+    setUpdateError(null);
+    setUpdateInstalled(false);
+    setUpdateProgress(null);
+    try {
+      const result = await api.updates.check();
+      setUpdateInfo(result);
+      if (result.currentVersion) setAppVersion(result.currentVersion);
+    } catch (err) {
+      setUpdateInfo(null);
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function installUpdate() {
+    setInstallingUpdate(true);
+    setUpdateError(null);
+    try {
+      await api.updates.downloadAndInstall(setUpdateProgress);
+      setUpdateInstalled(true);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingUpdate(false);
+    }
+  }
+
+  async function relaunchApp() {
+    await api.updates.relaunch();
   }
 
   async function refreshMigrationCandidates() {
@@ -692,6 +745,21 @@ export function SettingsView({ onChanged }: Props) {
             confirmationPath={migrationConfirmation}
             onRefresh={refreshMigrationCandidates}
             onConfirm={confirmMigrationCandidate}
+          />
+
+          <Separator />
+
+          <UpdateSection
+            currentVersion={appVersion}
+            update={updateInfo}
+            checking={checkingUpdate}
+            installing={installingUpdate}
+            installed={updateInstalled}
+            progress={updateProgress}
+            error={updateError}
+            onCheck={checkForUpdate}
+            onInstall={installUpdate}
+            onRelaunch={relaunchApp}
           />
 
           <Separator />
@@ -1115,6 +1183,119 @@ function MigrationDiscoverySection({
               </div>
             ))}
           </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function UpdateSection({
+  currentVersion,
+  update,
+  checking,
+  installing,
+  installed,
+  progress,
+  error,
+  onCheck,
+  onInstall,
+  onRelaunch,
+}: {
+  currentVersion: string;
+  update: AppUpdateInfo | null;
+  checking: boolean;
+  installing: boolean;
+  installed: boolean;
+  progress: AppUpdateInstallProgress | null;
+  error: string | null;
+  onCheck: () => void;
+  onInstall: () => void;
+  onRelaunch: () => void;
+}) {
+  const t = useT();
+  const progressLabel = progress
+    ? progress.contentLength && progress.contentLength > 0
+      ? `${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.contentLength)}`
+      : formatBytes(progress.downloadedBytes)
+    : null;
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Download className="h-4 w-4" />
+            {t('settings.updates.header')}
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('settings.updates.help')}
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={onCheck} disabled={checking || installing}>
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${checking ? 'animate-spin' : ''}`} />
+          {checking ? t('settings.updates.checking') : t('settings.updates.check')}
+        </Button>
+      </div>
+
+      <div className="rounded-md border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-medium">
+            {t('settings.updates.currentVersion', {
+              version: currentVersion || 'unknown',
+            })}
+          </div>
+          {update?.available ? (
+            <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] uppercase tracking-wider text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
+              {t('settings.updates.availableBadge')}
+            </span>
+          ) : update ? (
+            <span className="rounded bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              {t('settings.updates.currentBadge')}
+            </span>
+          ) : null}
+        </div>
+
+        {update?.available && (
+          <div className="mt-3 space-y-2">
+            <div className="text-sm">
+              {t('settings.updates.available', { version: update.version ?? '' })}
+            </div>
+            {update.body && (
+              <pre className="max-h-32 overflow-auto rounded border bg-background p-2 whitespace-pre-wrap text-xs text-muted-foreground">
+                {update.body}
+              </pre>
+            )}
+            {progress && progressLabel && (
+              <div className="text-xs text-muted-foreground">
+                {progress.event === 'Finished'
+                  ? t('settings.updates.downloadFinished')
+                  : t('settings.updates.downloadProgress', { progress: progressLabel })}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={onInstall} disabled={installing || installed}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {installing ? t('settings.updates.installing') : t('settings.updates.install')}
+              </Button>
+              {installed && (
+                <Button size="sm" variant="outline" onClick={onRelaunch}>
+                  <Power className="mr-1.5 h-3.5 w-3.5" />
+                  {t('settings.updates.relaunch')}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {update && !update.available && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t('settings.updates.none')}
+          </p>
+        )}
+
+        {error && (
+          <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-950 dark:bg-amber-950/20 dark:text-amber-300">
+            {t('settings.updates.error', { message: error })}
+          </p>
         )}
       </div>
     </section>

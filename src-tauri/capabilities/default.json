@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "MySkills main window capability set. Filesystem, SQL, shell, and HTTP are intentionally not exposed to the renderer.",
   "windows": ["main"],
-  "permissions": ["core:default", "opener:default"]
+  "permissions": ["core:default", "opener:default", "process:allow-restart", "updater:default"]
 }

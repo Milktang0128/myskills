@@ -51,6 +51,10 @@ For the Tauri preview branch, build locally with `npm run build:tauri`. Public
 macOS/Windows/Linux preview artifacts are only release candidates after feature
 parity smoke testing is complete.
 
+Preview builds can check the `tauri-preview` GitHub Release for signed updates
+from Settings. The client only shows an update when the published `latest.json`
+version is greater than the installed app version.
+
 ## On your desktop
 
 What MySkills puts where:
@@ -124,11 +128,25 @@ npm run build:tauri:stable # Tauri bundle with the future stable app id
 npm run smoke:tauri:launch -- --stable-migration-smoke --frontend-smoke # stable startup migration drill
 npm run build:tauri:mac:signed # local Developer ID signed macOS Tauri preview
 npm run notarize:tauri:mac # notarize, staple, and Gatekeeper-check the signed Tauri DMG
+npm run build:tauri:updater -- --bundles app # macOS updater archive + signature
+npm run updater:manifest -- --artifacts-dir dist/tauri-updater-artifacts # write latest.json for GitHub Release assets
 ```
 
 Legacy Electron commands are kept under `*:electron:legacy` for the frozen `v0.1.x` line.
 
 **Requirements:** Node 22+, npm 10+, Rust/Cargo via rustup, and platform-specific Tauri prerequisites.
+
+### Preview auto-update channel
+
+The Tauri preview updater is intentionally release-gated:
+
+1. Bump `package.json` and `src-tauri/tauri.conf.json` to a newer semver version, for example `0.2.0-tauri.1`.
+2. Configure GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+3. Push `tauri/refactor-v0.2` or run the `Tauri Preview` workflow manually.
+4. After macOS, Windows, and Linux parity checks pass, CI uploads signed updater bundles plus `latest.json` to the `tauri-preview` GitHub Release.
+5. Installed preview clients show the update from Settings, and a background check can raise a non-blocking toast.
+
+The private updater signing key must never be committed. The public key is embedded in `src-tauri/tauri.conf.json`; CI signs artifacts with the private key from secrets.
 
 ## Architecture
 
