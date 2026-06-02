@@ -2871,6 +2871,9 @@ fn path_size(path: &Path) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::{atomic::AtomicBool, Arc, Mutex};
+    use tauri::Manager;
 
     fn history_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -3088,6 +3091,61 @@ mod tests {
         )
         .expect("write SKILL.md");
         skill_dir
+    }
+
+    fn create_skill_smoke_app() -> (tauri::App<tauri::test::MockRuntime>, PathBuf) {
+        let root = temp_dir("create-skill-smoke");
+        let paths = crate::paths::AppPaths::new(root.join("app-data")).expect("app paths");
+        let pool = crate::db::init_pool(&paths.db_path).expect("db pool");
+        {
+            let db = pool.get().expect("db conn");
+            for platform_id in ["shared", "claude", "codex"] {
+                let dir = root.join(platform_id);
+                fs::create_dir_all(&dir).expect("platform dir");
+                db.execute(
+                    "UPDATE platforms SET skills_dir = ?1, enabled = 1 WHERE id = ?2",
+                    params![dir.to_string_lossy(), platform_id],
+                )
+                .expect("platform update");
+            }
+            db.execute(
+                "INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared')
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [],
+            )
+            .expect("canonical setting");
+        }
+        let state = AppState {
+            paths,
+            db: pool,
+            last_scan: Mutex::new(None),
+            plan_store: Mutex::new(HashMap::new()),
+            sync_lock: Mutex::new(()),
+            ai_queue: Arc::new(Mutex::new(VecDeque::new())),
+            ai_worker_running: Arc::new(AtomicBool::new(false)),
+        };
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        (app, root)
+    }
+
+    fn create_skill_answer(
+        state: State<'_, AppState>,
+        draft_id: &str,
+        question_id: &str,
+        answer: &str,
+    ) -> Value {
+        ai_create_skill_answer(
+            Some(json!({
+                "draftId": draft_id,
+                "questionId": question_id,
+                "answer": answer
+            })),
+            state,
+        )
+        .expect("answer question")
     }
 
     #[test]
@@ -3940,6 +3998,474 @@ mod tests {
     }
 
     #[test]
+    fn create_skill_repair_frontmatter_fills_missing_name_from_spec() {
+        let spec = create_skill_local_spec(
+            "Product iteration synthesis",
+            "en",
+            &json!({
+                "target_context": "general_agent_workflow",
+                "input_scope": "materials",
+                "artifact": "markdown",
+                "strictness": "confirm"
+            }),
+        );
+        let markdown = "---\ndescription: Use when synthesizing scattered product notes into an iteration plan.\n---\n\n# Product Iteration\n\n## Inputs\n\n- Notes\n";
+
+        let repaired = create_skill_repair_frontmatter(markdown, &spec);
+        let review =
+            create_skill_review_markdown(&repaired, spec.get("name").and_then(Value::as_str));
+
+        assert!(repaired.starts_with("---\nname: product-iteration-synthesis\n"));
+        assert_eq!(
+            review
+                .get("blocking")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn create_skill_repair_frontmatter_prefers_zh_description_for_zh_spec() {
+        let mut spec = create_skill_local_spec(
+            "把零散想法收敛为产品迭代方案",
+            "zh",
+            &json!({
+                "target_context": "general_agent_workflow",
+                "input_scope": "materials",
+                "artifact": "markdown",
+                "strictness": "confirm"
+            }),
+        );
+        spec["name"] = json!("product-iteration-synthesizer");
+        let markdown = "---\nname: product-iteration-synthesizer\ndescription: \"Use when turning scattered notes into a product plan.\"\n---\n\n# 产品迭代方案合成器\n\n## 输入\n\n- 零散想法\n";
+
+        let repaired = create_skill_repair_frontmatter(markdown, &spec);
+
+        assert!(repaired.contains("description: \"当用户需要"));
+        assert!(!repaired.contains("Use when turning scattered notes"));
+    }
+
+    #[test]
+    fn create_skill_repair_frontmatter_replaces_generic_empty_trigger() {
+        let mut spec = create_skill_local_spec(
+            "把零散想法、会议记录和焦虑点收敛成产品迭代方案",
+            "zh",
+            &json!({
+                "target_context": "general_agent_workflow",
+                "input_scope": "materials",
+                "artifact": "markdown",
+                "strictness": "confirm"
+            }),
+        );
+        spec["description"] =
+            json!("当用户需要把零散想法、会议记录和焦虑点收敛成产品迭代方案时使用。");
+        let markdown = "---\nname: product-iteration-convergence\ndescription: \"当用户需要一个可复用的Agent 工作技能时使用：\"\n---\n\n# 产品迭代收敛技能\n\n## 输入\n\n- 零散想法\n";
+
+        let repaired = create_skill_repair_frontmatter(markdown, &spec);
+
+        assert!(repaired.contains(
+            "description: \"当用户需要把零散想法、会议记录和焦虑点收敛成产品迭代方案时使用。\""
+        ));
+        assert!(!repaired.contains("可复用的Agent 工作技能时使用："));
+    }
+
+    #[test]
+    fn create_skill_repair_frontmatter_replaces_generic_name() {
+        let mut spec = create_skill_local_spec(
+            "把零散想法、会议记录和焦虑点收敛成产品迭代方案",
+            "zh",
+            &json!({
+                "target_context": "general_agent_workflow",
+                "input_scope": "materials",
+                "artifact": "markdown",
+                "strictness": "confirm"
+            }),
+        );
+        spec["name"] = json!("product-iteration-convergence");
+        let markdown = "---\nname: agent\ndescription: \"当用户需要把零散想法收敛成产品迭代方案时使用。\"\n---\n\n# 产品迭代收敛技能\n";
+
+        let repaired = create_skill_repair_frontmatter(markdown, &spec);
+
+        assert!(repaired.starts_with("---\nname: product-iteration-convergence\n"));
+    }
+
+    #[test]
+    fn create_skill_repair_frontmatter_keeps_spec_name_over_model_rename() {
+        let mut spec = create_skill_local_spec(
+            "把零散想法、会议记录和焦虑点收敛成产品迭代方案",
+            "zh",
+            &json!({
+                "target_context": "general_agent_workflow",
+                "input_scope": "materials",
+                "artifact": "markdown",
+                "strictness": "confirm"
+            }),
+        );
+        spec["name"] = json!("product-iteration-planner");
+        let markdown = "---\nname: idea-converge\ndescription: \"当用户需要把零散想法收敛成产品迭代方案时使用。\"\n---\n\n# 思路聚合技能\n";
+
+        let repaired = create_skill_repair_frontmatter(markdown, &spec);
+
+        assert!(repaired.starts_with("---\nname: product-iteration-planner\n"));
+        assert!(!repaired.contains("name: idea-converge"));
+    }
+
+    #[test]
+    fn create_skill_repair_frontmatter_replaces_english_prefix_in_zh_description() {
+        let mut spec = create_skill_local_spec(
+            "把零散想法、会议记录和焦虑点收敛成产品迭代方案",
+            "zh",
+            &json!({
+                "target_context": "general_agent_workflow",
+                "input_scope": "materials",
+                "artifact": "markdown",
+                "strictness": "confirm"
+            }),
+        );
+        spec["description"] =
+            json!("当用户需要把零散想法、会议记录和焦虑点收敛成产品迭代方案时使用。");
+        let markdown = "---\nname: refine-ideas-to-product-iteration\ndescription: \"Use when 用户提供零散想法、会议记录或焦虑点，要求生成可执行的产品迭代方案\"\n---\n\n# 产品迭代方案\n";
+
+        let repaired = create_skill_repair_frontmatter(markdown, &spec);
+
+        assert!(repaired.contains("description: \"当用户需要把零散想法"));
+        assert!(!repaired.contains("description: \"Use when"));
+    }
+
+    #[test]
+    fn create_skill_user_simulation_generates_reviews_plans_and_installs() {
+        let (app, root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        let prompt = "release risk review for Tauri desktop builds: 用户给我变更说明、CI 结果和安装包路径，希望得到发布风险清单、阻断项和下一步验证方案。";
+
+        let start = ai_create_skill_start(
+            Some(json!({
+                "prompt": prompt,
+                "language": "zh"
+            })),
+            state.clone(),
+        )
+        .expect("start draft");
+        let draft_id = start["draft"]["id"].as_str().expect("draft id");
+        let initial_spec = &start["draft"]["skillSpec"];
+        assert_eq!(start["aiUsed"].as_bool(), Some(false));
+        assert_eq!(
+            initial_spec["intentFrame"]["userJob"].as_str(),
+            Some(prompt)
+        );
+        assert_eq!(
+            start["draft"]["followupQuestions"].as_array().map(Vec::len),
+            Some(4)
+        );
+
+        create_skill_answer(state.clone(), draft_id, "target_context", "code_review");
+        create_skill_answer(state.clone(), draft_id, "input_scope", "codebase");
+        create_skill_answer(state.clone(), draft_id, "artifact", "checklist");
+        let answered = create_skill_answer(state.clone(), draft_id, "strictness", "confirm");
+        let spec = answered["draft"]["skillSpec"].clone();
+        assert_eq!(answered["draft"]["status"].as_str(), Some("spec_ready"));
+        assert_eq!(
+            spec["intentFrame"]["outputContract"]["artifactType"].as_str(),
+            Some("checklist")
+        );
+        assert_eq!(spec["overwritePolicy"].as_str(), Some("confirm_each_time"));
+
+        let generated = ai_create_skill_generate(
+            Some(json!({
+                "draftId": draft_id,
+                "skillSpec": spec
+            })),
+            state.clone(),
+        )
+        .expect("generate markdown");
+        let markdown = generated["draft"]["draftMarkdown"]
+            .as_str()
+            .expect("draft markdown");
+        let target_basename = generated["draft"]["skillSpec"]["name"]
+            .as_str()
+            .expect("generated skill name");
+        assert!(target_basename.starts_with("release-risk-review"));
+        assert!(markdown.contains(target_basename));
+        assert!(markdown.contains("## 输入"));
+        assert!(markdown.contains("## 工作流"));
+        assert!(markdown.contains("## 安全边界"));
+        assert!(markdown.contains("`checklist`"));
+        assert!(markdown.contains("确认任务框架"));
+        assert!(markdown.contains("默认产出 `checklist`"));
+        assert!(!markdown.contains("Confirm the task framing"));
+
+        let review = ai_create_skill_review(
+            Some(json!({
+                "draftId": draft_id,
+                "markdown": markdown,
+                "targetBasename": target_basename
+            })),
+            state.clone(),
+        )
+        .expect("review markdown");
+        assert_eq!(
+            review["review"]["blocking"].as_array().map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            review["review"]["checks"]["noSilentNetwork"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            review["review"]["checks"]["noSilentOverwrite"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            review["review"]["warnings"].as_array().map(Vec::len),
+            Some(0)
+        );
+
+        let planned = ai_create_skill_plan(
+            Some(json!({
+                "draftId": draft_id,
+                "targetBasename": target_basename,
+                "targetPlatformIds": [],
+                "targetScenarioIds": []
+            })),
+            state.clone(),
+        )
+        .expect("plan install");
+        let token = planned["plan"]["token"].as_str().expect("plan token");
+        assert_eq!(planned["plan"]["operation"].as_str(), Some("create_skill"));
+        assert_eq!(
+            planned["plan"]["items"][0]["action"].as_str(),
+            Some("copy_to_canonical")
+        );
+
+        let executed = ai_create_skill_execute(
+            Some(json!({
+                "draftId": draft_id,
+                "token": token,
+                "targetScenarioIds": []
+            })),
+            state.clone(),
+        )
+        .expect("execute install");
+        let skill_id = executed["skillId"].as_str().expect("installed skill id");
+        assert_eq!(executed["draft"]["status"].as_str(), Some("installed"));
+        assert_eq!(
+            executed["draft"]["installedSkillId"].as_str(),
+            Some(skill_id)
+        );
+
+        let installed = root.join("shared").join(target_basename).join("SKILL.md");
+        assert!(installed.exists(), "installed SKILL.md should exist");
+        let installed_markdown = fs::read_to_string(&installed).expect("installed markdown");
+        assert_eq!(installed_markdown, markdown);
+        assert!(installed_markdown.contains("发布风险清单"));
+
+        let db = state.db.get().expect("db conn");
+        let installed_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM skills WHERE id = ?1 AND name = ?2",
+                params![skill_id, target_basename],
+                |row| row.get(0),
+            )
+            .expect("installed skill row");
+        assert_eq!(installed_count, 1);
+
+        println!(
+            "create skill smoke installed {} at {}",
+            skill_id,
+            installed.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires MYSKILLS_LIVE_LLM_API_KEY and performs a real network call"]
+    fn create_skill_live_llm_user_simulation_generates_reviewable_skill() {
+        let (app, root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        {
+            let db = state.db.get().expect("db conn");
+            let model = std::env::var("MYSKILLS_LIVE_LLM_MODEL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+            for (key, value) in [
+                ("allow_external_network", "1".to_string()),
+                ("llm.feature.createSkill", "1".to_string()),
+                ("llm.provider", "deepseek".to_string()),
+                ("llm.model", model),
+                ("llm.baseUrl", "".to_string()),
+            ] {
+                db.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![key, value],
+                )
+                .expect("live llm setting");
+            }
+        }
+
+        let prompt = "我经常把一堆零散想法、会议记录和焦虑点发给 Agent，希望它帮我收敛成一个能执行的产品迭代方案：先识别真正的问题，再判断哪些想法只是噪音，最后输出版本目标、用户路径、风险和下一步验证清单。请为这个场景创造一个可复用技能。";
+        let start = ai_create_skill_start(
+            Some(json!({
+                "prompt": prompt,
+                "language": "zh"
+            })),
+            state.clone(),
+        )
+        .expect("live start draft");
+        assert_eq!(
+            start["aiUsed"].as_bool(),
+            Some(true),
+            "start must use the live LLM"
+        );
+        let draft_id = start["draft"]["id"].as_str().expect("draft id");
+        assert!(
+            start["draft"]["followupQuestions"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty()),
+            "live model should return option-based follow-up questions"
+        );
+
+        let mut answered = Value::Null;
+        for (question_id, answer) in [
+            ("target_context", "general_agent_workflow"),
+            ("input_scope", "materials"),
+            ("artifact", "markdown"),
+            ("strictness", "confirm"),
+        ] {
+            answered = create_skill_answer(state.clone(), draft_id, question_id, answer);
+        }
+        assert_eq!(answered["draft"]["status"].as_str(), Some("spec_ready"));
+        let spec = answered["draft"]["skillSpec"].clone();
+
+        let generated = ai_create_skill_generate(
+            Some(json!({
+                "draftId": draft_id,
+                "skillSpec": spec
+            })),
+            state.clone(),
+        )
+        .expect("live generate markdown");
+        assert_eq!(
+            generated["aiUsed"].as_bool(),
+            Some(true),
+            "generate must use the live LLM"
+        );
+        let markdown = generated["draft"]["draftMarkdown"]
+            .as_str()
+            .expect("live draft markdown");
+        let target_basename = generated["draft"]["targetBasename"]
+            .as_str()
+            .or_else(|| generated["draft"]["skillSpec"]["name"].as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "live skill name missing; draft={}",
+                    generated["draft"].to_string()
+                )
+            });
+        let review = ai_create_skill_review(
+            Some(json!({
+                "draftId": draft_id,
+                "markdown": markdown,
+                "targetBasename": target_basename
+            })),
+            state.clone(),
+        )
+        .expect("live review markdown");
+        let blocking_len = review["review"]["blocking"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(usize::MAX);
+        let warning_len = review["review"]["warnings"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or(usize::MAX);
+        assert!(
+            markdown.contains("## 输入")
+                || markdown.contains("## 工作流")
+                || markdown.contains("## 输出")
+                || markdown.contains("安全边界"),
+            "live zh generation should keep the SKILL.md body in Chinese; markdown=\n{}",
+            markdown
+        );
+        let live_frontmatter = markdown
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.find("\n---").map(|end| &rest[..end]))
+            .unwrap_or("");
+        let live_description =
+            frontmatter_scalar(live_frontmatter, "description").unwrap_or_default();
+        assert!(
+            contains_cjk(&live_description) && description_trigger_clear(&live_description),
+            "live zh generation should keep a concrete Chinese trigger description; description={}; markdown=\n{}",
+            live_description,
+            markdown
+        );
+        assert!(
+            !live_description.to_lowercase().starts_with("use when"),
+            "live zh generation should not keep an English trigger prefix; description={}; markdown=\n{}",
+            live_description,
+            markdown
+        );
+        assert!(
+            !live_description
+                .trim()
+                .ends_with("Agent 工作技能时使用"),
+            "live zh generation should not keep a generic empty trigger description; description={}; markdown=\n{}",
+            live_description,
+            markdown
+        );
+        assert_ne!(
+            target_basename, "agent",
+            "live generation should not keep a generic skill name; markdown=\n{}",
+            markdown
+        );
+        assert_eq!(
+            blocking_len, 0,
+            "live generated skill should not be blocked; blocking={}; markdown=\n{}",
+            review["review"]["blocking"], markdown
+        );
+        assert_eq!(
+            warning_len, 0,
+            "live generated skill should not have quality warnings; warnings={}; markdown=\n{}",
+            review["review"]["warnings"], markdown
+        );
+
+        let planned = ai_create_skill_plan(
+            Some(json!({
+                "draftId": draft_id,
+                "targetBasename": target_basename,
+                "targetPlatformIds": [],
+                "targetScenarioIds": []
+            })),
+            state.clone(),
+        )
+        .expect("live plan install");
+        let token = planned["plan"]["token"].as_str().expect("plan token");
+        let executed = ai_create_skill_execute(
+            Some(json!({
+                "draftId": draft_id,
+                "token": token,
+                "targetScenarioIds": []
+            })),
+            state.clone(),
+        )
+        .expect("live execute install");
+        let installed = root.join("shared").join(target_basename).join("SKILL.md");
+        assert!(installed.exists(), "live installed SKILL.md should exist");
+        println!(
+            "live create skill smoke installed skillId={} at {}",
+            executed["skillId"].as_str().unwrap_or(""),
+            installed.display()
+        );
+        println!("live create skill name={target_basename}");
+        println!(
+            "live create skill review warnings={}",
+            review["review"]["warnings"]
+        );
+        println!("live create skill markdown:\n{markdown}");
+    }
+
+    #[test]
     fn create_skill_review_warns_on_weak_trigger_and_missing_structure() {
         let review = create_skill_review_markdown(
             "---\nname: weak-skill\ndescription: Help with anything.\n---\n\n# weak-skill\n\nSome notes.",
@@ -3965,12 +4491,13 @@ mod tests {
             .iter()
             .any(|code| code == "MISSING_EXECUTABLE_WORKFLOW"));
         assert!(warnings.iter().any(|code| code == "MISSING_BOUNDARIES"));
+        assert!(warnings.iter().any(|code| code == "MISSING_QUALITY_BAR"));
     }
 
     #[test]
     fn create_skill_review_accepts_creative_section_names() {
         let review = create_skill_review_markdown(
-            "---\nname: creative-review\ndescription: Use when shaping an unusual critique workflow from rough notes.\n---\n\n# creative-review\n\n## Materials\n\n- Rough notes\n\n## Critic Ritual\n\n1. Find the core tension.\n2. Name the strongest counter-reading.\n\n## Deliverable\n\n- A compact critique memo.\n\n## Guardrails\n\n- Ask before using external sources.\n",
+            "---\nname: creative-review\ndescription: Use when shaping an unusual critique workflow from rough notes.\n---\n\n# creative-review\n\n## Materials\n\n- Rough notes\n\n## Critic Ritual\n\n1. Find the core tension.\n2. Name the strongest counter-reading.\n\n## Deliverable\n\n- A compact critique memo.\n\n## Guardrails\n\n- Ask before using external sources.\n\n## Acceptance\n\n- The memo names the central tension and a serious counter-reading.\n",
             Some("creative-review"),
         );
         assert_eq!(
@@ -3994,6 +4521,28 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            review
+                .get("warnings")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn create_skill_review_accepts_chinese_accepted_input_heading() {
+        let review = create_skill_review_markdown(
+            "---\nname: idea-convergent\ndescription: 使用技能将零散想法、会议记录和焦虑点收敛为可执行的产品迭代方案时使用。\n---\n\n# 想法收敛技能\n\n## 接受输入\n\n- 用户原始文本。\n\n## 工作流程\n\n1. 解析输入。\n2. 输出方案。\n\n## 输出格式\n\n- Markdown 文档。\n\n## 边界与限制\n\n- 不执行外部网络调用或文件写入，除非用户明确确认。\n\n## 质量要求\n\n- 输出必须可执行。\n",
+            Some("idea-convergent"),
+        );
+        assert_eq!(
+            review
+                .get("warnings")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
     }
 
     #[test]
@@ -4012,6 +4561,148 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(codes.iter().any(|code| code == "NETWORK_NEEDS_GATE"));
         assert!(codes.iter().any(|code| code == "WRITE_NEEDS_GATE"));
+    }
+
+    #[test]
+    fn create_skill_review_does_not_let_unrelated_confirmation_gate_network() {
+        let review = create_skill_review_markdown(
+            "---\nname: unsafe-network\ndescription: Use when testing unsafe automation defaults.\n---\n\n# unsafe-network\n\n## Boundaries\n\n- Confirm before deleting files.\n\n## Workflow\n\n1. Fetch https://example.com/data without asking.\n\n## Output\n\n- Updated data.\n\n## Quality Bar\n\n- Data source is cited.\n",
+            Some("unsafe-network"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(codes.iter().any(|code| code == "NETWORK_NEEDS_GATE"));
+    }
+
+    #[test]
+    fn create_skill_review_blocks_chinese_destructive_write_without_gate() {
+        let review = create_skill_review_markdown(
+            "---\nname: unsafe-write\ndescription: Use when testing unsafe file changes.\n---\n\n# unsafe-write\n\n## 输入\n\n- 本地文件路径\n\n## 工作流\n\n1. 删除旧文件并覆盖输出。\n\n## 输出\n\n- 新文件\n\n## 安全边界\n\n- 不联网。\n\n## 质量标准\n\n- 输出路径存在。\n",
+            Some("unsafe-write"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(codes.iter().any(|code| code == "WRITE_NEEDS_GATE"));
+    }
+
+    #[test]
+    fn create_skill_review_allows_explicit_network_prohibition() {
+        let review = create_skill_review_markdown(
+            "---\nname: local-only-skill\ndescription: 当需要整理本地输入并产出方案时使用。\n---\n\n# local-only-skill\n\n## 输入\n\n- 用户提供的文本\n\n## 工作流\n\n1. 整理输入。\n2. 生成方案。\n\n## 输出\n\n- Markdown 方案\n\n## 边界\n\n- 不访问外部网络或用户隐私数据。\n- 不得发送网络请求。\n- 不读取或写入文件。\n- 不删除任何数据。\n- 文件写入、删除、覆盖、联网调用或密钥处理前必须明确确认。\n\n## 质量要求\n\n- 输出可执行。\n",
+            Some("local-only-skill"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(!codes.iter().any(|code| code == "NETWORK_NEEDS_GATE"));
+        assert!(!codes.iter().any(|code| code == "WRITE_NEEDS_GATE"));
+    }
+
+    #[test]
+    fn create_skill_review_blocks_expanded_private_fields() {
+        let review = create_skill_review_markdown(
+            "---\nname: unsafe-secret\ndescription: Use when testing secret handling.\n---\n\n# unsafe-secret\n\n## Inputs\n\n- Bearer token: abc\n\n## Workflow\n\n1. Inspect the request.\n\n## Output\n\n- Report.\n\n## Boundaries\n\n- Keep secrets local.\n\n## Quality Bar\n\n- No credentials are exposed.\n",
+            Some("unsafe-secret"),
+        );
+        let codes = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(codes.iter().any(|code| code == "PRIVATE_FIELD"));
+    }
+
+    #[test]
+    fn create_skill_installability_rejects_quality_warnings() {
+        let review = create_skill_review_markdown(
+            "---\nname: warning-only\ndescription: Use when reviewing pull requests for regressions and test gaps.\n---\n\n# warning-only\n\n## Inputs\n\n- PR diff\n\n## Workflow\n\n1. Inspect diff.\n\n## Output\n\n- Checklist.\n\n## Boundaries\n\n- Ask before writes.\n",
+            Some("warning-only"),
+        );
+        assert_eq!(
+            review
+                .get("blocking")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+        assert!(!create_skill_review_is_installable(&review));
+    }
+
+    #[test]
+    fn create_skill_start_coerces_spec_shaped_llm_payload() {
+        let payload = create_skill_coerce_start_payload(
+            json!({
+                "name": "Product Iteration Synthesizer",
+                "description": "当用户需要把零散想法收敛成产品迭代方案时使用。",
+                "intentFrame": {
+                    "userJob": "把零散想法收敛成产品迭代方案",
+                    "triggerContext": "产品迭代规划",
+                    "inputContract": { "acceptedInputs": ["会议记录", "零散想法"] },
+                    "outputContract": { "artifactType": "markdown", "destination": "reply_only" },
+                    "workflow": { "steps": ["识别真实问题"], "failClosedRules": ["文件写入前确认"] },
+                    "stylePreferences": ["直接"],
+                    "nonGoals": ["不替用户决定优先级"],
+                    "successCriteria": ["版本目标清晰"]
+                },
+                "followupQuestions": [
+                    { "id": "strictness", "question": "是否需要确认？", "options": [{ "id": "confirm", "label": "确认", "effect": "strictness=confirm" }] }
+                ]
+            }),
+            "把零散想法收敛成产品迭代方案",
+            "zh",
+        );
+        let (spec, questions) =
+            create_skill_envelope_payload(payload, "start").expect("coerced start payload");
+
+        assert_eq!(
+            spec.get("name").and_then(Value::as_str),
+            Some("product-iteration-synthesizer")
+        );
+        assert_eq!(
+            spec["intentFrame"]["userJob"].as_str(),
+            Some("把零散想法收敛成产品迭代方案")
+        );
+        assert_eq!(questions.as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn create_skill_normalize_spec_repairs_bad_intent_shape_before_answer() {
+        let mut spec = json!({
+            "name": "bad-intent-shape",
+            "description": "当用户需要把零散想法收敛成产品迭代方案时使用。",
+            "language": "zh",
+            "intentFrame": "not an object"
+        });
+
+        create_skill_normalize_spec(&mut spec);
+        create_skill_apply_answer(&mut spec, "input_scope", "materials");
+
+        assert_eq!(
+            spec["intentFrame"]["inputContract"]["acceptedInputs"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
     }
 
     #[test]
@@ -4285,6 +4976,23 @@ fn catalog_client() -> AppResult<reqwest::blocking::Client> {
         .map_err(|err| AppError::new("CATALOG_HTTP_CLIENT_FAILED", err.to_string()))
 }
 
+fn llm_client() -> AppResult<reqwest::blocking::Client> {
+    let builder = reqwest::blocking::Client::builder().timeout(Duration::from_secs(120));
+    #[cfg(test)]
+    let builder = if let Ok(ip) = std::env::var("MYSKILLS_LIVE_LLM_RESOLVE_IP") {
+        if let Ok(ip) = ip.parse::<std::net::IpAddr>() {
+            builder.resolve("api.deepseek.com", std::net::SocketAddr::new(ip, 443))
+        } else {
+            builder
+        }
+    } else {
+        builder
+    };
+    builder
+        .build()
+        .map_err(|err| AppError::new("LLM_HTTP_CLIENT_FAILED", err.to_string()))
+}
+
 fn catalog_fetch_skill_content(db: &Connection, source: &str, skill_id: &str) -> AppResult<String> {
     require_network(db)?;
     if !is_valid_catalog_source(source) {
@@ -4299,7 +5007,7 @@ fn catalog_fetch_skill_content(db: &Connection, source: &str, skill_id: &str) ->
             format!("bad skillId \"{skill_id}\""),
         ));
     }
-    let client = catalog_client()?;
+    let client = llm_client()?;
     let branch = catalog_default_branch(&client, source)?;
     let candidates = [
         format!("skills/{skill_id}/SKILL.md"),
@@ -4963,6 +5671,13 @@ fn llm_read_config(db: &Connection) -> AppResult<LlmRuntimeConfig> {
 }
 
 fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
+    #[cfg(test)]
+    if let Ok(value) = std::env::var("MYSKILLS_LIVE_LLM_API_KEY") {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Ok(Some(value));
+        }
+    }
     if let Some(value) = secret_store_read(LLM_API_KEY_NAME)? {
         return Ok(Some(value));
     }
@@ -5076,7 +5791,7 @@ fn llm_chat_openai_compatible(
             json!({ "type": "json_object" }),
         );
     }
-    let client = catalog_client()?;
+    let client = llm_client()?;
     let mut request = client
         .post(format!("{base_url}/chat/completions"))
         .header(reqwest::header::CONTENT_TYPE, "application/json");
@@ -5091,7 +5806,7 @@ fn llm_chat_openai_compatible(
     let res = request.json(&Value::Object(body)).send().map_err(|err| {
         AppError::new(
             "LLM_UNAVAILABLE",
-            format!("Could not reach LLM provider: {err}"),
+            format!("Could not reach LLM provider: {err:?}"),
         )
     })?;
     let status = res.status();
@@ -5210,7 +5925,7 @@ fn llm_chat_anthropic(
         .map_err(|err| {
             AppError::new(
                 "LLM_UNAVAILABLE",
-                format!("Could not reach Anthropic: {err}"),
+                format!("Could not reach Anthropic: {err:?}"),
             )
         })?;
     let status = res.status();
@@ -5368,12 +6083,16 @@ pub fn ai_create_skill_start(
     let db = conn(&state)?;
     let draft_id = Uuid::new_v4().to_string();
     let now = now_ms();
-    let (spec, questions, ai_used) = create_skill_start_spec(&db, &prompt, language)
-        .unwrap_or_else(|_| {
+    let llm_enabled = create_skill_llm_enabled(&db)?;
+    let (spec, questions, ai_used) = match create_skill_start_spec(&db, &prompt, language) {
+        Ok(result) => result,
+        Err(err) if llm_enabled || create_skill_strict_live_llm() => return Err(err),
+        Err(_) => {
             let spec = create_skill_local_spec(&prompt, language, &json!({}));
             let questions = create_skill_default_questions(&spec);
             (spec, questions, false)
-        });
+        }
+    };
     let status = if spec.get("ready").and_then(Value::as_bool) == Some(true) {
         "spec_ready"
     } else {
@@ -5490,6 +6209,7 @@ pub fn ai_create_skill_answer(
             &answers,
         )
     });
+    create_skill_normalize_spec(&mut spec);
     create_skill_apply_answer(&mut spec, question_id, answer);
     create_skill_normalize_spec(&mut spec);
     let questions = create_skill_default_questions(&spec);
@@ -5549,14 +6269,34 @@ pub fn ai_create_skill_generate(
         .or_else(|| draft.get("skillSpec").cloned())
         .ok_or_else(|| AppError::new("INVALID_STATE", "skillSpec required before generate"))?;
     create_skill_normalize_spec(&mut spec);
-    let (markdown, ai_used) = create_skill_generate_markdown(&db, &spec)
-        .unwrap_or_else(|_| (create_skill_local_markdown(&spec), false));
-    let review = create_skill_review_markdown(&markdown, spec.get("name").and_then(Value::as_str));
-    let status = if review
-        .get("blocking")
-        .and_then(Value::as_array)
-        .is_some_and(|items| items.is_empty())
-    {
+    let llm_enabled = create_skill_llm_enabled(&db)?;
+    let (markdown, ai_used) = match create_skill_generate_markdown(&db, &spec) {
+        Ok(result) => result,
+        Err(err) if llm_enabled || create_skill_strict_live_llm() => return Err(err),
+        Err(_) => (create_skill_local_markdown(&spec), false),
+    };
+    let generated_name = scanner::parser::parse_skill_markdown(&markdown)
+        .ok()
+        .map(|parsed| parsed.name);
+    if spec.get("name").and_then(Value::as_str).is_none() {
+        if let Some(name) = &generated_name {
+            spec["name"] = json!(slugify_skill_name(name));
+        }
+    }
+    create_skill_normalize_spec(&mut spec);
+    let target_basename = spec
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| is_safe_basename(name))
+        .map(str::to_string)
+        .or_else(|| {
+            generated_name
+                .as_deref()
+                .map(slugify_skill_name)
+                .filter(|name| is_safe_basename(name))
+        });
+    let review = create_skill_review_markdown(&markdown, target_basename.as_deref());
+    let status = if create_skill_review_is_installable(&review) {
         "artifact_draft"
     } else {
         "review_failed"
@@ -5568,14 +6308,16 @@ pub fn ai_create_skill_generate(
              intent_frame_json = ?3,
              draft_markdown = ?4,
              validation_json = ?5,
-             updated_at = ?6
-         WHERE id = ?7 AND discarded_at IS NULL AND installed_at IS NULL",
+             target_basename = COALESCE(target_basename, ?6),
+             updated_at = ?7
+         WHERE id = ?8 AND discarded_at IS NULL AND installed_at IS NULL",
         params![
             status,
             json_string(&spec)?,
             json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
             markdown,
             json_string(&review)?,
+            target_basename,
             now_ms(),
             draft_id
         ],
@@ -5610,11 +6352,7 @@ pub fn ai_create_skill_review(
             .and_then(Value::as_str)
     });
     let review = create_skill_review_markdown(markdown, expected_name);
-    let status = if review
-        .get("blocking")
-        .and_then(Value::as_array)
-        .is_some_and(|items| items.is_empty())
-    {
+    let status = if create_skill_review_is_installable(&review) {
         "reviewed"
     } else {
         "review_failed"
@@ -5684,11 +6422,7 @@ pub fn ai_create_skill_plan(
         .or_else(|| draft.get("draftMarkdown").and_then(Value::as_str))
         .ok_or_else(|| AppError::new("INVALID_STATE", "draftMarkdown required"))?;
     let review = create_skill_review_markdown(markdown, Some(target_basename));
-    if !review
-        .get("blocking")
-        .and_then(Value::as_array)
-        .is_some_and(|items| items.is_empty())
-    {
+    if !create_skill_review_is_installable(&review) {
         db.execute(
             "UPDATE skill_creation_drafts
              SET status = 'review_failed', validation_json = ?1, updated_at = ?2
@@ -5697,7 +6431,7 @@ pub fn ai_create_skill_plan(
         )?;
         return Err(AppError::detail(
             "CREATE_SKILL_REVIEW_BLOCKED",
-            "Fix blocking review issues before planning install.",
+            "Fix review issues before planning install.",
             review,
         ));
     }
@@ -5978,16 +6712,17 @@ fn create_skill_start_spec(
             },
             {
                 "role": "user",
-                "content": format!("Create a skill spec from this user need. Return JSON only.\n\nNeed:\n{prompt}")
+                "content": format!("Create a skill spec from this user need. Return JSON only. Set command exactly to \"start\".\n\nNeed:\n{prompt}")
             }
         ],
         "temperature": 0.2,
-        "maxTokens": 2200,
+        "maxTokens": 4096,
         "jsonMode": true
     });
     let response = llm_chat_with_config(&config, api_key.as_deref(), &req)?;
     let text = response.get("text").and_then(Value::as_str).unwrap_or("");
     let parsed = ai_parse_json_object(text);
+    let parsed = create_skill_coerce_start_payload(parsed, prompt, language);
     create_skill_envelope_payload(parsed, "start").map(|(spec, questions)| (spec, questions, true))
 }
 
@@ -6007,10 +6742,10 @@ fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(S
     let req = json!({
         "messages": [
             { "role": "system", "content": create_skill_system_prompt(spec.get("language").and_then(Value::as_str).unwrap_or("zh")) },
-            { "role": "user", "content": format!("Generate the final SKILL.md for this spec. Return JSON envelope only.\n\n{}", json_string(spec)?) }
+            { "role": "user", "content": format!("Generate the final SKILL.md for this spec. Return JSON envelope only. Set command exactly to \"generate\".\n\n{}", json_string(spec)?) }
         ],
         "temperature": 0.2,
-        "maxTokens": 3600,
+        "maxTokens": 8192,
         "jsonMode": true
     });
     let response = llm_chat_with_config(&config, api_key.as_deref(), &req)?;
@@ -6023,9 +6758,13 @@ fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(S
         ));
     }
     if parsed.get("command").and_then(Value::as_str) != Some("generate") {
+        let actual = parsed
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
         return Err(AppError::new(
             "LLM_COMMAND_MISMATCH",
-            "Create Skill command mismatch.",
+            format!("Create Skill command mismatch: expected generate, got {actual}."),
         ));
     }
     let markdown = parsed
@@ -6033,7 +6772,99 @@ fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(S
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| AppError::new("LLM_BAD_RESPONSE", "draftMarkdown missing"))?;
-    Ok((markdown.to_string(), true))
+    Ok((create_skill_repair_frontmatter(markdown, spec), true))
+}
+
+fn create_skill_strict_live_llm() -> bool {
+    cfg!(test) && std::env::var("MYSKILLS_LIVE_LLM_STRICT").is_ok()
+}
+
+fn create_skill_llm_enabled(db: &Connection) -> AppResult<bool> {
+    Ok(get_setting(db, "llm.feature.createSkill")?.as_deref() == Some("1"))
+}
+
+fn create_skill_coerce_start_payload(parsed: Value, prompt: &str, language: &str) -> Value {
+    if parsed.get("schemaVersion").and_then(Value::as_str) == Some("create-skill.v1")
+        && parsed.get("command").and_then(Value::as_str) == Some("start")
+    {
+        return parsed;
+    }
+    let Some(obj) = parsed.as_object() else {
+        return parsed;
+    };
+    let nested = obj
+        .get("payload")
+        .or_else(|| obj.get("data"))
+        .filter(|value| value.is_object());
+    let source = nested.and_then(Value::as_object).unwrap_or(obj);
+    let spec = source
+        .get("skillSpec")
+        .or_else(|| source.get("spec"))
+        .cloned()
+        .or_else(|| {
+            if source.contains_key("name")
+                || source.contains_key("description")
+                || source.contains_key("intentFrame")
+                || source.contains_key("userJob")
+                || source.contains_key("triggerContext")
+            {
+                Some(Value::Object(source.clone()))
+            } else {
+                None
+            }
+        });
+    let Some(mut spec) = spec else {
+        return parsed;
+    };
+    if spec.get("language").and_then(Value::as_str).is_none() {
+        spec["language"] = json!(language);
+    }
+    if spec.get("intentFrame").is_none() {
+        if let Some(intent) = source.get("intentFrame").or_else(|| source.get("intent")) {
+            spec["intentFrame"] = intent.clone();
+        } else if source.contains_key("userJob") || source.contains_key("triggerContext") {
+            spec["intentFrame"] = json!({
+                "userJob": source.get("userJob").and_then(Value::as_str).unwrap_or(""),
+                "triggerContext": source.get("triggerContext").and_then(Value::as_str).unwrap_or(""),
+                "inputContract": source.get("inputContract").cloned().unwrap_or_else(|| json!({ "acceptedInputs": [] })),
+                "outputContract": source.get("outputContract").cloned().unwrap_or_else(|| json!({ "artifactType": "markdown", "destination": "reply_only" })),
+                "workflow": source.get("workflow").cloned().unwrap_or_else(|| json!({ "steps": [], "failClosedRules": [] })),
+                "stylePreferences": source.get("stylePreferences").cloned().unwrap_or_else(|| json!([])),
+                "nonGoals": source.get("nonGoals").cloned().unwrap_or_else(|| json!([])),
+                "successCriteria": source.get("successCriteria").cloned().unwrap_or_else(|| json!([]))
+            });
+        }
+    }
+    if !spec.get("intentFrame").is_some_and(Value::is_object) {
+        spec["intentFrame"] = json!({});
+    }
+    if spec["intentFrame"]
+        .get("userJob")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        spec["intentFrame"]["userJob"] = json!(prompt);
+    }
+    if spec["intentFrame"]
+        .get("triggerContext")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        spec["intentFrame"]["triggerContext"] = json!(prompt);
+    }
+    create_skill_normalize_spec(&mut spec);
+    json!({
+        "schemaVersion": "create-skill.v1",
+        "command": "start",
+        "status": source.get("status").and_then(Value::as_str).unwrap_or("intent_draft"),
+        "intentFrame": spec.get("intentFrame").cloned().unwrap_or(Value::Null),
+        "skillSpec": spec,
+        "questions": source
+            .get("questions")
+            .or_else(|| source.get("followupQuestions"))
+            .cloned()
+            .unwrap_or_else(|| json!([]))
+    })
 }
 
 fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Value, Value)> {
@@ -6044,9 +6875,13 @@ fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Val
         ));
     }
     if parsed.get("command").and_then(Value::as_str) != Some(command) {
+        let actual = parsed
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
         return Err(AppError::new(
             "LLM_COMMAND_MISMATCH",
-            "Create Skill command mismatch.",
+            format!("Create Skill command mismatch: expected {command}, got {actual}."),
         ));
     }
     let mut spec = parsed
@@ -6061,16 +6896,18 @@ fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Val
     create_skill_normalize_spec(&mut spec);
     let questions = parsed
         .get("questions")
+        .or_else(|| parsed.get("followupQuestions"))
         .cloned()
         .or_else(|| parsed.get("question").map(|q| json!([q])))
         .filter(|v| v.is_array())
+        .filter(|v| v.as_array().is_some_and(|items| !items.is_empty()))
         .unwrap_or_else(|| create_skill_default_questions(&spec));
     Ok((spec, questions))
 }
 
 fn create_skill_system_prompt(language: &str) -> String {
     format!(
-        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. Prefer a short procedural SKILL.md with accepted inputs, workflow, output, boundaries, and quality bar, but choose a different structure when it better fits the skill. Preserve useful creative framing as long as triggering, inputs, execution guidance, safety boundaries, and expected output are clear. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames."
+        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. If language=zh, all human-facing questions, headings, instructions, and SKILL.md body text must be Chinese; keep only identifiers and unavoidable technical terms in English. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. Final SKILL.md must begin with YAML frontmatter containing exactly name and description. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. Prefer a short procedural SKILL.md with accepted inputs, workflow, output, boundaries, and quality bar, but choose a different structure when it better fits the skill. Preserve useful creative framing as long as triggering, inputs, execution guidance, safety boundaries, and expected output are clear. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames."
     )
 }
 
@@ -6348,11 +7185,67 @@ fn context_label(context: &str, language: &str) -> &'static str {
 }
 
 fn create_skill_normalize_spec(spec: &mut Value) {
+    if !spec.get("intentFrame").is_some_and(Value::is_object) {
+        spec["intentFrame"] = json!({});
+    }
+    for (key, fallback) in [
+        ("inputContract", json!({ "acceptedInputs": [] })),
+        (
+            "outputContract",
+            json!({ "artifactType": "markdown", "destination": "reply_only" }),
+        ),
+        ("workflow", json!({ "steps": [], "failClosedRules": [] })),
+    ] {
+        if !spec["intentFrame"].get(key).is_some_and(Value::is_object) {
+            spec["intentFrame"][key] = fallback;
+        }
+    }
+    for key in ["stylePreferences", "nonGoals", "successCriteria"] {
+        if !spec["intentFrame"].get(key).is_some_and(Value::is_array) {
+            spec["intentFrame"][key] = json!([]);
+        }
+    }
     if let Some(name) = spec.get("name").and_then(Value::as_str) {
         spec["name"] = json!(slugify_skill_name(name));
+    } else {
+        let fallback_name = spec
+            .get("intentFrame")
+            .and_then(|v| v.get("userJob"))
+            .or_else(|| spec.get("intentFrame").and_then(|v| v.get("userIntention")))
+            .and_then(Value::as_str)
+            .or_else(|| spec.get("description").and_then(Value::as_str))
+            .map(slugify_skill_name)
+            .filter(|name| !name.is_empty());
+        if let Some(name) = fallback_name {
+            spec["name"] = json!(name);
+        }
     }
     if spec.get("language").and_then(Value::as_str).is_none() {
         spec["language"] = json!("zh");
+    }
+    let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+    let should_repair_description = spec
+        .get("description")
+        .and_then(Value::as_str)
+        .is_none_or(|description| create_skill_description_needs_repair(lang, description));
+    if should_repair_description {
+        let user_job = spec
+            .get("intentFrame")
+            .and_then(|v| v.get("userJob"))
+            .or_else(|| spec.get("intentFrame").and_then(|v| v.get("userIntention")))
+            .and_then(Value::as_str)
+            .unwrap_or("structured agent workflow");
+        spec["description"] = json!(if lang == "en" {
+            format!(
+                "Use when the user needs a repeatable workflow: {}",
+                truncate(user_job, 120)
+            )
+        } else {
+            format!(
+                "当用户需要一个可复用技能时使用：{}",
+                truncate(user_job, 120)
+            )
+        });
     }
     let required_content_ready = spec
         .get("description")
@@ -6440,7 +7333,11 @@ fn create_skill_local_markdown(spec: &Value) -> String {
         "质量标准"
     };
     let step_block = if steps.is_empty() {
-        "2. Clarify the user's goal.\n3. Execute the workflow conservatively.\n4. Return the result and assumptions.".to_string()
+        if lang == "en" {
+            "2. Clarify the user's goal.\n3. Execute the workflow conservatively.\n4. Return the result and assumptions.".to_string()
+        } else {
+            "2. 澄清用户目标。\n3. 保守地执行工作流。\n4. 返回结果和关键假设。".to_string()
+        }
     } else {
         steps
             .iter()
@@ -6487,10 +7384,110 @@ fn create_skill_local_markdown(spec: &Value) -> String {
         ),
     ]
     .join("\n");
+    let confirm_line = if lang == "en" {
+        "Confirm the task framing"
+    } else {
+        "确认任务框架"
+    };
+    let produce_line = if lang == "en" {
+        format!("- Produce `{output}` unless the user asks for a different concrete artifact.")
+    } else {
+        format!("- 默认产出 `{output}`，除非用户明确要求其他具体产物。")
+    };
+    let assumptions_line = if lang == "en" {
+        "- State assumptions, skipped work, and any remaining decision points."
+    } else {
+        "- 说明关键假设、未执行的工作，以及仍需用户决定的问题。"
+    };
     format!(
-        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n## {input_title}\n\n{input_block}\n\n## {section_title}\n\n1. Confirm the task framing: {user_job}\n{step_block}\n\n## {output_title}\n\n- Produce `{output}` unless the user asks for a different concrete artifact.\n- State assumptions, skipped work, and any remaining decision points.\n\n## {safety_title}\n\n{boundary_block}\n\n## {quality_title}\n\n{criteria_block}\n",
+        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n## {input_title}\n\n{input_block}\n\n## {section_title}\n\n1. {confirm_line}: {user_job}\n{step_block}\n\n## {output_title}\n\n{produce_line}\n{assumptions_line}\n\n## {safety_title}\n\n{boundary_block}\n\n## {quality_title}\n\n{criteria_block}\n",
         yaml_quote(description)
     )
+}
+
+fn create_skill_repair_frontmatter(markdown: &str, spec: &Value) -> String {
+    let name = spec
+        .get("name")
+        .and_then(Value::as_str)
+        .map(slugify_skill_name)
+        .unwrap_or_else(|| "new-skill".to_string());
+    let description = spec
+        .get("description")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("Use when the user needs a structured agent workflow.");
+    let normalized = markdown.replace("\r\n", "\n");
+    let (existing_name, existing_description, body) =
+        if let Some(rest) = normalized.strip_prefix("---\n") {
+            if let Some(end) = rest.find("\n---") {
+                let frontmatter = &rest[..end];
+                let body_start = end + "\n---".len();
+                let body = rest
+                    .get(body_start..)
+                    .unwrap_or_default()
+                    .trim_start_matches('\n');
+                (
+                    frontmatter_scalar(frontmatter, "name"),
+                    frontmatter_scalar(frontmatter, "description"),
+                    body.to_string(),
+                )
+            } else {
+                (None, None, normalized)
+            }
+        } else {
+            (None, None, normalized)
+        };
+    let preferred_name =
+        (!name.is_empty() && !create_skill_name_too_generic(&name)).then_some(name.clone());
+    let final_name = preferred_name.unwrap_or_else(|| {
+        existing_name
+            .as_deref()
+            .map(slugify_skill_name)
+            .filter(|value| !value.is_empty() && !create_skill_name_too_generic(value))
+            .unwrap_or(name)
+    });
+    let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+    let final_description = match existing_description
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(existing)
+            if create_skill_description_needs_repair(lang, existing)
+                && !create_skill_description_needs_repair(lang, description) =>
+        {
+            description
+        }
+        Some(existing) if lang == "zh" && !contains_cjk(existing) && contains_cjk(description) => {
+            description
+        }
+        Some(existing) => existing,
+        None => description,
+    };
+    format!(
+        "---\nname: {final_name}\ndescription: {}\n---\n\n{}",
+        yaml_quote(final_description),
+        body.trim_start()
+    )
+}
+
+fn frontmatter_scalar(frontmatter: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    frontmatter.lines().find_map(|line| {
+        let line = line.trim();
+        line.strip_prefix(&prefix).map(|value| {
+            value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_string()
+        })
+    })
+}
+
+fn contains_cjk(value: &str) -> bool {
+    value
+        .chars()
+        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
 }
 
 fn list_block(items: &[Value], fallback: &str) -> String {
@@ -6531,12 +7528,33 @@ fn is_skill_kebab_name(name: &str) -> bool {
     !previous_hyphen
 }
 
+fn create_skill_name_too_generic(value: &str) -> bool {
+    matches!(
+        value.trim().to_lowercase().as_str(),
+        "agent" | "skill" | "new-skill" | "my-skill" | "assistant" | "workflow"
+    )
+}
+
+fn create_skill_description_needs_repair(language: &str, description: &str) -> bool {
+    !description_trigger_clear(description)
+        || (language == "zh" && description.trim().to_lowercase().starts_with("use when"))
+}
+
 fn description_trigger_clear(description: &str) -> bool {
     let trimmed = description.trim();
     if trimmed.len() < 24 || trimmed.len() > 260 {
         return false;
     }
+    if trimmed.ends_with(':') || trimmed.ends_with('：') {
+        return false;
+    }
     let lower = trimmed.to_lowercase();
+    let compact = lower.replace(' ', "");
+    if compact.starts_with("当用户需要一个可复用的agent工作技能时使用")
+        && trimmed.chars().count() < 56
+    {
+        return false;
+    }
     let has_trigger = lower.starts_with("use when")
         || lower.contains(" use when ")
         || trimmed.starts_with("当用户")
@@ -6661,6 +7679,8 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
             "## input",
             "## materials",
             "## 输入",
+            "## 接受的输入",
+            "## 接受输入",
             "accepted inputs",
             "输入材料",
         ],
@@ -6719,6 +7739,23 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
     if !has_boundaries {
         warnings.push(json!({"code": "MISSING_BOUNDARIES", "message": "Add boundaries for privacy, network, file writes, and unclear constraints."}));
     }
+    let has_quality_bar = contains_any(
+        &lower,
+        &[
+            "## quality",
+            "## quality bar",
+            "## acceptance",
+            "## success",
+            "## 质量",
+            "## 质量标准",
+            "## 质量要求",
+            "## 验收",
+            "验收标准",
+        ],
+    );
+    if !has_quality_bar {
+        warnings.push(json!({"code": "MISSING_QUALITY_BAR", "message": "Add quality or acceptance criteria so the generated skill can self-check its output."}));
+    }
     let concise_body = markdown.len() <= 12_000;
     if !concise_body {
         warnings.push(json!({"code": "BODY_TOO_LONG", "message": "Keep SKILL.md concise; move detailed background into references when needed."}));
@@ -6734,27 +7771,72 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
     {
         warnings.push(json!({"code": "EXTRANEOUS_DOCS", "message": "Avoid generating extra docs unless a skill resource is explicitly needed."}));
     }
-    let no_private_fields = !["api_key", "apikey", "secret:", "password:"]
-        .iter()
-        .any(|needle| lower.contains(needle));
+    let no_private_fields = ![
+        "api key",
+        "api_key",
+        "apikey",
+        "secret:",
+        "password:",
+        "bearer ",
+        "private key",
+        "access token",
+        "token:",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
     if !no_private_fields {
         blocking.push(
             json!({"code": "PRIVATE_FIELD", "message": "Remove secrets or secret-shaped fields."}),
         );
     }
-    let no_silent_network =
-        !(lower.contains("curl ") || lower.contains("http://") || lower.contains("https://"))
-            || lower.contains("ask")
-            || lower.contains("confirm")
-            || lower.contains("permission")
-            || lower.contains("许可")
-            || lower.contains("确认");
+    let gate_terms = [
+        "ask",
+        "confirm",
+        "permission",
+        "explicit user",
+        "user approval",
+        "用户确认",
+        "确认",
+        "许可",
+        "授权",
+        "明确同意",
+        "先询问",
+    ];
+    let no_silent_network = !create_skill_has_ungated_line(
+        &lower,
+        &[
+            "curl ",
+            "wget ",
+            "fetch(",
+            "http://",
+            "https://",
+            "network request",
+            "external source",
+            "external network",
+            "联网",
+            "外部网络",
+            "网络请求",
+        ],
+        &gate_terms,
+    );
     if !no_silent_network {
         blocking.push(json!({"code": "NETWORK_NEEDS_GATE", "message": "Network use must require explicit user permission."}));
     }
-    let no_silent_overwrite = !(lower.contains("overwrite") || lower.contains("delete "))
-        || lower.contains("confirm")
-        || lower.contains("确认");
+    let no_silent_overwrite = !create_skill_has_ungated_line(
+        &lower,
+        &[
+            "overwrite",
+            "delete ",
+            "delete.",
+            "rm -r",
+            "cp -f",
+            "写入文件",
+            "修改文件",
+            "覆盖",
+            "删除",
+        ],
+        &gate_terms,
+    );
     if !no_silent_overwrite {
         blocking.push(json!({"code": "WRITE_NEEDS_GATE", "message": "Destructive writes must require confirmation."}));
     }
@@ -6778,6 +7860,7 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
             "hasWorkflow": has_workflow,
             "hasOutput": has_output,
             "hasBoundaries": has_boundaries,
+            "hasQualityBar": has_quality_bar,
             "conciseBody": concise_body,
             "frontmatterOnlyNameDescription": frontmatter_only_name_description,
             "nameMatchesBasename": name_matches_basename,
@@ -6789,6 +7872,89 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
             "noDangerousShellDefault": no_dangerous_shell
         }
     })
+}
+
+fn create_skill_review_is_installable(review: &Value) -> bool {
+    review
+        .get("blocking")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.is_empty())
+        && review
+            .get("warnings")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.is_empty())
+}
+
+fn create_skill_line_has_any(line: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| line.contains(needle))
+}
+
+fn create_skill_line_has_gate(line: &str, gates: &[&str]) -> bool {
+    if [
+        "without ask",
+        "without asking",
+        "without confirm",
+        "without confirmation",
+        "without permission",
+        "不询问",
+        "不确认",
+        "无需确认",
+        "不经确认",
+    ]
+    .iter()
+    .any(|needle| line.contains(needle))
+    {
+        return false;
+    }
+    create_skill_line_has_any(line, gates)
+}
+
+fn create_skill_line_denies_risky_action(line: &str) -> bool {
+    [
+        "do not access",
+        "does not access",
+        "never access",
+        "no external network",
+        "no network",
+        "do not use external",
+        "do not call external",
+        "不访问",
+        "不使用外部",
+        "不联网",
+        "不调用外部",
+        "不主动调用外部",
+        "不发送",
+        "不得发送",
+        "不得发起",
+        "不得调用外部",
+        "不删除",
+        "不删除任何",
+        "不覆盖",
+        "不写入",
+        "不读取或写入",
+        "不修改文件",
+        "不得保存或修改",
+    ]
+    .iter()
+    .any(|needle| line.contains(needle))
+}
+
+fn create_skill_has_ungated_line(markdown_lower: &str, triggers: &[&str], gates: &[&str]) -> bool {
+    let lines = markdown_lower.lines().collect::<Vec<_>>();
+    for (idx, line) in lines.iter().enumerate() {
+        if !create_skill_line_has_any(line, triggers) {
+            continue;
+        }
+        if create_skill_line_denies_risky_action(line) {
+            continue;
+        }
+        let gated_here = create_skill_line_has_gate(line, gates);
+        let gated_before = idx > 0 && create_skill_line_has_gate(lines[idx - 1], gates);
+        if !gated_here && !gated_before {
+            return true;
+        }
+    }
+    false
 }
 
 fn create_skill_plan_from_staging(

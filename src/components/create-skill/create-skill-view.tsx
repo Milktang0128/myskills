@@ -134,7 +134,7 @@ export function CreateSkillView({
       });
       setDraft(result.draft);
       setSpec(result.draft.skillSpec);
-      setStep(result.nextQuestion ? 'questions' : 'draft');
+      setStep('questions');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -174,7 +174,7 @@ export function CreateSkillView({
       });
       setDraft(result.draft);
       setReview(result.review);
-      if (result.review.blocking.length === 0) setStep('install');
+      if (result.review.blocking.length === 0 && result.review.warnings.length === 0) setStep('install');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -477,9 +477,6 @@ export function CreateSkillView({
                     <Pencil className="mr-2 h-4 w-4" />
                     {copy.continueQuestions}
                   </Button>
-                  <Button variant="outline" onClick={generate} disabled={busy}>
-                    {copy.generateNow}
-                  </Button>
                 </div>
               </section>
             )}
@@ -498,7 +495,7 @@ export function CreateSkillView({
                   </Notice>
                 )}
                 <div className="flex gap-2">
-                  <Button onClick={generate} disabled={busy || !spec}>
+                  <Button onClick={generate} disabled={busy || !spec || Boolean(currentQuestion)}>
                     {copy.generateDraft}
                   </Button>
                   <Button variant="outline" onClick={() => setStep('outline')}>
@@ -621,7 +618,15 @@ export function CreateSkillView({
                 <Button
                   className="w-full"
                   onClick={makePlan}
-                  disabled={busy || !draft || !markdown.trim() || review?.blocking.length !== 0 || targetPlatformIds.length === 0}
+                  disabled={
+                    busy ||
+                    !draft ||
+                    !markdown.trim() ||
+                    review == null ||
+                    review.blocking.length !== 0 ||
+                    review.warnings.length !== 0 ||
+                    targetPlatformIds.length === 0
+                  }
                   data-smoke-action="create-skill-plan"
                 >
                   {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -652,6 +657,11 @@ export function CreateSkillView({
             token,
             targetScenarioIds,
           });
+          if ((result.sync.failed?.length ?? 0) > 0 || !result.skillId) {
+            setExecuteResult(result);
+            setDraft(result.draft);
+            throw new Error(copy.installFailed);
+          }
           setExecuteResult(result);
           setDraft(result.draft);
           setStep('done');
@@ -712,11 +722,10 @@ function QuestionBlock({
             key={option.id}
             type="button"
             disabled={busy}
-            onClick={() => onAnswer(`${option.id}: ${option.effect}`)}
+            onClick={() => onAnswer(`${option.id}: ${option.label}`)}
             className="border px-3 py-3 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           >
             <span className="block font-medium">{option.label}</span>
-            <span className="mt-1 block text-muted-foreground">{option.effect}</span>
           </button>
         ))}
       </div>
@@ -832,6 +841,10 @@ function QualityChecklist({
       ok:
         checks?.hasBoundaries ??
         spec.intentFrame.workflow.failClosedRules.length + spec.intentFrame.nonGoals.length > 0,
+    },
+    {
+      label: copy.qualityCriteria,
+      ok: checks?.hasQualityBar ?? spec.intentFrame.successCriteria.length > 0,
     },
   ];
   return (
@@ -979,8 +992,10 @@ interface Copy {
   qualityWorkflow: string;
   qualityOutput: string;
   qualityBoundaries: string;
+  qualityCriteria: string;
   planInstall: string;
   done: string;
+  installFailed: string;
   openLibrary: string;
   createAnother: string;
   created: string;
@@ -1042,8 +1057,10 @@ const zhCopy: Copy = {
   qualityWorkflow: '执行指导清楚',
   qualityOutput: '产物定义明确',
   qualityBoundaries: '边界清楚',
+  qualityCriteria: '质量 / 验收标准明确',
   planInstall: '创建安装计划',
   done: '技能已写入并重新扫描纳管。',
+  installFailed: '技能写入未完成，请查看安装计划里的失败项。',
   openLibrary: '在资源库查看',
   createAnother: '继续创造',
   created: '创造技能已完成',
@@ -1112,8 +1129,10 @@ const enCopy: Copy = {
   qualityWorkflow: 'Executable guidance is clear',
   qualityOutput: 'Output is defined',
   qualityBoundaries: 'Boundaries are clear',
+  qualityCriteria: 'Quality / acceptance criteria are explicit',
   planInstall: 'Create install plan',
   done: 'Skill was written, scanned, and added to the library.',
+  installFailed: 'Skill install did not finish. Check the failed items in the install plan.',
   openLibrary: 'Open in Library',
   createAnother: 'Create another',
   created: 'Create Skill completed',

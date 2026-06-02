@@ -706,6 +706,7 @@ function invoke(command, payload = {}) {
             hasWorkflow: true,
             hasOutput: true,
             hasBoundaries: true,
+            hasQualityBar: true,
             conciseBody: true,
             frontmatterOnlyNameDescription: true,
             nameMatchesBasename: true,
@@ -736,6 +737,7 @@ function invoke(command, payload = {}) {
             hasWorkflow: true,
             hasOutput: true,
             hasBoundaries: true,
+            hasQualityBar: true,
             conciseBody: true,
             frontmatterOnlyNameDescription: true,
             nameMatchesBasename: true,
@@ -1098,7 +1100,11 @@ try {
   setTextareaBySmokeAction('create-skill-input', 'Create a PR review checklist skill.');
   clickButton('Generate outline');
   await waitFor('create skill outline', () => text().includes('Directory / skill name') && text().includes('ui-smoke-created-skill'));
-  clickButton('Generate draft now');
+  clickButton('Continue questions');
+  await waitFor('create skill question', () => text().includes('How cautious should it be before taking action?'));
+  clickButton('Confirm writes');
+  await waitFor('create skill questions done', () => text().includes('Key questions are answered. Generate the draft next.'));
+  clickButton('Generate SKILL.md');
   await waitFor('create skill draft', () => text().includes('SKILL.md') && text().includes('Local safety checks passed'));
   clickButton('Review draft');
   await waitFor('create skill review', () => text().includes('Local safety checks passed'));

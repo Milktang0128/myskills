@@ -462,6 +462,7 @@ export interface CreateSkillReviewReport {
     hasWorkflow: boolean;
     hasOutput: boolean;
     hasBoundaries: boolean;
+    hasQualityBar: boolean;
     conciseBody: boolean;
     frontmatterOnlyNameDescription: boolean;
     nameMatchesBasename: boolean;
