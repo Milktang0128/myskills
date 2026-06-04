@@ -647,3 +647,15 @@ export interface LibraryOverviewSnapshot {
   /** Current set hash; UI uses this to decide whether to show "Refresh". */
   currentSetHash: string;
 }
+
+/**
+ * Generated paste-ready note for a future agent. This is intentionally
+ * separate from Library Overview: it describes local skill-library facts and
+ * usage rules, not thematic clusters.
+ */
+export interface LibraryBriefingResult {
+  text: string;
+  generatedAt: number;
+  model: string;
+  language: 'zh' | 'en';
+}

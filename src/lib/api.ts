@@ -15,6 +15,7 @@ import type {
   CreateFromClusterResult,
   LibraryOverview,
   LibraryOverviewSnapshot,
+  LibraryBriefingResult,
   LlmChatRequest,
   LlmChatResponse,
   LlmConfig,
@@ -246,6 +247,9 @@ export const api = {
     /** Run the LLM, replace the cache, return the fresh overview. */
     libraryOverviewGenerate: (language: 'zh' | 'en') =>
       bridge().invoke(IPC.ai.libraryOverviewGenerate, { language }) as Promise<LibraryOverview>,
+    /** Generate a concise agent-facing note about the current skill library. */
+    libraryBriefingGenerate: (language: 'zh' | 'en') =>
+      bridge().invoke(IPC.ai.libraryBriefingGenerate, { language }) as Promise<LibraryBriefingResult>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>
