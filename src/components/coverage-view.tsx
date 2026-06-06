@@ -10,13 +10,18 @@ import {
   Zap,
   Crown,
   Upload,
-  ArrowUpDown,
+  ChevronDown,
   HelpCircle,
   Globe,
   Settings as SettingsIcon,
   RefreshCw,
+  FolderOpen,
+  Copy,
+  ArrowUpToLine,
+  Replace,
 } from 'lucide-react';
 import type {
+  CoverageCell,
   CoverageDrift,
   CoverageFilter,
   CoverageMatrix,
@@ -100,6 +105,18 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     if (!bridgeReady) return;
     setMatrix(await api.coverage.matrix());
   };
+
+  async function presentPlan(plan: SyncPlan) {
+    if (plan.items.length > 0 && plan.items.every((item) => item.action === 'skip')) {
+      await api.scan.run();
+      await refresh();
+      onMutated?.();
+      onToast(t('matrix.toast.alreadyCurrent'));
+      return;
+    }
+    setPendingPlan(plan);
+    setPlanOpen(true);
+  }
 
   useEffect(() => {
     refresh();
@@ -217,8 +234,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
       const plan = await api.sync.planFromCanonical([
         { skillId: row.skillId, targetPlatformIds: targets },
       ]);
-      setPendingPlan(plan);
-      setPlanOpen(true);
+      await presentPlan(plan);
     } finally {
       setBusy(false);
     }
@@ -227,12 +243,64 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     setBusy(true);
     try {
       const plan = await api.sync.planPromote([{ skillId: row.skillId }]);
-      setPendingPlan(plan);
-      setPlanOpen(true);
+      await presentPlan(plan);
     } finally {
       setBusy(false);
     }
   }
+
+  async function handleOpenCellLocation(cell: CoverageCell) {
+    if (!cell.locationId) return;
+    await api.skills.openLocation(cell.locationId, 'install');
+  }
+
+  async function handleCopyCellPath(cell: CoverageCell) {
+    if (!cell.locationId) return;
+    await api.skills.copyLocationPath(cell.locationId, 'install');
+    onToast(t('matrix.cellMenu.copied'));
+  }
+
+  async function handleMoveCellToCanonical(row: CoverageRow, platformId: string) {
+    if (!matrix) return;
+    const sourceLocationId = promoteSourceLocationId(row, platformId, matrix);
+    setBusy(true);
+    try {
+      const plan = await api.sync.planPromote([
+        sourceLocationId
+          ? { skillId: row.skillId, sourceLocationId }
+          : { skillId: row.skillId },
+      ]);
+      await presentPlan(plan);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSetCellAsCopy(row: CoverageRow, platformId: string, forceReplace = false) {
+    setBusy(true);
+    try {
+      const plan = await api.sync.planFromCanonical([
+        { skillId: row.skillId, targetPlatformIds: [platformId], forceReplace },
+      ]);
+      await presentPlan(plan);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDisableCell(row: CoverageRow, cell: CoverageCell) {
+    if (!cell.locationId) return;
+    setBusy(true);
+    try {
+      const plan = await api.sync.planToggleDisabled([
+        { skillId: row.skillId, locationId: cell.locationId, disable: true },
+      ]);
+      await presentPlan(plan);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSyncAllGaps() {
     if (!matrix) return;
     setBusy(true);
@@ -250,8 +318,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         }))
         .filter((r) => (r.targetPlatformIds?.length ?? 0) > 0);
       const plan = await api.sync.planFromCanonical(requests);
-      setPendingPlan(plan);
-      setPlanOpen(true);
+      await presentPlan(plan);
     } finally {
       setBusy(false);
     }
@@ -263,8 +330,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         .filter((r) => !r.hasCanonicalSource)
         .map((r) => ({ skillId: r.skillId }));
       const plan = await api.sync.planPromote(requests);
-      setPendingPlan(plan);
-      setPlanOpen(true);
+      await presentPlan(plan);
     } finally {
       setBusy(false);
     }
@@ -338,18 +404,18 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         </div>
         <div className="flex items-center gap-2">
           <div className="relative inline-flex items-center">
-            <ArrowUpDown className="pointer-events-none absolute left-1.5 h-3 w-3 text-muted-foreground" />
             <select
               value={sort}
               onChange={(e) => setSort(e.target.value as CoverageSort)}
               aria-label={t('matrix.sort.label')}
               title={t('matrix.sort.tooltip')}
-              className="rounded border border-input bg-background pl-6 pr-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="h-8 appearance-none rounded border border-input bg-background py-0.5 pl-3 pr-8 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
             >
               <option value="unsynced">{t('matrix.sort.unsynced')}</option>
               <option value="updated">{t('matrix.sort.updated')}</option>
               <option value="name">{t('matrix.sort.name')}</option>
             </select>
+            <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-muted-foreground" />
           </div>
           {orphanTotal > 0 && (
             <Button
@@ -358,27 +424,33 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
               onClick={handlePromoteAll}
               disabled={busy}
               title={t('matrix.bulk.promote.title')}
+              className="gap-1.5"
             >
-              <Upload className="mr-1.5 h-3.5 w-3.5" />
-              {orphanTotal === 1
-                ? t('matrix.bulk.promote', { count: orphanTotal })
-                : t('matrix.bulk.promotePlural', { count: orphanTotal })}
+              <Upload className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0">
+                {orphanTotal === 1
+                  ? t('matrix.bulk.promote', { count: orphanTotal })
+                  : t('matrix.bulk.promotePlural', { count: orphanTotal })}
+              </span>
             </Button>
           )}
           <Button
             size="sm"
             onClick={handleSyncAllGaps}
             disabled={busy || syncableTotal === 0}
+            className="gap-1.5"
             title={
               syncableTotal === 0
                 ? t('matrix.bulk.sync.titleNone')
                 : t('matrix.bulk.sync.title')
             }
           >
-            <Zap className="mr-1.5 h-3.5 w-3.5" />
-            {syncableTotal === 1
-              ? t('matrix.bulk.sync', { count: syncableTotal })
-              : t('matrix.bulk.syncPlural', { count: syncableTotal })}
+            <Zap className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0">
+              {syncableTotal === 1
+                ? t('matrix.bulk.sync', { count: syncableTotal })
+                : t('matrix.bulk.syncPlural', { count: syncableTotal })}
+            </span>
           </Button>
         </div>
       </div>
@@ -391,6 +463,11 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             selectedSkillId={selectedSkillId}
             onSyncRow={handleSyncRow}
             onPromoteRow={handlePromoteRow}
+            onOpenCellLocation={handleOpenCellLocation}
+            onCopyCellPath={handleCopyCellPath}
+            onMoveCellToCanonical={handleMoveCellToCanonical}
+            onSetCellAsCopy={handleSetCellAsCopy}
+            onDisableCell={handleDisableCell}
             onSelectRow={onSelectSkill}
             busy={busy}
             onOpenSettings={onOpenSettings}
@@ -416,6 +493,11 @@ function Table({
   selectedSkillId,
   onSyncRow,
   onPromoteRow,
+  onOpenCellLocation,
+  onCopyCellPath,
+  onMoveCellToCanonical,
+  onSetCellAsCopy,
+  onDisableCell,
   onSelectRow,
   busy,
   onOpenSettings,
@@ -425,11 +507,23 @@ function Table({
   selectedSkillId: string | null;
   onSyncRow: (r: CoverageRow) => void;
   onPromoteRow: (r: CoverageRow) => void;
+  onOpenCellLocation: (cell: CoverageCell) => void;
+  onCopyCellPath: (cell: CoverageCell) => void;
+  onMoveCellToCanonical: (row: CoverageRow, platformId: string) => void;
+  onSetCellAsCopy: (row: CoverageRow, platformId: string, forceReplace?: boolean) => void;
+  onDisableCell: (row: CoverageRow, cell: CoverageCell) => void;
   onSelectRow: (id: string) => void;
   busy: boolean;
   onOpenSettings: () => void;
 }) {
   const t = useT();
+  const [openCellKey, setOpenCellKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!openCellKey) return;
+    const close = () => setOpenCellKey(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [openCellKey]);
   if (!matrix) {
     return <div className="p-6 text-sm text-muted-foreground">{t('matrix.loading')}</div>;
   }
@@ -484,6 +578,10 @@ function Table({
           const isOrphan = !row.hasCanonicalSource;
           const canSync = row.hasCanonicalSource && (gapCount > 0 || staleCount > 0);
           const isSelected = selectedSkillId === row.skillId;
+          const syncedOutsideMain =
+            row.hasCanonicalSource &&
+            !canSync &&
+            row.cells[matrix.canonicalPlatform]?.state === 'symlink';
 
           let actionNode: React.ReactNode;
           if (isOrphan) {
@@ -517,7 +615,11 @@ function Table({
               </Button>
             );
           } else {
-            actionNode = <span className="text-[11px] text-emerald-600">{t('matrix.action.inSync')}</span>;
+            actionNode = (
+              <span className={cn('text-[11px]', syncedOutsideMain ? 'text-amber-700' : 'text-emerald-600')}>
+                {syncedOutsideMain ? t('matrix.action.syncedOutsideMain') : t('matrix.action.inSync')}
+              </span>
+            );
           }
 
           return (
@@ -544,16 +646,10 @@ function Table({
               </td>
               {matrix.platforms.map((p) => {
                 const cell = row.cells[p];
+                const cellKey = `${row.skillId}:${p}`;
                 return (
                   <td
                     key={p}
-                    // Cells are passive status indicators (display + hover
-                    // tooltip via CellGlyph's title attr). Don't propagate
-                    // clicks to the row — clicking on a glyph shouldn't
-                    // count as "I want to see this skill's detail". The
-                    // natural click target for that is the skill-name cell
-                    // on the left. cursor-default neutralizes the row-level
-                    // cursor-pointer so the visual matches the behavior.
                     onClick={(e) => e.stopPropagation()}
                     className={cn(
                       'cursor-default px-3 py-2 text-center',
@@ -566,10 +662,19 @@ function Table({
                         'bg-amber-50/60 dark:bg-amber-900/15 border-x border-amber-200/60 dark:border-amber-800/30',
                     )}
                   >
-                    <CellGlyph
-                      state={cell?.state ?? 'missing'}
-                      drift={cell?.drift}
-                      isCanonical={p === matrix.canonicalPlatform}
+                    <CellActionMenu
+                      row={row}
+                      platformId={p}
+                      matrix={matrix}
+                      cell={cell}
+                      open={openCellKey === cellKey}
+                      busy={busy}
+                      onOpenChange={(open) => setOpenCellKey(open ? cellKey : null)}
+                      onOpenLocation={onOpenCellLocation}
+                      onCopyPath={onCopyCellPath}
+                      onMoveToCanonical={onMoveCellToCanonical}
+                      onSetAsCopy={onSetCellAsCopy}
+                      onDisable={onDisableCell}
                     />
                   </td>
                 );
@@ -623,6 +728,159 @@ function CellGlyph({
   }
 }
 
+function CellActionMenu({
+  row,
+  platformId,
+  matrix,
+  cell,
+  open,
+  busy,
+  onOpenChange,
+  onOpenLocation,
+  onCopyPath,
+  onMoveToCanonical,
+  onSetAsCopy,
+  onDisable,
+}: {
+  row: CoverageRow;
+  platformId: string;
+  matrix: CoverageMatrix;
+  cell: CoverageCell | undefined;
+  open: boolean;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onOpenLocation: (cell: CoverageCell) => void;
+  onCopyPath: (cell: CoverageCell) => void;
+  onMoveToCanonical: (row: CoverageRow, platformId: string) => void;
+  onSetAsCopy: (row: CoverageRow, platformId: string, forceReplace?: boolean) => void;
+  onDisable: (row: CoverageRow, cell: CoverageCell) => void;
+}) {
+  const t = useT();
+  const state = cell?.state ?? 'missing';
+  const isCanonical = platformId === matrix.canonicalPlatform;
+  const canonicalCell = row.cells[matrix.canonicalPlatform];
+  const canonicalHasRealSource = canonicalCell?.state === 'present';
+  const hasLocation = Boolean(cell?.locationId);
+  const label = describeCell(state, cell?.drift, isCanonical, t);
+  const canMoveToCanonical = Boolean(promoteSourceLocationId(row, platformId, matrix));
+  const canReplace =
+    !isCanonical &&
+    row.hasCanonicalSource &&
+    hasLocation &&
+    (cell?.drift === 'stale' || state === 'broken' || state === 'symlink_other');
+  const canSetAsCopy =
+    !isCanonical &&
+    row.hasCanonicalSource &&
+    canonicalHasRealSource &&
+    hasLocation &&
+    state === 'present' &&
+    cell?.drift !== 'stale';
+  const canDisable = hasLocation && state !== 'missing' && state !== 'disabled';
+  const hasWriteAction = canMoveToCanonical || canReplace || canSetAsCopy || canDisable;
+
+  async function run(action: () => void | Promise<void>) {
+    onOpenChange(false);
+    await action();
+  }
+
+  return (
+    <span className={cn('relative inline-flex', open && 'z-50')}>
+      <button
+        type="button"
+        disabled={state === 'missing' || busy}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (state !== 'missing') onOpenChange(!open);
+        }}
+        title={label}
+        aria-label={label}
+        className={cn(
+          'inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-transparent px-1',
+          'hover:border-border hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+          'disabled:cursor-default disabled:opacity-100 disabled:hover:border-transparent disabled:hover:bg-transparent',
+        )}
+      >
+        <CellGlyph state={state} drift={cell?.drift} isCanonical={isCanonical} />
+      </button>
+      {open && cell && (
+        <span
+          role="menu"
+          className="absolute left-1/2 top-full z-[100] mt-1 w-44 -translate-x-1/2 border border-border bg-white p-1 text-left text-xs text-foreground shadow-2xl ring-1 ring-black/5 dark:bg-zinc-900 dark:text-zinc-50 dark:ring-white/10"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <CellMenuButton
+            icon={<FolderOpen className="h-3.5 w-3.5" />}
+            label={t('matrix.cellMenu.open')}
+            onClick={() => run(() => onOpenLocation(cell))}
+          />
+          <CellMenuButton
+            icon={<Copy className="h-3.5 w-3.5" />}
+            label={t('matrix.cellMenu.copy')}
+            onClick={() => run(() => onCopyPath(cell))}
+          />
+          {hasWriteAction && <span className="my-1 block h-px bg-border" />}
+          {canMoveToCanonical && (
+            <CellMenuButton
+              icon={<ArrowUpToLine className="h-3.5 w-3.5" />}
+              label={t('matrix.cellMenu.moveToMain')}
+              onClick={() => run(() => onMoveToCanonical(row, platformId))}
+            />
+          )}
+          {canSetAsCopy && (
+            <CellMenuButton
+              icon={<Link2 className="h-3.5 w-3.5" />}
+              label={t('matrix.cellMenu.setAsCopy')}
+              onClick={() => run(() => onSetAsCopy(row, platformId, true))}
+            />
+          )}
+          {canReplace && (
+            <CellMenuButton
+              icon={<Replace className="h-3.5 w-3.5" />}
+              label={t('matrix.cellMenu.replaceOld')}
+              onClick={() => run(() => onSetAsCopy(row, platformId))}
+            />
+          )}
+          {canDisable && (
+            <CellMenuButton
+              icon={<EyeOff className="h-3.5 w-3.5" />}
+              label={t('matrix.cellMenu.disable')}
+              danger
+              onClick={() => run(() => onDisable(row, cell))}
+            />
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function CellMenuButton({
+  icon,
+  label,
+  danger = false,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className={cn(
+        'flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        danger && 'text-destructive hover:text-destructive',
+      )}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
 function describeCell(
   state: CoverageCellState,
   drift: CoverageDrift | undefined,
@@ -647,6 +905,38 @@ function describeCell(
     default:
       return t('matrix.cell.missing');
   }
+}
+
+function promoteSourceLocationId(
+  row: CoverageRow,
+  platformId: string,
+  matrix: CoverageMatrix,
+): number | undefined {
+  const canonicalCell = row.cells[matrix.canonicalPlatform];
+  if (canonicalCell?.state === 'present') return undefined;
+
+  const cell = row.cells[platformId];
+  if (!cell || cell.state === 'missing' || cell.state === 'disabled') return undefined;
+
+  if (platformId !== matrix.canonicalPlatform && cell.locationId) {
+    return cell.locationId;
+  }
+
+  if (platformId === matrix.canonicalPlatform && cell.realPath) {
+    const owner = matrix.platforms
+      .filter((p) => p !== matrix.canonicalPlatform)
+      .map((p) => row.cells[p])
+      .find(
+        (candidate) =>
+          candidate?.locationId &&
+          candidate.state !== 'missing' &&
+          candidate.state !== 'disabled' &&
+          candidate.realPath === cell.realPath,
+      );
+    return owner?.locationId;
+  }
+
+  return undefined;
 }
 
 function Legend() {

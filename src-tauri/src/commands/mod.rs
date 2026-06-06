@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use arboard::Clipboard;
@@ -10,19 +10,167 @@ use serde_json::Map;
 use serde_json::{json, Value};
 use sha2::Digest;
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use crate::db::now_ms;
 use crate::error::{AppError, AppResult};
 use crate::migration;
+use crate::paths::AppPaths;
 use crate::scanner;
 use crate::scanner::parser::load_skill_body;
-use crate::state::{AppState, StoredPlan};
+use crate::secret_vault;
+use crate::state::{AiJob, AppState, StoredPlan};
 
 fn conn(
     state: &State<'_, AppState>,
 ) -> AppResult<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>> {
     Ok(state.db.get()?)
+}
+
+fn ai_job_to_value(job: &AiJob) -> Value {
+    json!({
+        "jobId": job.id,
+        "kind": job.kind,
+        "key": job.key,
+        "status": job.status,
+        "createdAt": job.created_at,
+        "updatedAt": job.updated_at,
+        "result": job.result,
+        "error": job.error
+    })
+}
+
+fn ai_job_error_value(err: AppError) -> Value {
+    json!({
+        "code": err.code,
+        "message": err.message,
+        "detail": err.detail
+    })
+}
+
+fn ai_find_active_job(
+    jobs: &Arc<Mutex<std::collections::HashMap<String, AiJob>>>,
+    kind: &str,
+    key: &str,
+) -> Option<Value> {
+    let jobs = jobs.lock().ok()?;
+    jobs.values()
+        .filter(|job| {
+            job.kind == kind
+                && job.key == key
+                && matches!(job.status.as_str(), "queued" | "running")
+        })
+        .max_by_key(|job| job.created_at)
+        .map(ai_job_to_value)
+}
+
+fn ai_spawn_job<F>(state: &State<'_, AppState>, kind: &str, key: &str, run: F) -> AppResult<Value>
+where
+    F: FnOnce() -> AppResult<Value> + Send + 'static,
+{
+    if let Some(job) = ai_find_active_job(&state.ai_jobs, kind, key) {
+        return Ok(job);
+    }
+
+    let now = now_ms();
+    let job = AiJob {
+        id: Uuid::new_v4().to_string(),
+        kind: kind.to_string(),
+        key: key.to_string(),
+        status: "queued".to_string(),
+        created_at: now,
+        updated_at: now,
+        result: None,
+        error: None,
+    };
+    let job_id = job.id.clone();
+    {
+        let mut jobs = state
+            .ai_jobs
+            .lock()
+            .map_err(|_| AppError::new("AI_JOB_STORE_FAILED", "AI job store is unavailable."))?;
+        jobs.insert(job_id.clone(), job.clone());
+    }
+
+    let jobs = Arc::clone(&state.ai_jobs);
+    std::thread::spawn(move || {
+        ai_update_job(&jobs, &job_id, "running", None, None);
+        match run() {
+            Ok(result) => ai_update_job(&jobs, &job_id, "succeeded", Some(result), None),
+            Err(err) => ai_update_job(
+                &jobs,
+                &job_id,
+                "failed",
+                None,
+                Some(ai_job_error_value(err)),
+            ),
+        }
+    });
+
+    Ok(ai_job_to_value(&job))
+}
+
+fn ai_update_job(
+    jobs: &Arc<Mutex<std::collections::HashMap<String, AiJob>>>,
+    job_id: &str,
+    status: &str,
+    result: Option<Value>,
+    error: Option<Value>,
+) {
+    if let Ok(mut jobs) = jobs.lock() {
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.status = status.to_string();
+            job.updated_at = now_ms();
+            job.result = result;
+            job.error = error;
+        }
+        if jobs.len() > 50 {
+            let mut completed = jobs
+                .values()
+                .filter(|job| matches!(job.status.as_str(), "succeeded" | "failed"))
+                .map(|job| (job.id.clone(), job.updated_at))
+                .collect::<Vec<_>>();
+            completed.sort_by_key(|(_, updated_at)| *updated_at);
+            let drop_count = jobs.len().saturating_sub(50);
+            for (id, _) in completed.into_iter().take(drop_count) {
+                jobs.remove(&id);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn ai_job_get(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let job_id = required_str(&payload, "jobId")?;
+    let jobs = state
+        .ai_jobs
+        .lock()
+        .map_err(|_| AppError::new("AI_JOB_STORE_FAILED", "AI job store is unavailable."))?;
+    let job = jobs
+        .get(job_id)
+        .ok_or_else(|| AppError::new("AI_JOB_NOT_FOUND", "AI job not found."))?;
+    Ok(ai_job_to_value(job))
+}
+
+#[tauri::command]
+pub fn ai_job_latest(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let kind = required_str(&payload, "kind")?;
+    let key = payload
+        .as_ref()
+        .and_then(|p| p.get("key"))
+        .and_then(Value::as_str);
+    let jobs = state
+        .ai_jobs
+        .lock()
+        .map_err(|_| AppError::new("AI_JOB_STORE_FAILED", "AI job store is unavailable."))?;
+    let job = jobs
+        .values()
+        .filter(|job| job.kind == kind && key.is_none_or(|key| job.key == key))
+        .max_by_key(|job| job.created_at)
+        .map(ai_job_to_value)
+        .unwrap_or(Value::Null);
+    Ok(job)
 }
 
 fn required_str<'a>(payload: &'a Option<Value>, key: &str) -> AppResult<&'a str> {
@@ -226,6 +374,47 @@ pub fn platforms_probe(payload: Option<Value>, state: State<'_, AppState>) -> Ap
         "alreadyRegistered": registered.is_some(),
         "registeredAs": registered.map(|r| r.0),
     }))
+}
+
+#[tauri::command]
+pub async fn platforms_pick_dir(payload: Option<Value>, app: AppHandle) -> AppResult<Value> {
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Select skills folder")
+        .set_can_create_directories(true);
+
+    if let Some(start_dir) = payload
+        .as_ref()
+        .and_then(|p| p.get("startDir"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let start = PathBuf::from(expand_home(start_dir));
+        let dir = if start.is_dir() {
+            Some(start)
+        } else {
+            start
+                .parent()
+                .filter(|parent| parent.is_dir())
+                .map(Path::to_path_buf)
+        };
+        if let Some(dir) = dir {
+            dialog = dialog.set_directory(dir);
+        }
+    }
+
+    let selected = dialog
+        .blocking_pick_folder()
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().to_string())
+                .map_err(|err| AppError::new("PICK_DIR_FAILED", err.to_string()))
+        })
+        .transpose()?;
+
+    Ok(json!({ "path": selected }))
 }
 
 #[tauri::command]
@@ -512,10 +701,16 @@ pub fn skills_open_location(
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
     let db = conn(&state)?;
-    let path = location_action_path(&db, &payload)?;
-    tauri_plugin_opener::open_path(path.clone(), None::<&str>).map_err(|err| {
-        AppError::detail("OPEN_PATH_FAILED", err.to_string(), json!({ "path": path }))
-    })?;
+    let (path, kind) = location_action(&db, &payload)?;
+    if kind == "target" {
+        tauri_plugin_opener::open_path(path.clone(), None::<&str>).map_err(|err| {
+            AppError::detail("OPEN_PATH_FAILED", err.to_string(), json!({ "path": path }))
+        })?;
+    } else {
+        tauri_plugin_opener::reveal_item_in_dir(Path::new(&path)).map_err(|err| {
+            AppError::detail("OPEN_PATH_FAILED", err.to_string(), json!({ "path": path }))
+        })?;
+    }
     Ok(json!({ "ok": true, "path": path }))
 }
 
@@ -1042,9 +1237,15 @@ pub(crate) fn coverage_matrix_response(db: &Connection) -> AppResult<Value> {
             .iter()
             .find(|loc| loc.platform_id == canonical && !loc.is_disabled);
         let canonical_hash = canonical_loc.and_then(|loc| loc.content_hash.clone());
+        let canonical_real_path = canonical_loc.map(|loc| loc.real_path.clone());
         let has_canonical_source = canonical_loc.is_some();
         for loc in locs {
-            let state = cell_state_for(&loc, &real_path_owner, &canonical);
+            let state = cell_state_for(
+                &loc,
+                &real_path_owner,
+                &canonical,
+                canonical_real_path.as_deref(),
+            );
             let mut cell = json!({
                 "state": state,
                 "locationId": loc.id,
@@ -1052,7 +1253,7 @@ pub(crate) fn coverage_matrix_response(db: &Connection) -> AppResult<Value> {
                 "realPath": loc.real_path,
                 "contentHash": loc.content_hash,
                 "mtime": loc.mtime,
-                "drift": drift_for(&loc, state, &canonical, canonical_hash.as_deref(), has_canonical_source),
+                "drift": drift_for(&loc, state, &canonical, canonical_hash.as_deref(), canonical_real_path.as_deref(), has_canonical_source),
             });
             if (state == "symlink" || state == "symlink_other")
                 && real_path_owner.contains_key(cell["realPath"].as_str().unwrap_or_default())
@@ -1126,6 +1327,10 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| platform_ids.clone());
+        let force_replace = req
+            .get("forceReplace")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         for target_id in target_ids
             .into_iter()
             .filter(|id| id != &canonical)
@@ -1141,7 +1346,7 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
                 target_platform_id: &target_id,
                 target_platform_dir: &target_platform.skills_dir,
                 op_group_id: &op_group_id,
-                override_action: None,
+                override_action: force_replace.then_some("symlink_replace"),
             }));
         }
     }
@@ -2872,8 +3077,10 @@ fn path_size(path: &Path) -> i64 {
 mod tests {
     use super::*;
     use std::collections::{HashMap, VecDeque};
-    use std::sync::{atomic::AtomicBool, Arc, Mutex};
+    use std::sync::{atomic::AtomicBool, Arc, Mutex, OnceLock};
     use tauri::Manager;
+
+    static CREATE_SKILL_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn history_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -3123,12 +3330,108 @@ mod tests {
             sync_lock: Mutex::new(()),
             ai_queue: Arc::new(Mutex::new(VecDeque::new())),
             ai_worker_running: Arc::new(AtomicBool::new(false)),
+            ai_jobs: Arc::new(Mutex::new(HashMap::new())),
         };
         let app = tauri::test::mock_builder()
             .manage(state)
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app");
         (app, root)
+    }
+
+    fn configure_create_skill_mock_llm(state: State<'_, AppState>) {
+        let db = state.db.get().expect("db conn");
+        for (key, value) in [
+            ("allow_external_network", "1"),
+            ("llm.provider", "ollama"),
+            ("llm.model", "mock-create-skill"),
+            (LLM_CONNECTION_OK_SETTING, "1"),
+        ] {
+            db.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .expect("mock llm setting");
+        }
+    }
+
+    fn with_create_skill_mock_responses<T>(
+        start_response: Option<&str>,
+        generate_response: Option<&str>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let lock = CREATE_SKILL_ENV_LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().expect("create skill env lock");
+        if let Some(response) = start_response {
+            std::env::set_var("MYSKILLS_CREATE_SKILL_START_RESPONSE", response);
+        } else {
+            std::env::remove_var("MYSKILLS_CREATE_SKILL_START_RESPONSE");
+        }
+        if let Some(response) = generate_response {
+            std::env::set_var("MYSKILLS_CREATE_SKILL_GENERATE_RESPONSE", response);
+        } else {
+            std::env::remove_var("MYSKILLS_CREATE_SKILL_GENERATE_RESPONSE");
+        }
+        let result = f();
+        std::env::remove_var("MYSKILLS_CREATE_SKILL_START_RESPONSE");
+        std::env::remove_var("MYSKILLS_CREATE_SKILL_GENERATE_RESPONSE");
+        result
+    }
+
+    fn create_skill_mock_start_response(prompt: &str) -> String {
+        json!({
+            "schemaVersion": "create-skill.v1",
+            "command": "start",
+            "status": "intent_draft",
+            "skillSpec": {
+                "name": "release-risk-review",
+                "description": "当用户需要审查 Tauri 桌面发布风险、CI 结果和安装包验证路径时使用。",
+                "language": "zh",
+                "intentFrame": {
+                    "userJob": prompt,
+                    "triggerContext": "用户提供发布说明、CI 结果、安装包路径或待发布变更，希望得到发布风险判断。",
+                    "inputContract": {
+                        "acceptedInputs": ["发布说明", "CI 结果", "安装包路径", "变更摘要"],
+                        "privacyClass": "local_only"
+                    },
+                    "outputContract": { "artifactType": "checklist", "destination": "reply_only" },
+                    "workflow": {
+                        "steps": ["核对发布范围和平台差异。", "检查 CI、签名、安装包和更新机制风险。", "输出阻断项、警告项和下一步验证清单。"],
+                        "failClosedRules": ["缺少安装包路径时先追问。", "不得假设签名或 notarization 已完成。"]
+                    },
+                    "stylePreferences": ["直接", "按风险分层"],
+                    "nonGoals": ["不直接发布版本"],
+                    "successCriteria": ["阻断项明确", "每个风险都有下一步验证动作"]
+                },
+                "needsNetwork": false,
+                "writesFiles": false,
+                "overwritePolicy": "never",
+                "ready": false,
+                "missing": ["strictness"]
+            },
+            "questions": [
+                {
+                    "id": "strictness",
+                    "question": "发布前遇到不确定项时如何处理？",
+                    "options": [
+                        { "id": "confirm", "label": "阻断并确认", "effect": "strictness=confirm" },
+                        { "id": "advisory_only", "label": "只提示风险", "effect": "strictness=advisory_only" }
+                    ],
+                    "allowFreeform": true
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    fn create_skill_mock_generate_response() -> String {
+        json!({
+            "schemaVersion": "create-skill.v1",
+            "command": "generate",
+            "draftMarkdown": "---\nname: release-risk-review\ndescription: 当用户需要审查 Tauri 桌面发布风险、CI 结果和安装包验证路径时使用。\n---\n\n# release-risk-review\n\n## 输入\n\n- 发布说明\n- CI 结果\n- 安装包路径\n\n## 工作流\n\n1. 核对发布范围和三端差异。\n2. 检查 CI、签名、安装包和更新机制。\n3. 输出阻断项、警告项和下一步验证清单。\n\n## 输出\n\n- 发布风险 checklist\n\n## 边界\n\n- 不直接发布版本。\n- 缺少安装包路径时先追问。\n\n## 质量标准\n\n- 阻断项明确。\n- 每个风险都有验证动作。\n"
+        })
+        .to_string()
     }
 
     fn create_skill_answer(
@@ -3146,6 +3449,16 @@ mod tests {
             state,
         )
         .expect("answer question")
+    }
+
+    fn assert_create_skill_draft_count(state: State<'_, AppState>, expected: i64) {
+        let db = state.db.get().expect("db conn");
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM skill_creation_drafts", [], |row| {
+                row.get(0)
+            })
+            .expect("draft count");
+        assert_eq!(count, expected);
     }
 
     #[test]
@@ -3547,6 +3860,24 @@ mod tests {
                 .and_then(Value::as_str),
             Some("same_hash")
         );
+        let force_plan = plan_sync_from_canonical(
+            &conn,
+            &[json!({
+                "skillId": "skill-same",
+                "targetPlatformIds": ["claude"],
+                "forceReplace": true
+            })],
+        )
+        .unwrap();
+        assert_eq!(
+            force_plan
+                .get("items")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(|item| item.get("action"))
+                .and_then(Value::as_str),
+            Some("symlink_replace")
+        );
         assert_eq!(
             items
                 .iter()
@@ -3808,6 +4139,59 @@ mod tests {
     }
 
     #[test]
+    fn coverage_matrix_treats_symlink_to_canonical_real_path_as_in_sync() {
+        let conn = coverage_conn();
+        insert_coverage_skill(&conn, "skill-shared-real", "fixture-shared-real");
+        insert_coverage_location(
+            &conn,
+            "skill-shared-real",
+            "shared",
+            "/tmp/shared/fixture-shared-real",
+            "/tmp/real/fixture-shared-real",
+            true,
+            false,
+            false,
+            Some("same"),
+        );
+        insert_coverage_location(
+            &conn,
+            "skill-shared-real",
+            "claude",
+            "/tmp/claude/fixture-shared-real",
+            "/tmp/real/fixture-shared-real",
+            true,
+            false,
+            false,
+            Some("same"),
+        );
+        insert_coverage_location(
+            &conn,
+            "skill-shared-real",
+            "codex",
+            "/tmp/codex/fixture-shared-real",
+            "/tmp/real/fixture-shared-real",
+            true,
+            false,
+            false,
+            Some("same"),
+        );
+
+        let matrix = coverage_matrix_response(&conn).unwrap();
+        let rows = matrix.get("rows").and_then(Value::as_array).unwrap();
+        let row = rows
+            .iter()
+            .find(|row| row.get("skillId").and_then(Value::as_str) == Some("skill-shared-real"))
+            .unwrap();
+
+        assert_eq!(row["cells"]["shared"]["state"].as_str(), Some("symlink"));
+        assert_eq!(row["cells"]["claude"]["state"].as_str(), Some("symlink"));
+        assert_eq!(row["cells"]["codex"]["state"].as_str(), Some("symlink"));
+        assert_eq!(row["cells"]["claude"]["drift"].as_str(), Some("in_sync"));
+        assert_eq!(row["cells"]["codex"]["drift"].as_str(), Some("in_sync"));
+        assert_eq!(row["hasDrift"].as_bool(), Some(false));
+    }
+
+    #[test]
     fn scenarios_export_import_round_trips_skill_links() {
         let mut conn = coverage_conn();
         insert_coverage_skill(&conn, "skill-1", "fixture-in-sync");
@@ -3913,6 +4297,8 @@ mod tests {
     #[test]
     fn llm_config_response_never_returns_legacy_api_key_secret() {
         let conn = settings_conn();
+        let paths = crate::paths::AppPaths::new(temp_dir("llm-legacy-secret").join("app-data"))
+            .expect("app paths");
         conn.execute_batch(
             r#"
             INSERT INTO settings (key, value) VALUES
@@ -3924,7 +4310,7 @@ mod tests {
         )
         .unwrap();
 
-        let response = llm_config_response(&conn).unwrap();
+        let response = llm_config_response(&conn, &paths).unwrap();
 
         assert_eq!(
             response.get("hasApiKey").and_then(Value::as_bool),
@@ -3933,6 +4319,58 @@ mod tests {
         assert!(response.get("apiKey").is_none());
         assert!(response.get("key").is_none());
         assert!(!response.to_string().contains("plaintext-legacy-secret"));
+    }
+
+    #[test]
+    fn llm_config_response_requires_vault_record_not_stale_marker() {
+        let conn = settings_conn();
+        let paths = crate::paths::AppPaths::new(temp_dir("llm-stale-marker").join("app-data"))
+            .expect("app paths");
+        conn.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES
+              ('llm.provider', 'deepseek'),
+              ('llm.model', 'deepseek-v4-flash'),
+              ('llm.apiKeyStored', '1');
+            "#,
+        )
+        .unwrap();
+
+        let response = llm_config_response(&conn, &paths).unwrap();
+
+        assert_eq!(
+            response.get("hasApiKey").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(response.get("apiKey").is_none());
+        assert!(response.get("key").is_none());
+    }
+
+    #[test]
+    fn llm_config_response_uses_encrypted_vault_record() {
+        let conn = settings_conn();
+        let paths = crate::paths::AppPaths::new(temp_dir("llm-vault-secret").join("app-data"))
+            .expect("app paths");
+        conn.execute_batch(
+            r#"
+            INSERT INTO settings (key, value) VALUES
+              ('llm.provider', 'deepseek'),
+              ('llm.model', 'deepseek-v4-flash'),
+              ('llm.apiKeyStored', '1');
+            "#,
+        )
+        .unwrap();
+        secret_vault::write(&paths, LLM_API_KEY_NAME, "sk-test-secret").expect("vault write");
+
+        let response = llm_config_response(&conn, &paths).unwrap();
+
+        assert_eq!(
+            response.get("hasApiKey").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(response.get("apiKey").is_none());
+        assert!(response.get("key").is_none());
+        assert!(!response.to_string().contains("sk-test-secret"));
     }
 
     #[test]
@@ -3949,7 +4387,10 @@ mod tests {
         )
         .unwrap();
 
-        match ai_queue_can_process(&conn).unwrap() {
+        let paths = crate::paths::AppPaths::new(temp_dir("ai-queue-network").join("app-data"))
+            .expect("app paths");
+
+        match ai_queue_can_process(&conn, &paths).unwrap() {
             AiQueueDecision::Wait => {}
             _ => panic!("AI queue should wait when external network is disabled"),
         }
@@ -4137,151 +4578,248 @@ mod tests {
     fn create_skill_user_simulation_generates_reviews_plans_and_installs() {
         let (app, root) = create_skill_smoke_app();
         let state = app.state::<AppState>();
+        configure_create_skill_mock_llm(state.clone());
         let prompt = "release risk review for Tauri desktop builds: 用户给我变更说明、CI 结果和安装包路径，希望得到发布风险清单、阻断项和下一步验证方案。";
+        let start_response = create_skill_mock_start_response(prompt);
+        let generate_response = create_skill_mock_generate_response();
 
-        let start = ai_create_skill_start(
-            Some(json!({
-                "prompt": prompt,
-                "language": "zh"
-            })),
-            state.clone(),
-        )
-        .expect("start draft");
-        let draft_id = start["draft"]["id"].as_str().expect("draft id");
-        let initial_spec = &start["draft"]["skillSpec"];
-        assert_eq!(start["aiUsed"].as_bool(), Some(false));
-        assert_eq!(
-            initial_spec["intentFrame"]["userJob"].as_str(),
-            Some(prompt)
-        );
-        assert_eq!(
-            start["draft"]["followupQuestions"].as_array().map(Vec::len),
-            Some(4)
-        );
-
-        create_skill_answer(state.clone(), draft_id, "target_context", "code_review");
-        create_skill_answer(state.clone(), draft_id, "input_scope", "codebase");
-        create_skill_answer(state.clone(), draft_id, "artifact", "checklist");
-        let answered = create_skill_answer(state.clone(), draft_id, "strictness", "confirm");
-        let spec = answered["draft"]["skillSpec"].clone();
-        assert_eq!(answered["draft"]["status"].as_str(), Some("spec_ready"));
-        assert_eq!(
-            spec["intentFrame"]["outputContract"]["artifactType"].as_str(),
-            Some("checklist")
-        );
-        assert_eq!(spec["overwritePolicy"].as_str(), Some("confirm_each_time"));
-
-        let generated = ai_create_skill_generate(
-            Some(json!({
-                "draftId": draft_id,
-                "skillSpec": spec
-            })),
-            state.clone(),
-        )
-        .expect("generate markdown");
-        let markdown = generated["draft"]["draftMarkdown"]
-            .as_str()
-            .expect("draft markdown");
-        let target_basename = generated["draft"]["skillSpec"]["name"]
-            .as_str()
-            .expect("generated skill name");
-        assert!(target_basename.starts_with("release-risk-review"));
-        assert!(markdown.contains(target_basename));
-        assert!(markdown.contains("## 输入"));
-        assert!(markdown.contains("## 工作流"));
-        assert!(markdown.contains("## 安全边界"));
-        assert!(markdown.contains("`checklist`"));
-        assert!(markdown.contains("确认任务框架"));
-        assert!(markdown.contains("默认产出 `checklist`"));
-        assert!(!markdown.contains("Confirm the task framing"));
-
-        let review = ai_create_skill_review(
-            Some(json!({
-                "draftId": draft_id,
-                "markdown": markdown,
-                "targetBasename": target_basename
-            })),
-            state.clone(),
-        )
-        .expect("review markdown");
-        assert_eq!(
-            review["review"]["blocking"].as_array().map(Vec::len),
-            Some(0)
-        );
-        assert_eq!(
-            review["review"]["checks"]["noSilentNetwork"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            review["review"]["checks"]["noSilentOverwrite"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            review["review"]["warnings"].as_array().map(Vec::len),
-            Some(0)
-        );
-
-        let planned = ai_create_skill_plan(
-            Some(json!({
-                "draftId": draft_id,
-                "targetBasename": target_basename,
-                "targetPlatformIds": [],
-                "targetScenarioIds": []
-            })),
-            state.clone(),
-        )
-        .expect("plan install");
-        let token = planned["plan"]["token"].as_str().expect("plan token");
-        assert_eq!(planned["plan"]["operation"].as_str(), Some("create_skill"));
-        assert_eq!(
-            planned["plan"]["items"][0]["action"].as_str(),
-            Some("copy_to_canonical")
-        );
-
-        let executed = ai_create_skill_execute(
-            Some(json!({
-                "draftId": draft_id,
-                "token": token,
-                "targetScenarioIds": []
-            })),
-            state.clone(),
-        )
-        .expect("execute install");
-        let skill_id = executed["skillId"].as_str().expect("installed skill id");
-        assert_eq!(executed["draft"]["status"].as_str(), Some("installed"));
-        assert_eq!(
-            executed["draft"]["installedSkillId"].as_str(),
-            Some(skill_id)
-        );
-
-        let installed = root.join("shared").join(target_basename).join("SKILL.md");
-        assert!(installed.exists(), "installed SKILL.md should exist");
-        let installed_markdown = fs::read_to_string(&installed).expect("installed markdown");
-        assert_eq!(installed_markdown, markdown);
-        assert!(installed_markdown.contains("发布风险清单"));
-
-        let db = state.db.get().expect("db conn");
-        let installed_count: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM skills WHERE id = ?1 AND name = ?2",
-                params![skill_id, target_basename],
-                |row| row.get(0),
+        with_create_skill_mock_responses(Some(&start_response), Some(&generate_response), || {
+            let start = ai_create_skill_start(
+                Some(json!({
+                    "prompt": prompt,
+                    "language": "zh"
+                })),
+                state.clone(),
             )
-            .expect("installed skill row");
-        assert_eq!(installed_count, 1);
+            .expect("start draft");
+            let draft_id = start["draft"]["id"].as_str().expect("draft id");
+            let initial_spec = &start["draft"]["skillSpec"];
+            assert_eq!(start["aiUsed"].as_bool(), Some(true));
+            assert_eq!(
+                initial_spec["intentFrame"]["userJob"].as_str(),
+                Some(prompt)
+            );
+            assert_eq!(
+                start["draft"]["followupQuestions"].as_array().map(Vec::len),
+                Some(1)
+            );
 
-        println!(
-            "create skill smoke installed {} at {}",
-            skill_id,
-            installed.display()
-        );
+            let answered = create_skill_answer(state.clone(), draft_id, "strictness", "confirm");
+            let spec = answered["draft"]["skillSpec"].clone();
+            assert_eq!(
+                spec["intentFrame"]["outputContract"]["artifactType"].as_str(),
+                Some("checklist")
+            );
+            assert_eq!(spec["overwritePolicy"].as_str(), Some("confirm_each_time"));
+
+            let generated = ai_create_skill_generate(
+                Some(json!({
+                    "draftId": draft_id,
+                    "skillSpec": spec
+                })),
+                state.clone(),
+            )
+            .expect("generate markdown");
+            let markdown = generated["draft"]["draftMarkdown"]
+                .as_str()
+                .expect("draft markdown");
+            let target_basename = generated["draft"]["skillSpec"]["name"]
+                .as_str()
+                .expect("generated skill name");
+            assert!(target_basename.starts_with("release-risk-review"));
+            assert!(markdown.contains(target_basename));
+            assert!(markdown.contains("## 输入"));
+            assert!(markdown.contains("## 工作流"));
+            assert!(markdown.contains("## 边界"));
+            assert!(markdown.contains("发布风险 checklist"));
+            assert!(!markdown.contains("Confirm the task framing"));
+
+            let review = ai_create_skill_review(
+                Some(json!({
+                    "draftId": draft_id,
+                    "markdown": markdown,
+                    "targetBasename": target_basename
+                })),
+                state.clone(),
+            )
+            .expect("review markdown");
+            assert_eq!(
+                review["review"]["blocking"].as_array().map(Vec::len),
+                Some(0)
+            );
+            assert_eq!(
+                review["review"]["checks"]["noSilentNetwork"].as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                review["review"]["checks"]["noSilentOverwrite"].as_bool(),
+                Some(true)
+            );
+            assert_eq!(
+                review["review"]["warnings"].as_array().map(Vec::len),
+                Some(0)
+            );
+
+            let planned = ai_create_skill_plan(
+                Some(json!({
+                    "draftId": draft_id,
+                    "targetBasename": target_basename,
+                    "targetPlatformIds": [],
+                    "targetScenarioIds": []
+                })),
+                state.clone(),
+            )
+            .expect("plan install");
+            let token = planned["plan"]["token"].as_str().expect("plan token");
+            assert_eq!(planned["plan"]["operation"].as_str(), Some("create_skill"));
+            assert_eq!(
+                planned["plan"]["items"][0]["action"].as_str(),
+                Some("copy_to_canonical")
+            );
+
+            let executed = ai_create_skill_execute(
+                Some(json!({
+                    "draftId": draft_id,
+                    "token": token,
+                    "targetScenarioIds": []
+                })),
+                state.clone(),
+            )
+            .expect("execute install");
+            let skill_id = executed["skillId"].as_str().expect("installed skill id");
+            assert_eq!(executed["draft"]["status"].as_str(), Some("installed"));
+            assert_eq!(
+                executed["draft"]["installedSkillId"].as_str(),
+                Some(skill_id)
+            );
+
+            let installed = root.join("shared").join(target_basename).join("SKILL.md");
+            assert!(installed.exists(), "installed SKILL.md should exist");
+            let installed_markdown = fs::read_to_string(&installed).expect("installed markdown");
+            assert_eq!(installed_markdown, markdown);
+            assert!(installed_markdown.contains("发布风险 checklist"));
+
+            let db = state.db.get().expect("db conn");
+            let installed_count: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM skills WHERE id = ?1 AND name = ?2",
+                    params![skill_id, target_basename],
+                    |row| row.get(0),
+                )
+                .expect("installed skill row");
+            assert_eq!(installed_count, 1);
+
+            println!(
+                "create skill smoke installed {} at {}",
+                skill_id,
+                installed.display()
+            );
+        });
     }
 
     #[test]
-    #[ignore = "requires MYSKILLS_LIVE_LLM_API_KEY and performs a real network call"]
+    fn create_skill_start_rejects_empty_llm_response_without_draft() {
+        let (app, _root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        configure_create_skill_mock_llm(state.clone());
+
+        with_create_skill_mock_responses(Some(""), None, || {
+            let err = ai_create_skill_start(
+                Some(json!({
+                    "prompt": "把长视频转成同目录 SRT 字幕，不合成视频。",
+                    "language": "zh"
+                })),
+                state.clone(),
+            )
+            .expect_err("empty model response should fail");
+            assert_eq!(err.code, "LLM_BAD_RESPONSE");
+            assert_create_skill_draft_count(state.clone(), 0);
+        });
+    }
+
+    #[test]
+    fn create_skill_start_rejects_name_only_llm_response_without_draft() {
+        let (app, _root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        configure_create_skill_mock_llm(state.clone());
+        let response = json!({
+            "schemaVersion": "create-skill.v1",
+            "command": "start",
+            "skillSpec": { "name": "video-to-srt", "language": "zh" },
+            "questions": []
+        })
+        .to_string();
+
+        with_create_skill_mock_responses(Some(&response), None, || {
+            let err = ai_create_skill_start(
+                Some(json!({
+                    "prompt": "把长视频转成同目录 SRT 字幕，不合成视频。",
+                    "language": "zh"
+                })),
+                state.clone(),
+            )
+            .expect_err("name-only response should fail");
+            assert_eq!(err.code, "LLM_BAD_SPEC");
+            assert_create_skill_draft_count(state.clone(), 0);
+        });
+    }
+
+    #[test]
+    fn create_skill_start_rejects_schema_correct_empty_content_without_draft() {
+        let (app, _root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        configure_create_skill_mock_llm(state.clone());
+        let response = json!({
+            "schemaVersion": "create-skill.v1",
+            "command": "start",
+            "skillSpec": {
+                "name": "video-to-srt",
+                "description": "",
+                "language": "zh",
+                "intentFrame": {
+                    "userJob": "",
+                    "triggerContext": "",
+                    "inputContract": { "acceptedInputs": [] },
+                    "outputContract": { "artifactType": "markdown", "destination": "reply_only" },
+                    "workflow": { "steps": [], "failClosedRules": [] },
+                    "stylePreferences": [],
+                    "nonGoals": [],
+                    "successCriteria": []
+                }
+            },
+            "questions": [
+                { "id": "scope", "question": "范围？", "options": [], "allowFreeform": true }
+            ]
+        })
+        .to_string();
+
+        with_create_skill_mock_responses(Some(&response), None, || {
+            let err = ai_create_skill_start(
+                Some(json!({
+                    "prompt": "把长视频转成同目录 SRT 字幕，不合成视频。",
+                    "language": "zh"
+                })),
+                state.clone(),
+            )
+            .expect_err("empty valid envelope should fail");
+            assert_eq!(err.code, "LLM_BAD_SPEC");
+            assert_create_skill_draft_count(state.clone(), 0);
+        });
+    }
+
+    #[test]
     fn create_skill_live_llm_user_simulation_generates_reviewable_skill() {
+        let Some(api_key) = std::env::var("MYSKILLS_LIVE_LLM_API_KEY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!("skipping live Create Skill LLM test; MYSKILLS_LIVE_LLM_API_KEY is not set");
+            return;
+        };
         let (app, root) = create_skill_smoke_app();
         let state = app.state::<AppState>();
+        secret_vault::write(&state.paths, LLM_API_KEY_NAME, &api_key)
+            .expect("live key vault write");
         {
             let db = state.db.get().expect("db conn");
             let model = std::env::var("MYSKILLS_LIVE_LLM_MODEL")
@@ -4294,6 +4832,8 @@ mod tests {
                 ("llm.provider", "deepseek".to_string()),
                 ("llm.model", model),
                 ("llm.baseUrl", "".to_string()),
+                (LLM_API_KEY_STORED_SETTING, "1".to_string()),
+                (LLM_CONNECTION_OK_SETTING, "1".to_string()),
             ] {
                 db.execute(
                     "INSERT INTO settings (key, value) VALUES (?1, ?2)
@@ -4686,6 +5226,55 @@ mod tests {
     }
 
     #[test]
+    fn create_skill_start_repairs_common_llm_array_aliases() {
+        let mut spec = json!({
+            "name": "Obsidian Polish",
+            "description": "当用户需要把 Obsidian 中文稿件润色得更犀利且保留口语感时使用。",
+            "language": "zh",
+            "intentFrame": {
+                "userJob": "把 Obsidian 中文稿件润色得更犀利，同时保留口语感",
+                "triggerContext": "用户提供一段中文草稿，希望调整表达力度和可读性。",
+                "inputContract": { "inputs": ["Obsidian 中文草稿", "用户对口语感、犀利程度和保留内容的要求"] },
+                "outputContract": { "artifactType": "markdown", "destination": "reply_only" },
+                "workflow": { "workflowSteps": ["识别原稿意图和语气", "压缩解释性表达", "输出保留口语感的改写版本"] },
+                "acceptanceCriteria": ["改写后更犀利但不丢失原始意思"]
+            },
+            "questions": []
+        });
+
+        create_skill_repair_start_spec(
+            &mut spec,
+            "帮我固定一套 Obsidian 中文稿件润色流程，保留口语感但更犀利。",
+            "zh",
+        );
+        let issues =
+            create_skill_start_quality_issues(&spec, &create_skill_default_questions(&spec));
+
+        assert!(
+            issues.is_empty(),
+            "alias-shaped spec should pass quality gate: {issues:?}"
+        );
+        assert_eq!(
+            spec["intentFrame"]["inputContract"]["acceptedInputs"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            spec["intentFrame"]["workflow"]["steps"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(
+            spec["intentFrame"]["successCriteria"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn create_skill_normalize_spec_repairs_bad_intent_shape_before_answer() {
         let mut spec = json!({
             "name": "bad-intent-shape",
@@ -4731,8 +5320,9 @@ const CATALOG_GH_RAW: &str = "https://raw.githubusercontent.com";
 const CATALOG_CACHE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const CATALOG_MAX_BATCH_SIZE: usize = 30;
 const CATALOG_EXCERPT_CHARS: usize = 500;
-const SECRET_SERVICE: &str = "com.kanbenzhi.myskills.tauri-preview";
 const LLM_API_KEY_NAME: &str = "llm.apiKey";
+const LLM_API_KEY_STORED_SETTING: &str = "llm.apiKeyStored";
+const LLM_CONNECTION_OK_SETTING: &str = "llm.connectionOk";
 
 #[tauri::command]
 pub fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
@@ -4977,7 +5567,9 @@ fn catalog_client() -> AppResult<reqwest::blocking::Client> {
 }
 
 fn llm_client() -> AppResult<reqwest::blocking::Client> {
-    let builder = reqwest::blocking::Client::builder().timeout(Duration::from_secs(120));
+    let builder = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(300));
     #[cfg(test)]
     let builder = if let Ok(ip) = std::env::var("MYSKILLS_LIVE_LLM_RESOLVE_IP") {
         if let Ok(ip) = ip.parse::<std::net::IpAddr>() {
@@ -4991,6 +5583,25 @@ fn llm_client() -> AppResult<reqwest::blocking::Client> {
     builder
         .build()
         .map_err(|err| AppError::new("LLM_HTTP_CLIENT_FAILED", err.to_string()))
+}
+
+fn llm_request_error(provider: &str, err: reqwest::Error) -> AppError {
+    if err.is_timeout() {
+        return AppError::new(
+            "LLM_TIMEOUT",
+            "LLM request timed out. Try again, or use a faster model in Settings -> AI.",
+        );
+    }
+    if err.is_connect() {
+        return AppError::new(
+            "LLM_UNAVAILABLE",
+            format!("Could not connect to {provider}: {err}"),
+        );
+    }
+    AppError::new(
+        "LLM_UNAVAILABLE",
+        format!("Could not reach {provider}: {err}"),
+    )
 }
 
 fn catalog_fetch_skill_content(db: &Connection, source: &str, skill_id: &str) -> AppResult<String> {
@@ -5513,16 +6124,17 @@ fn clamp_i64(n: i64, lo: i64, hi: i64) -> i64 {
 pub fn llm_get_config(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
-    llm_config_response(&db)
+    llm_config_response(&db, &state.paths)
 }
 
-fn llm_config_response(db: &Connection) -> AppResult<Value> {
+fn llm_config_response(db: &Connection, paths: &AppPaths) -> AppResult<Value> {
     let provider = get_setting(db, "llm.provider")?.unwrap_or_else(|| "deepseek".to_string());
     let model = get_setting(db, "llm.model")?.unwrap_or_else(|| "deepseek-v4-flash".to_string());
     let base_url = get_setting(db, "llm.baseUrl")?.unwrap_or_default();
-    let has_api_key = llm_has_api_key(db)?;
+    let has_api_key = llm_has_api_key(db, paths)?;
+    let connection_ok = get_setting(db, LLM_CONNECTION_OK_SETTING)?.as_deref() == Some("1");
     Ok(
-        json!({ "provider": provider, "model": model, "baseUrl": base_url, "hasApiKey": has_api_key }),
+        json!({ "provider": provider, "model": model, "baseUrl": base_url, "hasApiKey": has_api_key, "connectionOk": connection_ok }),
     )
 }
 
@@ -5545,6 +6157,10 @@ pub fn llm_set_config(payload: Option<Value>, state: State<'_, AppState>) -> App
             db.execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![setting_key, v])?;
         }
     }
+    db.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![LLM_CONNECTION_OK_SETTING],
+    )?;
     llm_get_config(None, state)
 }
 
@@ -5552,8 +6168,16 @@ pub fn llm_set_config(payload: Option<Value>, state: State<'_, AppState>) -> App
 pub fn llm_set_api_key(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let key = required_str(&payload, "key")?;
     let db = conn(&state)?;
-    secret_store_write(LLM_API_KEY_NAME, key)?;
+    secret_vault::write(&state.paths, LLM_API_KEY_NAME, key)?;
     db.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![LLM_API_KEY_STORED_SETTING],
+    )?;
+    db.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![LLM_CONNECTION_OK_SETTING],
+    )?;
     maybe_start_ai_worker(&state);
     Ok(json!({ "ok": true, "hasApiKey": true }))
 }
@@ -5562,8 +6186,11 @@ pub fn llm_set_api_key(payload: Option<Value>, state: State<'_, AppState>) -> Ap
 pub fn llm_delete_api_key(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
-    secret_store_delete(LLM_API_KEY_NAME)?;
-    db.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
+    secret_vault::delete(&state.paths, LLM_API_KEY_NAME)?;
+    db.execute(
+        "DELETE FROM settings WHERE key IN ('secret:llm.apiKey', ?1, ?2)",
+        params![LLM_API_KEY_STORED_SETTING, LLM_CONNECTION_OK_SETTING],
+    )?;
     Ok(json!({ "ok": true, "hasApiKey": false }))
 }
 
@@ -5602,7 +6229,7 @@ pub fn llm_chat(payload: Option<Value>, state: State<'_, AppState>) -> AppResult
             "No model configured. Set one in Settings -> AI.",
         ));
     }
-    let api_key = llm_read_api_key(&db)?;
+    let api_key = llm_read_api_key(&db, &state.paths)?;
     llm_chat_with_config(&config, api_key.as_deref(), req)
 }
 
@@ -5620,7 +6247,7 @@ pub fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -
     if config.model.trim().is_empty() {
         return Ok(json!({ "ok": false, "message": "No model configured." }));
     }
-    let api_key = llm_read_api_key(&db)?;
+    let api_key = llm_read_api_key(&db, &state.paths)?;
     let req = if config.provider == "anthropic" {
         json!({
             "messages": [{ "role": "user", "content": "ping" }],
@@ -5637,11 +6264,21 @@ pub fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -
     match llm_chat_with_config(&config, api_key.as_deref(), &req) {
         Ok(response) => {
             let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+            db.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![LLM_CONNECTION_OK_SETTING],
+            )?;
             Ok(
                 json!({ "ok": true, "message": if text.is_empty() { "OK".to_string() } else { format!("OK ({})", truncate(text, 60)) } }),
             )
         }
-        Err(err) => Ok(json!({ "ok": false, "message": err.message })),
+        Err(err) => {
+            db.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                params![LLM_CONNECTION_OK_SETTING],
+            )?;
+            Ok(json!({ "ok": false, "message": err.message }))
+        }
     }
 }
 
@@ -5670,7 +6307,7 @@ fn llm_read_config(db: &Connection) -> AppResult<LlmRuntimeConfig> {
     })
 }
 
-fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
+fn llm_read_api_key(db: &Connection, paths: &AppPaths) -> AppResult<Option<String>> {
     #[cfg(test)]
     if let Ok(value) = std::env::var("MYSKILLS_LIVE_LLM_API_KEY") {
         let value = value.trim().to_string();
@@ -5678,7 +6315,7 @@ fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
             return Ok(Some(value));
         }
     }
-    if let Some(value) = secret_store_read(LLM_API_KEY_NAME)? {
+    if let Some(value) = secret_vault::read(paths, LLM_API_KEY_NAME)? {
         return Ok(Some(value));
     }
     let Some(legacy) = get_setting(db, "secret:llm.apiKey")? else {
@@ -5689,60 +6326,20 @@ fn llm_read_api_key(db: &Connection) -> AppResult<Option<String>> {
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or(legacy);
-    secret_store_write(LLM_API_KEY_NAME, &migrated)?;
+    secret_vault::write(paths, LLM_API_KEY_NAME, &migrated)?;
     db.execute("DELETE FROM settings WHERE key = 'secret:llm.apiKey'", [])?;
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![LLM_API_KEY_STORED_SETTING],
+    )?;
     Ok(Some(migrated))
 }
 
-fn llm_has_api_key(db: &Connection) -> AppResult<bool> {
+fn llm_has_api_key(db: &Connection, paths: &AppPaths) -> AppResult<bool> {
     if get_setting(db, "secret:llm.apiKey")?.is_some() {
         return Ok(true);
     }
-    Ok(secret_store_exists(LLM_API_KEY_NAME).unwrap_or(false))
-}
-
-fn secret_store_entry(name: &str) -> AppResult<keyring_core::Entry> {
-    #[cfg(target_os = "linux")]
-    keyring::use_named_store("secret-service").map_err(secret_store_error)?;
-    #[cfg(not(target_os = "linux"))]
-    keyring::use_native_store(false).map_err(secret_store_error)?;
-    keyring_core::Entry::new(SECRET_SERVICE, name).map_err(secret_store_error)
-}
-
-fn secret_store_write(name: &str, value: &str) -> AppResult<()> {
-    secret_store_entry(name)?
-        .set_password(value)
-        .map_err(secret_store_error)
-}
-
-fn secret_store_read(name: &str) -> AppResult<Option<String>> {
-    match secret_store_entry(name)?.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring_core::Error::NoEntry) => Ok(None),
-        Err(err) => Err(secret_store_error(err)),
-    }
-}
-
-fn secret_store_exists(name: &str) -> AppResult<bool> {
-    match secret_store_entry(name)?.get_password() {
-        Ok(_) => Ok(true),
-        Err(keyring_core::Error::NoEntry) => Ok(false),
-        Err(err) => Err(secret_store_error(err)),
-    }
-}
-
-fn secret_store_delete(name: &str) -> AppResult<()> {
-    match secret_store_entry(name)?.delete_credential() {
-        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-        Err(err) => Err(secret_store_error(err)),
-    }
-}
-
-fn secret_store_error(err: keyring_core::Error) -> AppError {
-    AppError::new(
-        "SECRET_STORE_UNAVAILABLE",
-        format!("System credential store is unavailable: {err}"),
-    )
+    secret_vault::contains(paths, LLM_API_KEY_NAME)
 }
 
 fn llm_chat_with_config(
@@ -5803,12 +6400,10 @@ fn llm_chat_openai_compatible(
             .header("http-referer", "https://myskills.local")
             .header("x-title", "MySkills");
     }
-    let res = request.json(&Value::Object(body)).send().map_err(|err| {
-        AppError::new(
-            "LLM_UNAVAILABLE",
-            format!("Could not reach LLM provider: {err:?}"),
-        )
-    })?;
+    let res = request
+        .json(&Value::Object(body))
+        .send()
+        .map_err(|err| llm_request_error("LLM provider", err))?;
     let status = res.status();
     if !status.is_success() {
         let text = res.text().unwrap_or_default();
@@ -5914,7 +6509,7 @@ fn llm_chat_anthropic(
             Value::String(system_parts.join("\n\n")),
         );
     }
-    let client = catalog_client()?;
+    let client = llm_client()?;
     let res = client
         .post(format!("{base_url}/messages"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -5922,12 +6517,7 @@ fn llm_chat_anthropic(
         .header("anthropic-version", "2023-06-01")
         .json(&Value::Object(body))
         .send()
-        .map_err(|err| {
-            AppError::new(
-                "LLM_UNAVAILABLE",
-                format!("Could not reach Anthropic: {err:?}"),
-            )
-        })?;
+        .map_err(|err| llm_request_error("Anthropic", err))?;
     let status = res.status();
     if !status.is_success() {
         let text = res.text().unwrap_or_default();
@@ -6080,19 +6670,46 @@ pub fn ai_create_skill_start(
         .and_then(Value::as_str)
         .filter(|v| matches!(*v, "zh" | "en"))
         .unwrap_or("zh");
-    let db = conn(&state)?;
+    ai_create_skill_start_inner(&state.db, &state.paths, prompt, language.to_string())
+}
+
+#[tauri::command]
+pub fn ai_create_skill_start_job(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let prompt = required_str(&payload, "prompt")?.trim().to_string();
+    if prompt.chars().count() < 4 {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            "Describe the need, problem, or workflow first.",
+        ));
+    }
+    let language = payload
+        .as_ref()
+        .and_then(|p| p.get("language"))
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "zh" | "en"))
+        .unwrap_or("zh")
+        .to_string();
+    let key = format!("{}:{}", language, slugify_skill_name(&prompt));
+    let pool = state.db.clone();
+    let paths = state.paths.clone();
+    ai_spawn_job(&state, "create_skill_start", &key, move || {
+        ai_create_skill_start_inner(&pool, &paths, prompt, language)
+    })
+}
+
+fn ai_create_skill_start_inner(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    paths: &AppPaths,
+    prompt: String,
+    language: String,
+) -> AppResult<Value> {
+    let db = pool.get()?;
     let draft_id = Uuid::new_v4().to_string();
     let now = now_ms();
-    let llm_enabled = create_skill_llm_enabled(&db)?;
-    let (spec, questions, ai_used) = match create_skill_start_spec(&db, &prompt, language) {
-        Ok(result) => result,
-        Err(err) if llm_enabled || create_skill_strict_live_llm() => return Err(err),
-        Err(_) => {
-            let spec = create_skill_local_spec(&prompt, language, &json!({}));
-            let questions = create_skill_default_questions(&spec);
-            (spec, questions, false)
-        }
-    };
+    let (spec, questions, ai_used) = create_skill_start_spec(&db, paths, &prompt, &language)?;
     let status = if spec.get("ready").and_then(Value::as_bool) == Some(true) {
         "spec_ready"
     } else {
@@ -6269,12 +6886,7 @@ pub fn ai_create_skill_generate(
         .or_else(|| draft.get("skillSpec").cloned())
         .ok_or_else(|| AppError::new("INVALID_STATE", "skillSpec required before generate"))?;
     create_skill_normalize_spec(&mut spec);
-    let llm_enabled = create_skill_llm_enabled(&db)?;
-    let (markdown, ai_used) = match create_skill_generate_markdown(&db, &spec) {
-        Ok(result) => result,
-        Err(err) if llm_enabled || create_skill_strict_live_llm() => return Err(err),
-        Err(_) => (create_skill_local_markdown(&spec), false),
-    };
+    let (markdown, ai_used) = create_skill_generate_markdown(&db, &state.paths, &spec)?;
     let generated_name = scanner::parser::parse_skill_markdown(&markdown)
         .ok()
         .map(|parsed| parsed.name);
@@ -6685,14 +7297,14 @@ fn create_skill_get_draft_row(db: &Connection, draft_id: &str) -> AppResult<Valu
 
 fn create_skill_start_spec(
     db: &Connection,
+    paths: &AppPaths,
     prompt: &str,
     language: &str,
 ) -> AppResult<(Value, Value, bool)> {
-    if get_setting(db, "llm.feature.createSkill")?.as_deref() != Some("1") {
-        return Ok((
-            create_skill_local_spec(prompt, language, &json!({})),
-            create_skill_default_questions(&create_skill_local_spec(prompt, language, &json!({}))),
-            false,
+    if !create_skill_llm_enabled(db, paths)? {
+        return Err(AppError::new(
+            "LLM_NOT_READY",
+            "Create Skill requires a saved AI configuration and a successful connection test.",
         ));
     }
     require_network(db)?;
@@ -6700,42 +7312,90 @@ fn create_skill_start_spec(
     if config.model.trim().is_empty() {
         return Err(AppError::new("LLM_NO_MODEL", "No model configured."));
     }
-    let api_key = llm_read_api_key(db)?;
+    let api_key = llm_read_api_key(db, paths)?;
     if config.provider != "ollama" && api_key.as_deref().unwrap_or("").trim().is_empty() {
         return Err(AppError::new("LLM_NO_KEY", "No API key configured."));
     }
-    let req = json!({
-        "messages": [
-            {
-                "role": "system",
-                "content": create_skill_system_prompt(language)
-            },
-            {
-                "role": "user",
-                "content": format!("Create a skill spec from this user need. Return JSON only. Set command exactly to \"start\".\n\nNeed:\n{prompt}")
+    let mut previous_text = String::new();
+    let mut previous_issues = Vec::new();
+    let mut last_error = None;
+    for attempt in 1..=2 {
+        let user_content = if attempt == 1 {
+            create_skill_start_prompt(prompt, language)
+        } else {
+            create_skill_start_repair_prompt(prompt, language, &previous_text, &previous_issues)
+        };
+        let req = json!({
+            "messages": [
+                {
+                    "role": "system",
+                    "content": create_skill_system_prompt(language)
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ],
+            "temperature": if attempt == 1 { 0.2 } else { 0.0 },
+            "maxTokens": if attempt == 1 { 4096 } else { 8192 },
+            "jsonMode": true
+        });
+        let text = create_skill_llm_text(
+            "MYSKILLS_CREATE_SKILL_START_RESPONSE",
+            &config,
+            api_key.as_deref(),
+            &req,
+        )?;
+        previous_text = text.clone();
+        let parsed = ai_parse_json_object(&text);
+        let parsed = create_skill_coerce_start_payload(parsed, prompt, language);
+        match create_skill_envelope_payload(parsed, "start") {
+            Ok((mut spec, mut questions)) => {
+                create_skill_repair_start_spec(&mut spec, prompt, language);
+                if !create_skill_questions_have_options(&questions) {
+                    questions = create_skill_default_questions(&spec);
+                }
+                previous_issues = create_skill_start_quality_issues(&spec, &questions);
+                if previous_issues.is_empty() {
+                    return Ok((spec, questions, true));
+                }
+                last_error = Some(create_skill_start_quality_error(
+                    &spec,
+                    previous_issues.clone(),
+                ));
             }
-        ],
-        "temperature": 0.2,
-        "maxTokens": 4096,
-        "jsonMode": true
-    });
-    let response = llm_chat_with_config(&config, api_key.as_deref(), &req)?;
-    let text = response.get("text").and_then(Value::as_str).unwrap_or("");
-    let parsed = ai_parse_json_object(text);
-    let parsed = create_skill_coerce_start_payload(parsed, prompt, language);
-    create_skill_envelope_payload(parsed, "start").map(|(spec, questions)| (spec, questions, true))
+            Err(err) => {
+                previous_issues =
+                    vec![json!({ "field": "schema", "message": err.message.clone() })];
+                last_error = Some(err);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        AppError::new(
+            "LLM_BAD_SPEC",
+            "The model returned an incomplete skill outline. Regenerate or revise the request.",
+        )
+    }))
 }
 
-fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(String, bool)> {
-    if get_setting(db, "llm.feature.createSkill")?.as_deref() != Some("1") {
-        return Ok((create_skill_local_markdown(spec), false));
+fn create_skill_generate_markdown(
+    db: &Connection,
+    paths: &AppPaths,
+    spec: &Value,
+) -> AppResult<(String, bool)> {
+    if !create_skill_llm_enabled(db, paths)? {
+        return Err(AppError::new(
+            "LLM_NOT_READY",
+            "Create Skill requires a saved AI configuration and a successful connection test.",
+        ));
     }
     require_network(db)?;
     let config = llm_read_config(db)?;
     if config.model.trim().is_empty() {
         return Err(AppError::new("LLM_NO_MODEL", "No model configured."));
     }
-    let api_key = llm_read_api_key(db)?;
+    let api_key = llm_read_api_key(db, paths)?;
     if config.provider != "ollama" && api_key.as_deref().unwrap_or("").trim().is_empty() {
         return Err(AppError::new("LLM_NO_KEY", "No API key configured."));
     }
@@ -6748,9 +7408,13 @@ fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(S
         "maxTokens": 8192,
         "jsonMode": true
     });
-    let response = llm_chat_with_config(&config, api_key.as_deref(), &req)?;
-    let text = response.get("text").and_then(Value::as_str).unwrap_or("");
-    let parsed = ai_parse_json_object(text);
+    let text = create_skill_llm_text(
+        "MYSKILLS_CREATE_SKILL_GENERATE_RESPONSE",
+        &config,
+        api_key.as_deref(),
+        &req,
+    )?;
+    let parsed = ai_parse_json_object(&text);
     if parsed.get("schemaVersion").and_then(Value::as_str) != Some("create-skill.v1") {
         return Err(AppError::new(
             "LLM_SCHEMA_MISMATCH",
@@ -6775,12 +7439,597 @@ fn create_skill_generate_markdown(db: &Connection, spec: &Value) -> AppResult<(S
     Ok((create_skill_repair_frontmatter(markdown, spec), true))
 }
 
-fn create_skill_strict_live_llm() -> bool {
-    cfg!(test) && std::env::var("MYSKILLS_LIVE_LLM_STRICT").is_ok()
+fn create_skill_llm_enabled(db: &Connection, paths: &AppPaths) -> AppResult<bool> {
+    let config = llm_read_config(db)?;
+    if config.model.trim().is_empty() {
+        return Ok(false);
+    }
+    if config.provider == "ollama" {
+        return Ok(get_setting(db, LLM_CONNECTION_OK_SETTING)?.as_deref() == Some("1"));
+    }
+    Ok(llm_has_api_key(db, paths)?
+        && get_setting(db, LLM_CONNECTION_OK_SETTING)?.as_deref() == Some("1"))
 }
 
-fn create_skill_llm_enabled(db: &Connection) -> AppResult<bool> {
-    Ok(get_setting(db, "llm.feature.createSkill")?.as_deref() == Some("1"))
+fn create_skill_llm_text(
+    test_env_key: &str,
+    config: &LlmRuntimeConfig,
+    api_key: Option<&str>,
+    req: &Value,
+) -> AppResult<String> {
+    #[cfg(not(test))]
+    let _ = test_env_key;
+    #[cfg(test)]
+    if let Ok(value) = std::env::var(test_env_key) {
+        if value.trim().is_empty() {
+            return Err(AppError::new(
+                "LLM_BAD_RESPONSE",
+                "The model returned an empty response.",
+            ));
+        }
+        return Ok(value);
+    }
+    let response = llm_chat_with_config(config, api_key, req)?;
+    let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+    if text.trim().is_empty() {
+        return Err(AppError::new(
+            "LLM_BAD_RESPONSE",
+            "The model returned an empty response.",
+        ));
+    }
+    Ok(text.to_string())
+}
+
+fn create_skill_start_quality_error(spec: &Value, issues: Vec<Value>) -> AppError {
+    let language = spec.get("language").and_then(Value::as_str).unwrap_or("en");
+    let message = if language == "zh" {
+        "模型返回的技能轮廓仍不完整。请补充需求后重新生成。"
+    } else {
+        "The model returned an incomplete skill outline. Regenerate or revise the request."
+    };
+    AppError::detail("LLM_BAD_SPEC", message, json!({ "issues": issues }))
+}
+
+fn create_skill_start_prompt(prompt: &str, language: &str) -> String {
+    let language_rule = if language == "zh" {
+        "All human-facing strings must be Chinese. Keep only identifiers such as name in English kebab-case."
+    } else {
+        "All human-facing strings must be English."
+    };
+    format!(
+        "Create a MySkills skill outline from the user need below.\n\
+         Return JSON only. Do not include markdown fences or explanatory text.\n\
+         Set schemaVersion exactly to \"create-skill.v1\" and command exactly to \"start\".\n\
+         {language_rule}\n\n\
+         Required JSON shape. Keep every key and fill every array with concrete strings:\n\
+{}\n\n\
+         Requirements:\n\
+         - acceptedInputs must describe what the user will provide when invoking the skill.\n\
+         - workflow.steps must contain at least three concrete action steps.\n\
+         - successCriteria must contain at least one observable acceptance criterion.\n\
+         - questions must contain at least one option-based follow-up question.\n\
+         - Do not use placeholders, generic \"structured agent workflow\", or empty arrays.\n\n\
+         User need:\n{prompt}",
+        create_skill_start_json_contract(language)
+    )
+}
+
+fn create_skill_start_repair_prompt(
+    prompt: &str,
+    language: &str,
+    previous_text: &str,
+    issues: &[Value],
+) -> String {
+    let issue_list = issues
+        .iter()
+        .filter_map(|issue| {
+            let field = issue.get("field").and_then(Value::as_str)?;
+            let message = issue.get("message").and_then(Value::as_str).unwrap_or("");
+            Some(format!("- {field}: {message}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let language_rule = if language == "zh" {
+        "All user-facing text must be Chinese."
+    } else {
+        "All user-facing text must be English."
+    };
+    format!(
+        "Your previous JSON did not pass MySkills quality validation.\n\
+         Missing or invalid fields:\n{issue_list}\n\n\
+         Repair the result for this user need. Return JSON only. Set schemaVersion exactly to \"create-skill.v1\" and command exactly to \"start\".\n\
+         {language_rule}\n\
+         The returned skillSpec MUST contain concrete, non-placeholder values for:\n\
+         - name: lowercase kebab-case directory name\n\
+         - description: concise trigger sentence\n\
+         - intentFrame.userJob\n\
+         - intentFrame.triggerContext\n\
+         - intentFrame.inputContract.acceptedInputs: at least one string\n\
+         - intentFrame.outputContract\n\
+         - intentFrame.workflow.steps: at least three concrete steps\n\
+         - intentFrame.successCriteria: at least one string\n\
+         - questions: at least one option-based follow-up question\n\n\
+         Use this exact JSON shape and fill all arrays with concrete strings:\n{}\n\n\
+         User need:\n{prompt}\n\n\
+         Previous model output:\n{}",
+        create_skill_start_json_contract(language),
+        truncate(previous_text, 4000)
+    )
+}
+
+fn create_skill_start_json_contract(language: &str) -> &'static str {
+    if language == "en" {
+        r#"{
+  "schemaVersion": "create-skill.v1",
+  "command": "start",
+  "status": "intent_draft",
+  "skillSpec": {
+    "name": "short-kebab-case-name",
+    "description": "Use when the user needs ...",
+    "language": "en",
+    "intentFrame": {
+      "userJob": "The job the user needs this skill to perform.",
+      "triggerContext": "When the user should invoke this skill.",
+      "inputContract": {
+        "acceptedInputs": ["Concrete input type the user can provide"],
+        "privacyClass": "local_only"
+      },
+      "outputContract": {
+        "artifactType": "markdown",
+        "destination": "reply_only"
+      },
+      "workflow": {
+        "steps": ["Step 1", "Step 2", "Step 3"],
+        "failClosedRules": ["Ask before risky or irreversible work"]
+      },
+      "stylePreferences": ["Direct and actionable"],
+      "nonGoals": ["What this skill should not do"],
+      "successCriteria": ["Observable success criterion"]
+    },
+    "needsNetwork": false,
+    "writesFiles": false,
+    "overwritePolicy": "never",
+    "ready": false,
+    "missing": ["target_context", "input_scope", "artifact", "strictness"]
+  },
+  "questions": [
+    {
+      "id": "target_context",
+      "question": "Which work context should this skill prioritize?",
+      "options": [
+        { "id": "writing", "label": "Writing", "effect": "target_context=writing" },
+        { "id": "code_review", "label": "Code review", "effect": "target_context=code_review" }
+      ],
+      "allowFreeform": true
+    }
+  ]
+}"#
+    } else {
+        r#"{
+  "schemaVersion": "create-skill.v1",
+  "command": "start",
+  "status": "intent_draft",
+  "skillSpec": {
+    "name": "short-kebab-case-name",
+    "description": "当用户需要……时使用。",
+    "language": "zh",
+    "intentFrame": {
+      "userJob": "用户希望这个技能完成的具体工作。",
+      "triggerContext": "用户应该在什么情境下调用这个技能。",
+      "inputContract": {
+        "acceptedInputs": ["用户可以提供的具体输入类型"],
+        "privacyClass": "local_only"
+      },
+      "outputContract": {
+        "artifactType": "markdown",
+        "destination": "reply_only"
+      },
+      "workflow": {
+        "steps": ["步骤 1", "步骤 2", "步骤 3"],
+        "failClosedRules": ["涉及风险或不可逆操作前必须追问"]
+      },
+      "stylePreferences": ["直接、可执行"],
+      "nonGoals": ["这个技能不应该做的事"],
+      "successCriteria": ["可观察的验收标准"]
+    },
+    "needsNetwork": false,
+    "writesFiles": false,
+    "overwritePolicy": "never",
+    "ready": false,
+    "missing": ["target_context", "input_scope", "artifact", "strictness"]
+  },
+  "questions": [
+    {
+      "id": "target_context",
+      "question": "这个技能应该优先服务哪类工作？",
+      "options": [
+        { "id": "writing", "label": "写作处理", "effect": "target_context=writing" },
+        { "id": "code_review", "label": "代码审查", "effect": "target_context=code_review" }
+      ],
+      "allowFreeform": true
+    }
+  ]
+}"#
+    }
+}
+
+fn create_skill_start_quality_issues(spec: &Value, _questions: &Value) -> Vec<Value> {
+    let mut issues = Vec::new();
+    let name = spec.get("name").and_then(Value::as_str).unwrap_or("");
+    if !is_safe_basename(name) || name != slugify_skill_name(name) {
+        issues.push(json!({ "field": "name", "message": "Skill name must be a safe kebab-case directory name." }));
+    }
+    if weak_create_skill_text(spec.get("description").and_then(Value::as_str), 20) {
+        issues.push(json!({ "field": "description", "message": "Description is missing or placeholder-like." }));
+    }
+    let intent = spec.get("intentFrame").unwrap_or(&Value::Null);
+    if weak_create_skill_text(intent.get("userJob").and_then(Value::as_str), 12) {
+        issues.push(json!({ "field": "intentFrame.userJob", "message": "User job is missing." }));
+    }
+    if weak_create_skill_text(intent.get("triggerContext").and_then(Value::as_str), 12) {
+        issues.push(json!({ "field": "intentFrame.triggerContext", "message": "Trigger context is missing." }));
+    }
+    if non_empty_array_len(
+        intent
+            .get("inputContract")
+            .and_then(|input| input.get("acceptedInputs")),
+    ) < 1
+    {
+        issues.push(json!({ "field": "intentFrame.inputContract.acceptedInputs", "message": "Accepted inputs are missing." }));
+    }
+    if non_empty_array_len(
+        intent
+            .get("workflow")
+            .and_then(|workflow| workflow.get("steps")),
+    ) < 3
+    {
+        issues.push(json!({ "field": "intentFrame.workflow.steps", "message": "Workflow needs at least three concrete steps." }));
+    }
+    if non_empty_array_len(intent.get("successCriteria")) < 1 {
+        issues.push(json!({ "field": "intentFrame.successCriteria", "message": "Success criteria are missing." }));
+    }
+    issues
+}
+
+fn weak_create_skill_text(value: Option<&str>, min_chars: usize) -> bool {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let lower = value.to_ascii_lowercase();
+    value.chars().count() < min_chars
+        || lower.contains("structured agent workflow")
+        || lower.contains("new-skill")
+        || lower.contains("placeholder")
+}
+
+fn non_empty_array_len(value: Option<&Value>) -> usize {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|item| !item.trim().is_empty())
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn create_skill_question_has_options(value: &Value) -> bool {
+    value
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.trim().is_empty())
+        && value
+            .get("question")
+            .and_then(Value::as_str)
+            .is_some_and(|question| !question.trim().is_empty())
+        && value
+            .get("options")
+            .and_then(Value::as_array)
+            .is_some_and(|options| {
+                options.iter().any(|option| {
+                    option
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.trim().is_empty())
+                        && option
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .is_some_and(|label| !label.trim().is_empty())
+                })
+            })
+}
+
+fn create_skill_questions_have_options(value: &Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|items| items.iter().any(create_skill_question_has_options))
+}
+
+fn create_skill_repair_start_spec(spec: &mut Value, prompt: &str, language: &str) {
+    if spec.get("language").and_then(Value::as_str).is_none() {
+        spec["language"] = json!(language);
+    }
+    if !spec.get("intentFrame").is_some_and(Value::is_object) {
+        spec["intentFrame"] = json!({});
+    }
+    create_skill_copy_string_alias(
+        spec,
+        &[
+            "userJob",
+            "userNeed",
+            "jobToBeDone",
+            "problem",
+            "need",
+            "intent",
+            "goal",
+        ],
+        &["intentFrame", "userJob"],
+    );
+    create_skill_copy_string_alias(
+        spec,
+        &[
+            "triggerContext",
+            "trigger",
+            "whenToUse",
+            "useWhen",
+            "activationContext",
+        ],
+        &["intentFrame", "triggerContext"],
+    );
+    create_skill_copy_value_alias(spec, &["inputContract"], &["intentFrame", "inputContract"]);
+    create_skill_copy_value_alias(
+        spec,
+        &["outputContract"],
+        &["intentFrame", "outputContract"],
+    );
+    create_skill_copy_value_alias(spec, &["workflow"], &["intentFrame", "workflow"]);
+    create_skill_copy_value_alias(
+        spec,
+        &["stylePreferences"],
+        &["intentFrame", "stylePreferences"],
+    );
+    create_skill_copy_value_alias(spec, &["nonGoals"], &["intentFrame", "nonGoals"]);
+    create_skill_copy_value_alias(
+        spec,
+        &["successCriteria"],
+        &["intentFrame", "successCriteria"],
+    );
+    create_skill_normalize_spec(spec);
+    if let Some(value) = spec
+        .get("acceptedInputs")
+        .cloned()
+        .filter(|value| value.is_array())
+    {
+        spec["intentFrame"]["inputContract"]["acceptedInputs"] = value;
+    }
+    if let Some(value) = spec.get("steps").cloned().filter(|value| value.is_array()) {
+        spec["intentFrame"]["workflow"]["steps"] = value;
+    }
+    create_skill_repair_start_array_aliases(spec);
+    if spec["intentFrame"]
+        .get("userJob")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        spec["intentFrame"]["userJob"] = json!(prompt.trim());
+    }
+    if spec["intentFrame"]
+        .get("triggerContext")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        spec["intentFrame"]["triggerContext"] = json!(prompt.trim());
+    }
+    create_skill_normalize_spec(spec);
+    create_skill_repair_start_array_aliases(spec);
+}
+
+fn create_skill_repair_start_array_aliases(spec: &mut Value) {
+    if non_empty_array_len(
+        spec.get("intentFrame")
+            .and_then(|intent| intent.get("inputContract"))
+            .and_then(|input| input.get("acceptedInputs")),
+    ) < 1
+    {
+        if let Some(value) = create_skill_first_non_empty_string_array(
+            spec,
+            &[
+                &["intentFrame", "inputContract", "acceptedInputs"],
+                &["intentFrame", "inputContract", "accepted_inputs"],
+                &["intentFrame", "inputContract", "inputs"],
+                &["intentFrame", "acceptedInputs"],
+                &["intentFrame", "accepted_inputs"],
+                &["intentFrame", "inputs"],
+                &["inputContract", "acceptedInputs"],
+                &["inputContract", "accepted_inputs"],
+                &["inputContract", "inputs"],
+                &["acceptedInputs"],
+                &["accepted_inputs"],
+                &["inputs"],
+                &["materials"],
+                &["sourceMaterials"],
+            ],
+        ) {
+            spec["intentFrame"]["inputContract"]["acceptedInputs"] = value;
+        }
+    }
+
+    if non_empty_array_len(
+        spec.get("intentFrame")
+            .and_then(|intent| intent.get("workflow"))
+            .and_then(|workflow| workflow.get("steps")),
+    ) < 3
+    {
+        if let Some(value) = create_skill_first_non_empty_string_array(
+            spec,
+            &[
+                &["intentFrame", "workflow", "steps"],
+                &["intentFrame", "workflow", "workflowSteps"],
+                &["intentFrame", "workflow", "workflow_steps"],
+                &["intentFrame", "workflow"],
+                &["intentFrame", "steps"],
+                &["intentFrame", "workflowSteps"],
+                &["intentFrame", "workflow_steps"],
+                &["workflow", "steps"],
+                &["workflow", "workflowSteps"],
+                &["workflow", "workflow_steps"],
+                &["workflow"],
+                &["steps"],
+                &["workflowSteps"],
+                &["workflow_steps"],
+                &["process"],
+                &["procedure"],
+            ],
+        ) {
+            spec["intentFrame"]["workflow"]["steps"] = value;
+        }
+    }
+
+    if non_empty_array_len(
+        spec.get("intentFrame")
+            .and_then(|intent| intent.get("successCriteria")),
+    ) < 1
+    {
+        if let Some(value) = create_skill_first_non_empty_string_array(
+            spec,
+            &[
+                &["intentFrame", "successCriteria"],
+                &["intentFrame", "success_criteria"],
+                &["intentFrame", "acceptanceCriteria"],
+                &["intentFrame", "acceptance_criteria"],
+                &["intentFrame", "qualityBar"],
+                &["intentFrame", "quality_bar"],
+                &["successCriteria"],
+                &["success_criteria"],
+                &["acceptanceCriteria"],
+                &["acceptance_criteria"],
+                &["qualityBar"],
+                &["quality_bar"],
+                &["criteria"],
+            ],
+        ) {
+            spec["intentFrame"]["successCriteria"] = value;
+        }
+    }
+
+    if non_empty_array_len(
+        spec.get("intentFrame")
+            .and_then(|intent| intent.get("workflow"))
+            .and_then(|workflow| workflow.get("failClosedRules")),
+    ) < 1
+    {
+        if let Some(value) = create_skill_first_non_empty_string_array(
+            spec,
+            &[
+                &["intentFrame", "workflow", "failClosedRules"],
+                &["intentFrame", "workflow", "fail_closed_rules"],
+                &["intentFrame", "failClosedRules"],
+                &["intentFrame", "fail_closed_rules"],
+                &["intentFrame", "boundaries"],
+                &["intentFrame", "guardrails"],
+                &["failClosedRules"],
+                &["fail_closed_rules"],
+                &["boundaries"],
+                &["guardrails"],
+                &["safetyRules"],
+            ],
+        ) {
+            spec["intentFrame"]["workflow"]["failClosedRules"] = value;
+        }
+    }
+}
+
+fn create_skill_first_non_empty_string_array(spec: &Value, paths: &[&[&str]]) -> Option<Value> {
+    paths
+        .iter()
+        .filter_map(|path| create_skill_get_path(spec, path))
+        .find_map(create_skill_string_array_value)
+}
+
+fn create_skill_string_array_value(value: &Value) -> Option<Value> {
+    let items = match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        Value::String(text) => text
+            .lines()
+            .flat_map(|line| line.split(['；', ';']))
+            .map(str::trim)
+            .map(|line| line.trim_start_matches(['-', '*', '•']).trim())
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    if items.is_empty() {
+        None
+    } else {
+        Some(json!(items))
+    }
+}
+
+fn create_skill_copy_string_alias(spec: &mut Value, from_keys: &[&str], to_path: &[&str]) {
+    if create_skill_path_has_non_empty_string(spec, to_path) {
+        return;
+    }
+    let Some(value) = from_keys
+        .iter()
+        .find_map(|key| spec.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    create_skill_set_path(spec, to_path, json!(value));
+}
+
+fn create_skill_copy_value_alias(spec: &mut Value, from_keys: &[&str], to_path: &[&str]) {
+    if create_skill_path_has_value(spec, to_path) {
+        return;
+    }
+    let Some(value) = from_keys.iter().find_map(|key| spec.get(*key).cloned()) else {
+        return;
+    };
+    create_skill_set_path(spec, to_path, value);
+}
+
+fn create_skill_path_has_non_empty_string(spec: &Value, path: &[&str]) -> bool {
+    create_skill_get_path(spec, path)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn create_skill_path_has_value(spec: &Value, path: &[&str]) -> bool {
+    create_skill_get_path(spec, path).is_some_and(|value| !value.is_null())
+}
+
+fn create_skill_get_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn create_skill_set_path(value: &mut Value, path: &[&str], next: Value) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for segment in parents {
+        if !current.get(*segment).is_some_and(Value::is_object) {
+            current[*segment] = json!({});
+        }
+        current = &mut current[*segment];
+    }
+    current[*last] = next;
 }
 
 fn create_skill_coerce_start_payload(parsed: Value, prompt: &str, language: &str) -> Value {
@@ -7267,6 +8516,7 @@ fn create_skill_normalize_spec(spec: &mut Value) {
     }
 }
 
+#[cfg(test)]
 fn create_skill_local_markdown(spec: &Value) -> String {
     let name = spec
         .get("name")
@@ -7490,6 +8740,7 @@ fn contains_cjk(value: &str) -> bool {
         .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
 }
 
+#[cfg(test)]
 fn list_block(items: &[Value], fallback: &str) -> String {
     let lines = items
         .iter()
@@ -8343,15 +9594,17 @@ fn maybe_start_ai_worker(state: &State<'_, AppState>) {
         return;
     }
     let db = state.db.clone();
+    let paths = state.paths.clone();
     let queue = state.ai_queue.clone();
     let running = state.ai_worker_running.clone();
     std::thread::spawn(move || {
-        ai_queue_worker(db, queue, running);
+        ai_queue_worker(db, paths, queue, running);
     });
 }
 
 fn ai_queue_worker(
     db: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    paths: AppPaths,
     queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -8359,7 +9612,7 @@ fn ai_queue_worker(
         let Ok(conn) = db.get() else {
             break;
         };
-        match ai_queue_can_process(&conn) {
+        match ai_queue_can_process(&conn, &paths) {
             Ok(AiQueueDecision::Ready) => {}
             Ok(AiQueueDecision::DrainNoScenarios) => {
                 if let Ok(mut queue) = queue.lock() {
@@ -8385,7 +9638,7 @@ fn ai_queue_worker(
         if batch.is_empty() {
             break;
         }
-        if ai_process_suggestion_batch(&conn, &batch).is_err() {
+        if ai_process_suggestion_batch(&conn, &paths, &batch).is_err() {
             break;
         }
         std::thread::sleep(Duration::from_millis(ai_queue_interval_ms(&conn)));
@@ -8399,7 +9652,7 @@ enum AiQueueDecision {
     DrainNoScenarios,
 }
 
-fn ai_queue_can_process(db: &Connection) -> AppResult<AiQueueDecision> {
+fn ai_queue_can_process(db: &Connection, paths: &AppPaths) -> AppResult<AiQueueDecision> {
     if get_setting(db, "llm.feature.autoCategorize")?.as_deref() != Some("1") {
         return Ok(AiQueueDecision::Wait);
     }
@@ -8410,7 +9663,7 @@ fn ai_queue_can_process(db: &Connection) -> AppResult<AiQueueDecision> {
     if config.model.trim().is_empty() {
         return Ok(AiQueueDecision::Wait);
     }
-    let api_key = llm_read_api_key(db)?;
+    let api_key = llm_read_api_key(db, paths)?;
     if api_key.is_none() && config.provider != "ollama" {
         return Ok(AiQueueDecision::Wait);
     }
@@ -8430,9 +9683,13 @@ fn ai_queue_interval_ms(db: &Connection) -> u64 {
         .unwrap_or(10_000)
 }
 
-fn ai_process_suggestion_batch(db: &Connection, skill_ids: &[String]) -> AppResult<()> {
+fn ai_process_suggestion_batch(
+    db: &Connection,
+    paths: &AppPaths,
+    skill_ids: &[String],
+) -> AppResult<()> {
     let config = llm_read_config(db)?;
-    let api_key = llm_read_api_key(db)?;
+    let api_key = llm_read_api_key(db, paths)?;
     let scenarios = ai_bulk_read_scenarios(db)?;
     if scenarios.is_empty() {
         return Ok(());
@@ -8596,7 +9853,7 @@ pub fn ai_bulk_categorize(payload: Option<Value>, state: State<'_, AppState>) ->
             "No LLM model configured. Set one in Settings -> AI.",
         ));
     }
-    let api_key = llm_read_api_key(&db)?;
+    let api_key = llm_read_api_key(&db, &state.paths)?;
     if api_key.is_none() && config.provider != "ollama" {
         return Err(AppError::new(
             "LLM_NO_KEY",
@@ -9076,7 +10333,36 @@ pub fn ai_library_overview_generate(
             .and_then(Value::as_str)
             .unwrap_or("en"),
     );
-    let db = conn(&state)?;
+    ai_library_overview_generate_inner(&state.db, &state.paths, language)
+}
+
+#[tauri::command]
+pub fn ai_library_overview_generate_job(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let language = normalize_ai_language(
+        payload
+            .as_ref()
+            .and_then(|p| p.get("language"))
+            .and_then(Value::as_str)
+            .unwrap_or("en"),
+    )
+    .to_string();
+    let pool = state.db.clone();
+    let paths = state.paths.clone();
+    let key = language.clone();
+    ai_spawn_job(&state, "library_overview_generate", &key, move || {
+        ai_library_overview_generate_inner(&pool, &paths, &language)
+    })
+}
+
+fn ai_library_overview_generate_inner(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    paths: &AppPaths,
+    language: &str,
+) -> AppResult<Value> {
+    let db = pool.get()?;
     require_network(&db)?;
     let config = llm_read_config(&db)?;
     if config.model.trim().is_empty() {
@@ -9085,7 +10371,7 @@ pub fn ai_library_overview_generate(
             "No LLM model configured. Set one in Settings -> AI.",
         ));
     }
-    let api_key = llm_read_api_key(&db)?;
+    let api_key = llm_read_api_key(&db, paths)?;
     if api_key.is_none() && config.provider != "ollama" {
         return Err(AppError::new(
             "LLM_NO_KEY",
@@ -9524,6 +10810,7 @@ fn cell_state_for(
     loc: &LocRow,
     real_path_owner: &std::collections::HashMap<String, String>,
     canonical: &str,
+    canonical_real_path: Option<&str>,
 ) -> &'static str {
     if loc.is_broken_link {
         "broken"
@@ -9531,9 +10818,11 @@ fn cell_state_for(
         "disabled"
     } else if !loc.is_symlink {
         "present"
-    } else if real_path_owner
-        .get(&loc.real_path)
-        .is_some_and(|owner| owner == canonical)
+    } else if loc.platform_id == canonical
+        || canonical_real_path == Some(loc.real_path.as_str())
+        || real_path_owner
+            .get(&loc.real_path)
+            .is_some_and(|owner| owner == canonical)
     {
         "symlink"
     } else {
@@ -9546,13 +10835,16 @@ fn drift_for(
     state: &str,
     canonical: &str,
     canonical_hash: Option<&str>,
+    canonical_real_path: Option<&str>,
     has_canonical_source: bool,
 ) -> &'static str {
     if loc.platform_id == canonical {
         "in_sync"
     } else if !has_canonical_source {
         "only_here"
-    } else if state == "symlink" {
+    } else if state == "symlink"
+        || (loc.is_symlink && canonical_real_path == Some(loc.real_path.as_str()))
+    {
         "in_sync"
     } else if state == "present" {
         if canonical_hash.is_some()
@@ -9641,6 +10933,10 @@ fn scenarios_for_skill(db: &Connection, id: &str) -> AppResult<Value> {
 }
 
 fn location_action_path(db: &Connection, payload: &Option<Value>) -> AppResult<String> {
+    location_action(db, payload).map(|(path, _)| path)
+}
+
+fn location_action(db: &Connection, payload: &Option<Value>) -> AppResult<(String, String)> {
     let id = optional_i64(payload, "locationId")
         .ok_or_else(|| AppError::new("INVALID_INPUT", "locationId required"))?;
     let (install, real, is_symlink, broken): (String, String, i64, i64) = db.query_row(
@@ -9660,9 +10956,9 @@ fn location_action_path(db: &Connection, payload: &Option<Value>) -> AppResult<S
                 "location has no available symlink target",
             ));
         }
-        Ok(real)
+        Ok((real, "target".to_string()))
     } else {
-        Ok(install)
+        Ok((install, "install".to_string()))
     }
 }
 

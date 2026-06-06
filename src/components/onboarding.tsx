@@ -24,7 +24,7 @@
  *   intentional: skipping is recoverable; completing is one-shot.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, Loader2, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, FolderOpen, Loader2, X } from 'lucide-react';
 import type { LlmProvider, Platform, PlatformId, ScanResult } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -346,6 +346,16 @@ function PlatformsStep({ onStatusChange }: { onStatusChange: (status: PlatformsS
     }
   }
 
+  async function pickCustomDir() {
+    setCustomError(null);
+    try {
+      const result = await api.platforms.pickDir(customForm.skillsDir);
+      if (result.path) setCustomForm((form) => ({ ...form, skillsDir: result.path! }));
+    } catch (err) {
+      setCustomError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <div className="space-y-4">
       <header>
@@ -454,13 +464,25 @@ function PlatformsStep({ onStatusChange }: { onStatusChange: (status: PlatformsS
                     className="h-8 text-xs"
                   />
                   <Label htmlFor="ob-cp-dir" className="text-xs">{t('onboarding.platforms.custom.dir')}</Label>
-                  <Input
-                    id="ob-cp-dir"
-                    value={customForm.skillsDir}
-                    onChange={(e) => setCustomForm({ ...customForm, skillsDir: e.target.value })}
-                    placeholder={t('onboarding.platforms.custom.dirPlaceholder')}
-                    className="h-8 font-mono text-xs"
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      id="ob-cp-dir"
+                      value={customForm.skillsDir}
+                      onChange={(e) => setCustomForm({ ...customForm, skillsDir: e.target.value })}
+                      placeholder={t('onboarding.platforms.custom.dirPlaceholder')}
+                      className="h-8 font-mono text-xs"
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={pickCustomDir}
+                      className="h-8 shrink-0"
+                    >
+                      <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                      {t('onboarding.platforms.custom.pickDir')}
+                    </Button>
+                  </div>
                 </div>
                 {customError && (
                   <p className="text-[11px] text-destructive break-all">{customError}</p>

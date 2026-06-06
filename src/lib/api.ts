@@ -15,6 +15,7 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { IPC, type IpcChannel, type IpcEventChannel } from '@shared/ipc-channels';
 import type {
   AiScenarioSuggestion,
+  AiJob,
   AppUpdateInfo,
   AppUpdateInstallProgress,
   AppStats,
@@ -102,6 +103,7 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.platforms.create]: 'platforms_create',
   [IPC.platforms.delete]: 'platforms_delete',
   [IPC.platforms.probe]: 'platforms_probe',
+  [IPC.platforms.pickDir]: 'platforms_pick_dir',
   [IPC.platforms.knownCandidates]: 'platforms_known_candidates',
   [IPC.platforms.openDir]: 'platforms_open_dir',
 
@@ -152,11 +154,14 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.llm.getFeatures]: 'llm_get_features',
   [IPC.llm.setFeatures]: 'llm_set_features',
 
+  [IPC.ai.jobGet]: 'ai_job_get',
+  [IPC.ai.jobLatest]: 'ai_job_latest',
   [IPC.ai.getSuggestionsForSkill]: 'ai_get_suggestions_for_skill',
   [IPC.ai.acceptSuggestion]: 'ai_accept_suggestion',
   [IPC.ai.dismissSuggestion]: 'ai_dismiss_suggestion',
   [IPC.ai.queueStatus]: 'ai_queue_status',
   [IPC.ai.createSkillStart]: 'ai_create_skill_start',
+  [IPC.ai.createSkillStartJob]: 'ai_create_skill_start_job',
   [IPC.ai.createSkillGet]: 'ai_create_skill_get',
   [IPC.ai.createSkillRefine]: 'ai_create_skill_refine',
   [IPC.ai.createSkillAnswer]: 'ai_create_skill_answer',
@@ -169,6 +174,7 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.ai.applyBulkCategorization]: 'ai_apply_bulk_categorization',
   [IPC.ai.libraryOverviewGet]: 'ai_library_overview_get',
   [IPC.ai.libraryOverviewGenerate]: 'ai_library_overview_generate',
+  [IPC.ai.libraryOverviewGenerateJob]: 'ai_library_overview_generate_job',
 };
 
 function normalizeApiError(err: unknown): Error & { code?: string; detail?: unknown } {
@@ -312,6 +318,8 @@ export const api = {
         alreadyRegistered: boolean;
         registeredAs?: string;
       }>,
+    pickDir: (startDir?: string) =>
+      bridge().invoke(IPC.platforms.pickDir, { startDir }) as Promise<{ path: string | null }>,
     knownCandidates: () =>
       bridge().invoke(IPC.platforms.knownCandidates) as Promise<
         Array<{ id: string; label: string; defaultDir: string; description: string }>
@@ -384,7 +392,7 @@ export const api = {
     matrix: () => bridge().invoke(IPC.coverage.matrix) as Promise<CoverageMatrix>,
   },
   sync: {
-    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[] }>) =>
+    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[]; forceReplace?: boolean }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'sync_from_canonical', requests }) as Promise<SyncPlan>,
     planPromote: (requests: Array<{ skillId: string; sourceLocationId?: number }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', requests }) as Promise<SyncPlan>,
@@ -444,6 +452,10 @@ export const api = {
       bridge().invoke(IPC.llm.setFeatures, toggles) as Promise<LlmFeatureToggles>,
   },
   ai: {
+    jobGet: <T = unknown>(jobId: string) =>
+      bridge().invoke(IPC.ai.jobGet, { jobId }) as Promise<AiJob<T>>,
+    jobLatest: <T = unknown>(kind: string, key?: string) =>
+      bridge().invoke(IPC.ai.jobLatest, { kind, key }) as Promise<AiJob<T> | null>,
     getSuggestionsForSkill: (skillId: string) =>
       bridge().invoke(IPC.ai.getSuggestionsForSkill, { skillId }) as Promise<AiScenarioSuggestion[]>,
     acceptSuggestion: (suggestionId: number) =>
@@ -455,6 +467,8 @@ export const api = {
     createSkill: {
       start: (input: { prompt: string; language?: 'zh' | 'en' }) =>
         bridge().invoke(IPC.ai.createSkillStart, input) as Promise<CreateSkillStartResult>,
+      startJob: (input: { prompt: string; language?: 'zh' | 'en' }) =>
+        bridge().invoke(IPC.ai.createSkillStartJob, input) as Promise<AiJob<CreateSkillStartResult>>,
       get: (draftId: string) =>
         bridge().invoke(IPC.ai.createSkillGet, { draftId }) as Promise<CreateSkillDraft>,
       refine: (input: { draftId: string; skillSpec: CreateSkillSpec; targetBasename?: string }) =>
@@ -503,6 +517,8 @@ export const api = {
     /** Run the LLM, replace the cache, return the fresh overview. */
     libraryOverviewGenerate: (language: 'zh' | 'en') =>
       bridge().invoke(IPC.ai.libraryOverviewGenerate, { language }) as Promise<LibraryOverview>,
+    libraryOverviewGenerateJob: (language: 'zh' | 'en') =>
+      bridge().invoke(IPC.ai.libraryOverviewGenerateJob, { language }) as Promise<AiJob<LibraryOverview>>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

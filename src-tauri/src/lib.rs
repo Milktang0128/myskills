@@ -5,6 +5,7 @@ mod error;
 mod migration;
 mod paths;
 mod scanner;
+mod secret_vault;
 mod state;
 
 use r2d2_sqlite::SqliteConnectionManager;
@@ -21,6 +22,7 @@ const TAURI_PREVIEW_IDENTIFIER: &str = "com.kanbenzhi.myskills.tauri-preview";
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -35,6 +37,7 @@ pub fn run() {
             commands::platforms_create,
             commands::platforms_delete,
             commands::platforms_probe,
+            commands::platforms_pick_dir,
             commands::platforms_known_candidates,
             commands::platforms_open_dir,
             commands::skills_list,
@@ -76,11 +79,14 @@ pub fn run() {
             commands::llm_test_connection,
             commands::llm_get_features,
             commands::llm_set_features,
+            commands::ai_job_get,
+            commands::ai_job_latest,
             commands::ai_get_suggestions_for_skill,
             commands::ai_accept_suggestion,
             commands::ai_dismiss_suggestion,
             commands::ai_queue_status,
             commands::ai_create_skill_start,
+            commands::ai_create_skill_start_job,
             commands::ai_create_skill_get,
             commands::ai_create_skill_refine,
             commands::ai_create_skill_answer,
@@ -92,7 +98,8 @@ pub fn run() {
             commands::ai_bulk_categorize,
             commands::ai_apply_bulk_categorization,
             commands::ai_library_overview_get,
-            commands::ai_library_overview_generate
+            commands::ai_library_overview_generate,
+            commands::ai_library_overview_generate_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running MySkills");
@@ -182,6 +189,7 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
         sync_lock: std::sync::Mutex::new(()),
         ai_queue: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         ai_worker_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ai_jobs: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     })
 }
 

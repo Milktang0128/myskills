@@ -4,11 +4,13 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Pencil, Sparkles } from 'lucide-react';
 import type {
+  AiJob,
   CreateSkillDraft,
   CreateSkillExecuteResult,
   CreateSkillQuestion,
   CreateSkillReviewReport,
   CreateSkillSpec,
+  CreateSkillStartResult,
   Platform,
   PlatformId,
   Scenario,
@@ -29,8 +31,10 @@ interface Props {
   platforms: Platform[];
   scenarios: Scenario[];
   canonicalPlatform: PlatformId;
+  aiAvailable: boolean;
   onInstalled: (skillId: string | null, name: string) => void;
   onToast: (message: string) => void;
+  onOpenAiSettings: () => void;
 }
 
 export function CreateSkillView({
@@ -38,8 +42,10 @@ export function CreateSkillView({
   platforms,
   scenarios,
   canonicalPlatform,
+  aiAvailable,
   onInstalled,
   onToast,
+  onOpenAiSettings,
 }: Props) {
   const { locale } = useI18n();
   const copy = locale === 'zh' ? zhCopy : enCopy;
@@ -57,6 +63,7 @@ export function CreateSkillView({
   const [targetPlatformIds, setTargetPlatformIds] = useState<PlatformId[]>([canonicalPlatform]);
   const [targetScenarioIds, setTargetScenarioIds] = useState<number[]>([]);
   const [manualMode, setManualMode] = useState(false);
+  const [startJob, setStartJob] = useState<AiJob<CreateSkillStartResult> | null>(null);
 
   useEffect(() => {
     if (!seed) return;
@@ -82,22 +89,86 @@ export function CreateSkillView({
   const targetBasename = spec?.name?.trim() || draft?.targetBasename || 'new-skill';
   const canonical = platforms.find((p) => p.id === canonicalPlatform) ?? platforms[0];
 
+  useEffect(() => {
+    if (!aiAvailable || step !== 'input') return;
+    let cancelled = false;
+    void api.ai
+      .jobLatest<CreateSkillStartResult>('create_skill_start')
+      .then((job) => {
+        if (cancelled || !job || !['queued', 'running'].includes(job.status)) return;
+        setStartJob(job);
+        setBusy(true);
+        setError(null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [aiAvailable, step]);
+
+  useEffect(() => {
+    if (!startJob || !['queued', 'running'].includes(startJob.status)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const job = await api.ai.jobGet<CreateSkillStartResult>(startJob.jobId);
+        if (cancelled) return;
+        setStartJob(job);
+        if (job.status === 'succeeded' && job.result) {
+          applyStartResult(job.result);
+          setStartJob(null);
+          setBusy(false);
+        } else if (job.status === 'failed') {
+          setError(formatCreateSkillError(job.error ?? copy.badOutline, locale));
+          setStep('input');
+          setStartJob(null);
+          setBusy(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(formatCreateSkillError(err, locale));
+          setStartJob(null);
+          setBusy(false);
+        }
+      }
+    };
+    void poll();
+    const id = window.setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [copy.badOutline, locale, startJob]);
+
+  function applyStartResult(result: CreateSkillStartResult) {
+    const nextDraft = normalizeCreateSkillDraft(result.draft);
+    if (!nextDraft.skillSpec || !isUsableOutline(nextDraft.skillSpec, nextDraft.followupQuestions)) {
+      throw new Error(copy.badOutline);
+    }
+    setDraft(nextDraft);
+    setSpec(nextDraft.skillSpec);
+    setMarkdown(nextDraft.draftMarkdown ?? '');
+    setReview(nextDraft.validation);
+    setStep('outline');
+    setManualMode(!result.aiUsed);
+    if (!result.aiUsed) onToast(copy.localMode);
+  }
+
   async function start() {
+    if (!aiAvailable) {
+      onToast(copy.aiRequired);
+      onOpenAiSettings();
+      return;
+    }
     if (prompt.trim().length < 4) return;
     setBusy(true);
     setError(null);
     try {
-      const result = await api.ai.createSkill.start({ prompt: prompt.trim(), language: locale });
-      setDraft(result.draft);
-      setSpec(result.draft.skillSpec);
-      setMarkdown(result.draft.draftMarkdown ?? '');
-      setReview(result.draft.validation);
-      setStep('outline');
-      setManualMode(!result.aiUsed);
-      if (!result.aiUsed) onToast(copy.localMode);
+      const job = await api.ai.createSkill.startJob({ prompt: prompt.trim(), language: locale });
+      setStartJob(job);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
+      setError(formatCreateSkillError(err, locale));
+      setStep('input');
       setBusy(false);
     }
   }
@@ -112,8 +183,9 @@ export function CreateSkillView({
         skillSpec: normalizeSpec(spec),
         targetBasename,
       });
-      setDraft(updated);
-      setSpec(updated.skillSpec);
+      const nextDraft = normalizeCreateSkillDraft(updated);
+      setDraft(nextDraft);
+      setSpec(nextDraft.skillSpec);
       setStep(nextStep);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -132,8 +204,9 @@ export function CreateSkillView({
         questionId: question.id,
         answer,
       });
-      setDraft(result.draft);
-      setSpec(result.draft.skillSpec);
+      const nextDraft = normalizeCreateSkillDraft(result.draft);
+      setDraft(nextDraft);
+      setSpec(nextDraft.skillSpec);
       setStep('questions');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -148,10 +221,11 @@ export function CreateSkillView({
     setError(null);
     try {
       const result = await api.ai.createSkill.generate({ draftId: draft.id, skillSpec: normalizeSpec(spec) });
-      setDraft(result.draft);
-      setSpec(result.draft.skillSpec);
-      setMarkdown(result.draft.draftMarkdown ?? '');
-      setReview(result.draft.validation);
+      const nextDraft = normalizeCreateSkillDraft(result.draft);
+      setDraft(nextDraft);
+      setSpec(nextDraft.skillSpec);
+      setMarkdown(nextDraft.draftMarkdown ?? '');
+      setReview(nextDraft.validation);
       setStep('draft');
       setManualMode(!result.aiUsed);
       if (!result.aiUsed) onToast(copy.localDraft);
@@ -172,9 +246,17 @@ export function CreateSkillView({
         markdown,
         targetBasename,
       });
-      setDraft(result.draft);
-      setReview(result.review);
-      if (result.review.blocking.length === 0 && result.review.warnings.length === 0) setStep('install');
+      const nextDraft = normalizeCreateSkillDraft(result.draft);
+      const nextReview = normalizeCreateSkillReview(result.review);
+      setDraft(nextDraft);
+      setReview(nextReview);
+      if (nextReview.blocking.length === 0 && nextReview.warnings.length === 0) {
+        setStep('install');
+        onToast(copy.reviewPassedToast);
+      } else {
+        setStep('draft');
+        onToast(copy.reviewBlockedToast);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -194,7 +276,7 @@ export function CreateSkillView({
         targetPlatformIds,
         targetScenarioIds,
       });
-      setDraft(result.draft);
+      setDraft(normalizeCreateSkillDraft(result.draft));
       setPlan(result.plan);
       setConfirmOpen(true);
     } catch (err) {
@@ -324,6 +406,8 @@ export function CreateSkillView({
     setPlan(null);
     setExecuteResult(null);
     setManualMode(false);
+    setStartJob(null);
+    setBusy(false);
     setTargetScenarioIds([]);
     setTargetPlatformIds([canonicalPlatform]);
   }
@@ -352,6 +436,16 @@ export function CreateSkillView({
 
             {step === 'input' && (
               <section className="space-y-4">
+                {!aiAvailable && (
+                  <Notice tone="info" icon={<Sparkles className="h-4 w-4" />}>
+                    {copy.aiRequiredNotice}
+                  </Notice>
+                )}
+                {startJob && ['queued', 'running'].includes(startJob.status) && (
+                  <Notice tone="info" icon={<Loader2 className="h-4 w-4 animate-spin" />}>
+                    {copy.backgroundRunning}
+                  </Notice>
+                )}
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
@@ -371,9 +465,9 @@ export function CreateSkillView({
                     </button>
                   ))}
                 </div>
-                <Button onClick={start} disabled={busy || prompt.trim().length < 4} data-smoke-action="create-skill-start">
+                <Button onClick={start} disabled={busy || (aiAvailable && prompt.trim().length < 4)} data-smoke-action="create-skill-start">
                   {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                  {copy.start}
+                  {busy && startJob ? copy.backgroundRunningShort : aiAvailable ? copy.start : copy.configureAi}
                 </Button>
               </section>
             )}
@@ -415,7 +509,7 @@ export function CreateSkillView({
                 </Field>
                 <Field label={copy.inputs}>
                   <textarea
-                    value={spec.intentFrame.inputContract.acceptedInputs.join('\n')}
+                    value={safeStringList(spec.intentFrame.inputContract.acceptedInputs).join('\n')}
                     onChange={(e) => setAcceptedInputs(e.target.value)}
                     className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
@@ -453,21 +547,21 @@ export function CreateSkillView({
                 </div>
                 <Field label={copy.workflow}>
                   <textarea
-                    value={spec.intentFrame.workflow.steps.join('\n')}
+                    value={safeStringList(spec.intentFrame.workflow.steps).join('\n')}
                     onChange={(e) => setWorkflow(e.target.value)}
                     className="min-h-[132px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 </Field>
                 <Field label={copy.boundaries}>
                   <textarea
-                    value={[...spec.intentFrame.workflow.failClosedRules, ...spec.intentFrame.nonGoals].join('\n')}
+                    value={boundaryLines(spec).join('\n')}
                     onChange={(e) => setBoundaryAndNonGoals(e.target.value)}
                     className="min-h-[104px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
                 </Field>
                 <Field label={copy.criteria}>
                   <textarea
-                    value={spec.intentFrame.successCriteria.join('\n')}
+                    value={safeStringList(spec.intentFrame.successCriteria).join('\n')}
                     onChange={(e) => setCriteria(e.target.value)}
                     className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
@@ -476,6 +570,15 @@ export function CreateSkillView({
                   <Button onClick={() => saveOutline('questions')} disabled={busy}>
                     <Pencil className="mr-2 h-4 w-4" />
                     {copy.continueQuestions}
+                  </Button>
+                  <Button variant="outline" onClick={() => setStep('input')} disabled={busy}>
+                    {copy.backInput}
+                  </Button>
+                  <Button variant="outline" onClick={start} disabled={busy || prompt.trim().length < 4}>
+                    {copy.regenerateOutline}
+                  </Button>
+                  <Button variant="outline" onClick={resetAll} disabled={busy}>
+                    {copy.discardDraft}
                   </Button>
                 </div>
               </section>
@@ -519,7 +622,16 @@ export function CreateSkillView({
                 {review && <ReviewPanel review={review} copy={copy} />}
                 <div className="flex gap-2">
                   <Button onClick={runReview} disabled={busy || !markdown.trim()}>
-                    {copy.review}
+                    {busy ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        {copy.reviewing}
+                      </>
+                    ) : review ? (
+                      copy.reviewAgain
+                    ) : (
+                      copy.review
+                    )}
                   </Button>
                   <Button
                     variant="outline"
@@ -659,11 +771,11 @@ export function CreateSkillView({
           });
           if ((result.sync.failed?.length ?? 0) > 0 || !result.skillId) {
             setExecuteResult(result);
-            setDraft(result.draft);
+            setDraft(normalizeCreateSkillDraft(result.draft));
             throw new Error(copy.installFailed);
           }
           setExecuteResult(result);
-          setDraft(result.draft);
+          setDraft(normalizeCreateSkillDraft(result.draft));
           setStep('done');
           return result.sync;
         }}
@@ -746,9 +858,12 @@ function QuestionBlock({
 }
 
 function ReviewPanel({ review, copy }: { review: CreateSkillReviewReport; copy: Copy }) {
+  const safeReview = normalizeCreateSkillReview(review);
+  const blocking = safeReview.blocking;
+  const warnings = safeReview.warnings;
   return (
     <div className="space-y-2">
-      {review.blocking.length === 0 ? (
+      {blocking.length === 0 ? (
         <Notice tone="success" icon={<CheckCircle2 className="h-4 w-4" />}>
           {copy.reviewPassed}
         </Notice>
@@ -757,7 +872,7 @@ function ReviewPanel({ review, copy }: { review: CreateSkillReviewReport; copy: 
           {copy.reviewBlocked}
         </Notice>
       )}
-      {[...review.blocking, ...review.warnings].map((issue) => (
+      {[...blocking, ...warnings].map((issue) => (
         <div key={`${issue.code}-${issue.message}`} className="border bg-background px-3 py-2 text-xs">
           <span className="font-mono text-muted-foreground">{issue.code}</span>
           <span className="ml-2">{issue.message}</span>
@@ -768,17 +883,18 @@ function ReviewPanel({ review, copy }: { review: CreateSkillReviewReport; copy: 
 }
 
 function SkillBehaviorSummary({ spec, copy }: { spec: CreateSkillSpec; copy: Copy }) {
+  const safeSpec = normalizeSpec(spec);
   return (
     <div className="grid gap-3 border bg-background p-4 text-xs md:grid-cols-2">
-      <SummaryItem label={copy.description} value={spec.description} />
-      <SummaryItem label={copy.trigger} value={spec.intentFrame.triggerContext} />
-      <SummaryItem label={copy.inputs} value={spec.intentFrame.inputContract.acceptedInputs.join('\n')} />
+      <SummaryItem label={copy.description} value={safeSpec.description} />
+      <SummaryItem label={copy.trigger} value={safeSpec.intentFrame.triggerContext} />
+      <SummaryItem label={copy.inputs} value={safeSpec.intentFrame.inputContract.acceptedInputs.join('\n')} />
       <SummaryItem
         label={copy.outputArtifact}
-        value={`${spec.intentFrame.outputContract.artifactType} / ${spec.intentFrame.outputContract.destination}`}
+        value={`${safeSpec.intentFrame.outputContract.artifactType} / ${safeSpec.intentFrame.outputContract.destination}`}
       />
-      <SummaryItem label={copy.boundaries} value={[...spec.intentFrame.workflow.failClosedRules, ...spec.intentFrame.nonGoals].join('\n')} />
-      <SummaryItem label={copy.criteria} value={spec.intentFrame.successCriteria.join('\n')} />
+      <SummaryItem label={copy.boundaries} value={boundaryLines(safeSpec).join('\n')} />
+      <SummaryItem label={copy.criteria} value={safeSpec.intentFrame.successCriteria.join('\n')} />
     </div>
   );
 }
@@ -801,7 +917,9 @@ function QualityChecklist({
   review: CreateSkillReviewReport | null;
   copy: Copy;
 }) {
-  const checks = review?.checks;
+  const safeSpec = normalizeSpec(spec);
+  const safeReview = review ? normalizeCreateSkillReview(review) : null;
+  const checks = safeReview?.checks;
   const safetyItems = [
     {
       label: copy.safetyParseable,
@@ -822,29 +940,29 @@ function QualityChecklist({
   const qualityItems = [
     {
       label: copy.qualityTrigger,
-      ok: checks?.triggerDescription ?? spec.description.trim().length > 20,
+      ok: checks?.triggerDescription ?? safeSpec.description.trim().length > 20,
     },
     {
       label: copy.qualityInputs,
-      ok: checks?.hasInputs ?? spec.intentFrame.inputContract.acceptedInputs.length > 0,
+      ok: checks?.hasInputs ?? safeSpec.intentFrame.inputContract.acceptedInputs.length > 0,
     },
     {
       label: copy.qualityWorkflow,
-      ok: checks?.hasWorkflow ?? spec.intentFrame.workflow.steps.length >= 3,
+      ok: checks?.hasWorkflow ?? safeSpec.intentFrame.workflow.steps.length >= 3,
     },
     {
       label: copy.qualityOutput,
-      ok: checks?.hasOutput ?? Boolean(spec.intentFrame.outputContract.artifactType),
+      ok: checks?.hasOutput ?? Boolean(safeSpec.intentFrame.outputContract.artifactType),
     },
     {
       label: copy.qualityBoundaries,
       ok:
         checks?.hasBoundaries ??
-        spec.intentFrame.workflow.failClosedRules.length + spec.intentFrame.nonGoals.length > 0,
+        safeSpec.intentFrame.workflow.failClosedRules.length + safeSpec.intentFrame.nonGoals.length > 0,
     },
     {
       label: copy.qualityCriteria,
-      ok: checks?.hasQualityBar ?? spec.intentFrame.successCriteria.length > 0,
+      ok: checks?.hasQualityBar ?? safeSpec.intentFrame.successCriteria.length > 0,
     },
   ];
   return (
@@ -912,18 +1030,247 @@ function Notice({
   );
 }
 
-function normalizeSpec(spec: CreateSkillSpec): CreateSkillSpec {
+function normalizeCreateSkillDraft(draft: CreateSkillDraft): CreateSkillDraft {
+  const source: Record<string, unknown> = isRecord(draft) ? draft : {};
+  const skillSpec = isRecord(source.skillSpec) ? normalizeSpec(source.skillSpec as unknown as CreateSkillSpec) : null;
   return {
-    ...spec,
-    name: slugInput(spec.name),
-    intentFrame: {
-      ...spec.intentFrame,
-      workflow: {
-        ...spec.intentFrame.workflow,
-        steps: spec.intentFrame.workflow.steps.filter(Boolean),
-      },
+    ...(draft ?? ({} as CreateSkillDraft)),
+    rawPrompt: stringValue(source.rawPrompt),
+    intentFrame: isRecord(source.intentFrame) ? normalizeIntentFrame(source.intentFrame) : skillSpec?.intentFrame ?? null,
+    skillSpec,
+    followupQuestions: normalizeQuestions(source.followupQuestions),
+    answers: isRecord(source.answers) ? (source.answers as Record<string, string>) : {},
+    draftMarkdown: stringOrNull(source.draftMarkdown),
+    targetPlatformIds: safeStringList(source.targetPlatformIds),
+    targetScenarioIds: safeNumberList(source.targetScenarioIds),
+    targetBasename: stringOrNull(source.targetBasename),
+    validation: isRecord(source.validation) ? normalizeCreateSkillReview(source.validation as unknown as CreateSkillReviewReport) : null,
+    planToken: stringOrNull(source.planToken),
+    installedSkillId: stringOrNull(source.installedSkillId),
+    createdAt: numberValue(source.createdAt),
+    updatedAt: numberValue(source.updatedAt),
+    installedAt: numberOrNull(source.installedAt),
+    discardedAt: numberOrNull(source.discardedAt),
+  };
+}
+
+function normalizeSpec(spec: CreateSkillSpec): CreateSkillSpec {
+  const source: Record<string, unknown> = isRecord(spec) ? spec : {};
+  const intentFrame = normalizeIntentFrame(source.intentFrame);
+  return {
+    ...(spec ?? ({} as CreateSkillSpec)),
+    name: slugInput(stringValue(source.name)),
+    description: stringValue(source.description),
+    language: source.language === 'en' ? 'en' : 'zh',
+    intentFrame,
+    needsNetwork: Boolean(source.needsNetwork),
+    writesFiles: Boolean(source.writesFiles),
+    overwritePolicy: source.overwritePolicy === 'confirm_each_time' ? 'confirm_each_time' : 'never',
+    ready: Boolean(source.ready),
+    missing: safeStringList(source.missing),
+  };
+}
+
+function isUsableOutline(spec: CreateSkillSpec, questions: CreateSkillQuestion[]): boolean {
+  const safeSpec = normalizeSpec(spec);
+  const intent = safeSpec.intentFrame;
+  const safeQuestions = normalizeQuestions(questions);
+  return Boolean(
+    slugInput(safeSpec.name) &&
+      safeSpec.description.trim().length >= 20 &&
+      !safeSpec.description.toLowerCase().includes('structured agent workflow') &&
+      intent.userJob.trim().length >= 12 &&
+      intent.triggerContext.trim().length >= 12 &&
+      intent.inputContract.acceptedInputs.some((item) => item.trim()) &&
+      intent.workflow.steps.filter((item) => item.trim()).length >= 3 &&
+      intent.successCriteria.some((item) => item.trim()) &&
+      safeQuestions.some((question) => question.options.length > 0),
+  );
+}
+
+function normalizeIntentFrame(value: unknown): CreateSkillSpec['intentFrame'] {
+  const source: Record<string, unknown> = isRecord(value) ? value : {};
+  const inputContract: Record<string, unknown> = isRecord(source.inputContract) ? source.inputContract : {};
+  const outputContract: Record<string, unknown> = isRecord(source.outputContract) ? source.outputContract : {};
+  const workflow: Record<string, unknown> = isRecord(source.workflow) ? source.workflow : {};
+  return {
+    userJob: stringValue(source.userJob),
+    triggerContext: stringValue(source.triggerContext),
+    inputContract: {
+      acceptedInputs: safeStringList(inputContract.acceptedInputs),
+      privacyClass: oneOf(inputContract.privacyClass, ['local_only', 'may_send_summary', 'may_send_content'] as const, 'may_send_summary'),
+    },
+    outputContract: {
+      artifactType: oneOf(outputContract.artifactType, ['markdown', 'report', 'checklist', 'code_patch', 'file', 'other'] as const, 'markdown'),
+      destination: oneOf(outputContract.destination, ['reply_only', 'same_folder', 'user_selected'] as const, 'reply_only'),
+    },
+    workflow: {
+      steps: safeStringList(workflow.steps),
+      failClosedRules: safeStringList(workflow.failClosedRules),
+    },
+    stylePreferences: safeStringList(source.stylePreferences),
+    nonGoals: safeStringList(source.nonGoals),
+    successCriteria: safeStringList(source.successCriteria),
+  };
+}
+
+function normalizeCreateSkillReview(review: CreateSkillReviewReport): CreateSkillReviewReport {
+  const source: Record<string, unknown> = isRecord(review) ? review : {};
+  const checks: Record<string, unknown> = isRecord(source.checks) ? source.checks : {};
+  return {
+    blocking: normalizeReviewIssues(source.blocking, true),
+    warnings: normalizeReviewIssues(source.warnings, false),
+    checks: {
+      safeName: Boolean(checks.safeName),
+      parseableFrontmatter: Boolean(checks.parseableFrontmatter),
+      sizeUnderLimit: Boolean(checks.sizeUnderLimit),
+      triggerDescription: Boolean(checks.triggerDescription),
+      hasInputs: Boolean(checks.hasInputs),
+      hasWorkflow: Boolean(checks.hasWorkflow),
+      hasOutput: Boolean(checks.hasOutput),
+      hasBoundaries: Boolean(checks.hasBoundaries),
+      hasQualityBar: Boolean(checks.hasQualityBar),
+      conciseBody: Boolean(checks.conciseBody),
+      frontmatterOnlyNameDescription: Boolean(checks.frontmatterOnlyNameDescription),
+      nameMatchesBasename: Boolean(checks.nameMatchesBasename),
+      nameIsKebabCase: Boolean(checks.nameIsKebabCase),
+      noPrivateFields: Boolean(checks.noPrivateFields),
+      noSilentNetwork: Boolean(checks.noSilentNetwork),
+      noSilentOverwrite: Boolean(checks.noSilentOverwrite),
+      noSecretExfiltration: Boolean(checks.noSecretExfiltration),
+      noDangerousShellDefault: Boolean(checks.noDangerousShellDefault),
     },
   };
+}
+
+function normalizeReviewIssues(value: unknown, allowPath: boolean): Array<{ code: string; message: string; path?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!isRecord(item)) return null;
+      const issue: { code: string; message: string; path?: string } = {
+        code: stringValue(item.code) || 'ISSUE',
+        message: stringValue(item.message),
+      };
+      const path = allowPath ? stringOrNull(item.path) : null;
+      if (path) issue.path = path;
+      return issue.message ? issue : null;
+    })
+    .filter((item): item is { code: string; message: string; path?: string } => item != null);
+}
+
+function normalizeQuestions(value: unknown): CreateSkillQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!isRecord(item)) return null;
+      const options = Array.isArray(item.options)
+        ? item.options
+            .map((option) => {
+              if (!isRecord(option)) return null;
+              const id = stringValue(option.id);
+              const label = stringValue(option.label);
+              if (!id || !label) return null;
+              return {
+                id,
+                label,
+                effect: stringValue(option.effect),
+              };
+            })
+            .filter((option): option is { id: string; label: string; effect: string } => option != null)
+        : [];
+      const id = stringValue(item.id);
+      const question = stringValue(item.question);
+      if (!id || !question) return null;
+      return {
+        id,
+        question,
+        options,
+        allowFreeform: Boolean(item.allowFreeform),
+      };
+    })
+    .filter((item): item is CreateSkillQuestion => item != null);
+}
+
+function boundaryLines(spec: CreateSkillSpec): string[] {
+  return [...safeStringList(spec.intentFrame?.workflow?.failClosedRules), ...safeStringList(spec.intentFrame?.nonGoals)];
+}
+
+function safeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean);
+}
+
+function safeNumberList(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is number => Number.isFinite(item));
+}
+
+function oneOf<const T extends readonly string[]>(value: unknown, allowed: T, fallback: T[number]): T[number] {
+  return typeof value === 'string' && allowed.includes(value) ? value : fallback;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : Date.now();
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object');
+}
+
+function formatCreateSkillError(err: unknown, locale: 'zh' | 'en'): string {
+  if (typeof err === 'string') return err;
+  if (!err || typeof err !== 'object') return String(err);
+  const value = err as { message?: unknown; detail?: unknown };
+  const message = typeof value.message === 'string' ? value.message : String(err);
+  const issues = (value.detail as { issues?: unknown } | undefined)?.issues;
+  if (!Array.isArray(issues) || issues.length === 0) return message;
+  const fields = issues
+    .map((issue) => {
+      if (!issue || typeof issue !== 'object') return null;
+      const item = issue as { field?: unknown };
+      return typeof item.field === 'string' ? createSkillIssueLabel(item.field, locale) : null;
+    })
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(', ');
+  return fields ? `${message} (${fields})` : message;
+}
+
+function createSkillIssueLabel(field: string, locale: 'zh' | 'en'): string {
+  const zh: Record<string, string> = {
+    name: '技能名',
+    description: '触发描述',
+    'intentFrame.userJob': '用户需求',
+    'intentFrame.triggerContext': '触发时机',
+    'intentFrame.inputContract.acceptedInputs': '适合输入',
+    'intentFrame.workflow.steps': '工作流步骤',
+    'intentFrame.successCriteria': '验收标准',
+    schema: '返回格式',
+  };
+  const en: Record<string, string> = {
+    name: 'skill name',
+    description: 'trigger description',
+    'intentFrame.userJob': 'user need',
+    'intentFrame.triggerContext': 'trigger context',
+    'intentFrame.inputContract.acceptedInputs': 'accepted inputs',
+    'intentFrame.workflow.steps': 'workflow steps',
+    'intentFrame.successCriteria': 'success criteria',
+    schema: 'response schema',
+  };
+  return (locale === 'zh' ? zh : en)[field] ?? field;
 }
 
 function lines(value: string): string[] {
@@ -948,8 +1295,14 @@ interface Copy {
   promptPlaceholder: string;
   examples: string[];
   start: string;
+  configureAi: string;
+  aiRequired: string;
+  aiRequiredNotice: string;
+  badOutline: string;
   localMode: string;
   localDraft: string;
+  backgroundRunning: string;
+  backgroundRunningShort: string;
   manualModeNotice: string;
   name: string;
   description: string;
@@ -965,11 +1318,18 @@ interface Copy {
   boundaries: string;
   criteria: string;
   continueQuestions: string;
+  backInput: string;
+  regenerateOutline: string;
+  discardDraft: string;
   generateNow: string;
   questionsDone: string;
   generateDraft: string;
   backOutline: string;
   review: string;
+  reviewAgain: string;
+  reviewing: string;
+  reviewPassedToast: string;
+  reviewBlockedToast: string;
   editOutline: string;
   reviewPassed: string;
   reviewBlocked: string;
@@ -1013,8 +1373,14 @@ const zhCopy: Copy = {
     '给设计稿生成前端实现 checklist，避免 UI 文本溢出和布局重叠。',
   ],
   start: '生成技能轮廓',
+  configureAi: '前往设置 AI',
+  aiRequired: '创造技能需要先保存 AI 设置并测试连接。',
+  aiRequiredNotice: '创造技能依赖大模型追问和生成；请先在设置中保存 AI 设置并通过连接测试。',
+  badOutline: 'AI 返回的技能轮廓不完整，未进入下一步。请补充需求后重新生成。',
   localMode: 'AI 未启用，已进入可编辑的本地轮廓模式。',
   localDraft: 'AI 未启用，已生成本地模板草案；请检查后再安装。',
+  backgroundRunning: '技能轮廓正在后台生成。你可以离开此页，回来后会继续显示进度和结果。',
+  backgroundRunningShort: '后台生成中',
   manualModeNotice: '当前是本地模板模式：不会调用外部模型，所有轮廓字段都可以手动调整。',
   name: '目录名 / 技能名',
   description: '触发描述',
@@ -1030,22 +1396,29 @@ const zhCopy: Copy = {
   boundaries: '边界 / 不做什么',
   criteria: '验收标准',
   continueQuestions: '继续追问',
+  backInput: '返回输入',
+  regenerateOutline: '重新生成',
+  discardDraft: '放弃草稿',
   generateNow: '直接生成草案',
   questionsDone: '关键问题已回答，可以生成草案。',
   generateDraft: '生成 SKILL.md',
   backOutline: '返回轮廓',
   review: '检查草案',
+  reviewAgain: '重新检查草案',
+  reviewing: '检查中',
+  reviewPassedToast: '草案检查通过。现在可以安装技能。',
+  reviewBlockedToast: '草案检查未通过，请先修正阻塞问题。',
   editOutline: '编辑轮廓',
-  reviewPassed: '本地安全检查通过，可以创建安装计划。',
+  reviewPassed: '本地安全检查通过，可以安装技能。',
   reviewBlocked: '还有阻塞问题，修正后再继续。',
   installTarget: '安装平台',
   scenarioTarget: '加入场景',
   noScenarios: '暂无场景，可安装后再归类。',
-  installSummary: '写入摘要',
+  installSummary: '安装摘要',
   basename: '目录名',
   mainSource: '主源',
   selectedPlatforms: '平台数',
-  noWriteUntilConfirm: '这里只是目标摘要；确认安装计划之前不会写入任何 skill 目录。',
+  noWriteUntilConfirm: '这里只是安装前摘要；确认之前不会写入任何 skill 目录。',
   qualityTitle: '专业性检查',
   safetyGateTitle: '安全门槛',
   creativeQualityTitle: '质量建议',
@@ -1058,9 +1431,9 @@ const zhCopy: Copy = {
   qualityOutput: '产物定义明确',
   qualityBoundaries: '边界清楚',
   qualityCriteria: '质量 / 验收标准明确',
-  planInstall: '创建安装计划',
+  planInstall: '安装技能',
   done: '技能已写入并重新扫描纳管。',
-  installFailed: '技能写入未完成，请查看安装计划里的失败项。',
+  installFailed: '技能安装未完成，请查看失败项。',
   openLibrary: '在资源库查看',
   createAnother: '继续创造',
   created: '创造技能已完成',
@@ -1085,8 +1458,14 @@ const enCopy: Copy = {
     'Generate frontend implementation checklists from design files.',
   ],
   start: 'Generate outline',
+  configureAi: 'Set up AI',
+  aiRequired: 'Create Skill needs saved AI settings and a successful connection test.',
+  aiRequiredNotice: 'Create Skill relies on an LLM for follow-up questions and generation. Save AI settings and pass a connection test first.',
+  badOutline: 'The AI returned an incomplete skill outline, so the draft was not advanced. Add more detail and regenerate.',
   localMode: 'AI is not enabled; using an editable local outline.',
   localDraft: 'AI is not enabled; generated a local template draft for review.',
+  backgroundRunning: 'The outline is generating in the background. You can leave this page and come back without interrupting it.',
+  backgroundRunningShort: 'Running in background',
   manualModeNotice: 'Local template mode: no external model is called, and every outline field remains editable.',
   name: 'Directory / skill name',
   description: 'Trigger description',
@@ -1102,22 +1481,29 @@ const enCopy: Copy = {
   boundaries: 'Boundaries / non-goals',
   criteria: 'Acceptance criteria',
   continueQuestions: 'Continue questions',
+  backInput: 'Back to input',
+  regenerateOutline: 'Regenerate',
+  discardDraft: 'Discard draft',
   generateNow: 'Generate draft now',
   questionsDone: 'Key questions are answered. Generate the draft next.',
   generateDraft: 'Generate SKILL.md',
   backOutline: 'Back to outline',
   review: 'Review draft',
+  reviewAgain: 'Review draft again',
+  reviewing: 'Reviewing',
+  reviewPassedToast: 'Draft review passed. You can install the skill now.',
+  reviewBlockedToast: 'Draft review failed. Fix the blocking issues first.',
   editOutline: 'Edit outline',
-  reviewPassed: 'Local safety checks passed. You can create an install plan.',
+  reviewPassed: 'Local safety checks passed. You can install the skill.',
   reviewBlocked: 'Blocking issues remain. Fix them before continuing.',
   installTarget: 'Install targets',
   scenarioTarget: 'Add to scenarios',
   noScenarios: 'No scenarios yet. You can categorize after install.',
-  installSummary: 'Write summary',
+  installSummary: 'Install summary',
   basename: 'Basename',
   mainSource: 'Main source',
   selectedPlatforms: 'Platforms',
-  noWriteUntilConfirm: 'This is only a target summary; no skill directory is written before you confirm the install plan.',
+  noWriteUntilConfirm: 'This is only a pre-install summary; no skill directory is written before confirmation.',
   qualityTitle: 'Quality checks',
   safetyGateTitle: 'Safety gate',
   creativeQualityTitle: 'Quality suggestions',
@@ -1130,9 +1516,9 @@ const enCopy: Copy = {
   qualityOutput: 'Output is defined',
   qualityBoundaries: 'Boundaries are clear',
   qualityCriteria: 'Quality / acceptance criteria are explicit',
-  planInstall: 'Create install plan',
+  planInstall: 'Install skill',
   done: 'Skill was written, scanned, and added to the library.',
-  installFailed: 'Skill install did not finish. Check the failed items in the install plan.',
+  installFailed: 'Skill install did not finish. Check the failed items.',
   openLibrary: 'Open in Library',
   createAnother: 'Create another',
   created: 'Create Skill completed',

@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   RefreshCw,
   AlertTriangle,
   FileWarning,
   FolderSearch,
+  FolderOpen,
   Crown,
   CloudOff,
   FileX2,
@@ -49,10 +50,13 @@ interface Props {
   /** Called when the user does something that might change sidebar counts
    * (registering a platform, rescanning, switching canonical). */
   onChanged?: () => void;
+  onAiChanged?: () => void;
+  focusSection?: 'ai' | null;
 }
 
-export function SettingsView({ onChanged }: Props) {
+export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   const t = useT();
+  const aiSectionRef = useRef<HTMLElement | null>(null);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
   const [lastScan, setLastScan] = useState<ScanResult | null>(null);
@@ -95,9 +99,16 @@ export function SettingsView({ onChanged }: Props) {
   );
   const [llmApiKeyDraft, setLlmApiKeyDraft] = useState('');
   const [savingLlm, setSavingLlm] = useState(false);
-  const [savingLlmKey, setSavingLlmKey] = useState(false);
   const [testingLlm, setTestingLlm] = useState(false);
   const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
+
+  useEffect(() => {
+    if (focusSection !== 'ai') return;
+    window.requestAnimationFrame(() => {
+      aiSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      window.setTimeout(() => document.getElementById('llm-key')?.focus(), 250);
+    });
+  }, [focusSection]);
   const [migrationCandidates, setMigrationCandidates] = useState<ElectronMigrationCandidate[]>([]);
   const [discoveringMigration, setDiscoveringMigration] = useState(false);
   const [confirmingMigrationPath, setConfirmingMigrationPath] = useState<string | null>(null);
@@ -223,6 +234,21 @@ export function SettingsView({ onChanged }: Props) {
     }
   }
 
+  async function pickPlatformDir(currentDir?: string): Promise<string | null> {
+    try {
+      const result = await api.platforms.pickDir(currentDir);
+      return result.path;
+    } catch (err) {
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
+      return null;
+    }
+  }
+
   async function deletePlatform(p: Platform) {
     if (p.isBuiltin) return;
     const ok = await confirmAction({
@@ -305,40 +331,46 @@ export function SettingsView({ onChanged }: Props) {
     }
   }
 
-  async function saveLlmConfig() {
+  async function saveAiSettings(showError = true, testAfterSave = true) {
     setSavingLlm(true);
     setLlmTestResult(null);
     try {
-      const updated = await api.llm.setConfig({
+      await api.llm.setConfig({
         provider: llmDraft.provider,
         model: llmDraft.model.trim(),
         baseUrl: llmDraft.baseUrl.trim(),
       });
-      setLlmConfig(updated);
-    } finally {
-      setSavingLlm(false);
-    }
-  }
-
-  async function saveLlmKey() {
-    const key = llmApiKeyDraft.trim();
-    if (!key) return;
-    setSavingLlmKey(true);
-    setLlmTestResult(null);
-    try {
-      await api.llm.setApiKey({ key });
-      setLlmApiKeyDraft('');
+      if (llmDraft.provider !== 'ollama') {
+        const key = llmApiKeyDraft.trim();
+        if (key) {
+          await api.llm.setApiKey({ key });
+          setLlmApiKeyDraft('');
+        }
+      }
       const cfg = await api.llm.getConfig();
       setLlmConfig(cfg);
+      onAiChanged?.();
+      if (testAfterSave && llmDraft.model.trim()) {
+        setTestingLlm(true);
+        const result = await api.llm.testConnection();
+        setLlmTestResult(result);
+        if (result.ok) onAiChanged?.();
+      }
+      return cfg;
     } catch (err) {
-      await alertAction({
-        title: t('common.error'),
-        description: err instanceof Error ? err.message : String(err),
-        tone: 'destructive',
-        okLabel: t('common.ok'),
-      });
+      if (showError) {
+        await alertAction({
+          title: t('common.error'),
+          description: err instanceof Error ? err.message : String(err),
+          tone: 'destructive',
+          okLabel: t('common.ok'),
+        });
+        return null;
+      }
+      throw err;
     } finally {
-      setSavingLlmKey(false);
+      setTestingLlm(false);
+      setSavingLlm(false);
     }
   }
 
@@ -354,16 +386,18 @@ export function SettingsView({ onChanged }: Props) {
     const cfg = await api.llm.getConfig();
     setLlmConfig(cfg);
     setLlmTestResult(null);
+    onAiChanged?.();
   }
 
   async function testLlm() {
     setTestingLlm(true);
-    setLlmTestResult(null);
+      setLlmTestResult(null);
     try {
       // Persist current draft first so the test uses what the user sees.
-      await saveLlmConfig();
+      await saveAiSettings(false, false);
       const result = await api.llm.testConnection();
       setLlmTestResult(result);
+      if (result.ok) onAiChanged?.();
     } catch (err) {
       setLlmTestResult({
         ok: false,
@@ -377,6 +411,7 @@ export function SettingsView({ onChanged }: Props) {
   async function toggleFeature(key: keyof LlmFeatureToggles, next: boolean) {
     const updated = await api.llm.setFeatures({ [key]: next });
     setLlmFeatures(updated);
+    onAiChanged?.();
   }
 
   async function checkForUpdate() {
@@ -541,6 +576,19 @@ export function SettingsView({ onChanged }: Props) {
                         <Button
                           size="sm"
                           variant="outline"
+                          onClick={async () => {
+                            const picked = await pickPlatformDir(editVal);
+                            if (picked) {
+                              setEdits((prev) => ({ ...prev, [p.id]: picked }));
+                            }
+                          }}
+                          title={t('settings.platforms.pickDir')}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
                           onClick={() => saveDir(p)}
                           disabled={savingId === p.id || !dirty}
                         >
@@ -698,15 +746,28 @@ export function SettingsView({ onChanged }: Props) {
                         }
                       />
                       <Label htmlFor="cp-dir">{t('settings.custom.dir')}</Label>
-                      <Input
-                        id="cp-dir"
-                        placeholder={t('settings.custom.dirPlaceholder')}
-                        value={customForm.skillsDir}
-                        onChange={(e) =>
-                          setCustomForm({ ...customForm, skillsDir: e.target.value })
-                        }
-                        className="font-mono text-xs"
-                      />
+                      <div className="flex gap-2">
+                        <Input
+                          id="cp-dir"
+                          placeholder={t('settings.custom.dirPlaceholder')}
+                          value={customForm.skillsDir}
+                          onChange={(e) =>
+                            setCustomForm({ ...customForm, skillsDir: e.target.value })
+                          }
+                          className="font-mono text-xs"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={async () => {
+                            const picked = await pickPlatformDir(customForm.skillsDir);
+                            if (picked) setCustomForm({ ...customForm, skillsDir: picked });
+                          }}
+                        >
+                          <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
+                          {t('settings.custom.pickDir')}
+                        </Button>
+                      </div>
                     </div>
                     {customError && (
                       <p className="text-xs text-destructive">{customError}</p>
@@ -787,7 +848,7 @@ export function SettingsView({ onChanged }: Props) {
             </div>
           </section>
 
-          <section className="space-y-3">
+          <section ref={aiSectionRef} className="scroll-mt-4 space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Sparkles className="h-4 w-4 text-violet-500" />
               {t('settings.ai.header')}
@@ -876,6 +937,7 @@ export function SettingsView({ onChanged }: Props) {
                       title={t('settings.ai.key.removeTitle')}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
+                      <span className="sr-only">{t('settings.ai.removeKey')}</span>
                     </Button>
                   )}
                 </div>
@@ -885,26 +947,16 @@ export function SettingsView({ onChanged }: Props) {
                 <div className="flex gap-2">
                   <Button
                     size="sm"
-                    onClick={saveLlmConfig}
-                    disabled={!networkAllowed || savingLlm}
+                    onClick={() => saveAiSettings()}
+                    disabled={!networkAllowed || savingLlm || testingLlm}
                   >
                     {savingLlm ? t('settings.ai.saving') : t('settings.ai.save')}
                   </Button>
-                  {llmApiKeyDraft.trim() && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={saveLlmKey}
-                      disabled={!networkAllowed || savingLlmKey}
-                    >
-                      {savingLlmKey ? t('settings.ai.storing') : t('settings.ai.saveKey')}
-                    </Button>
-                  )}
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={testLlm}
-                    disabled={!networkAllowed || testingLlm || !llmDraft.model.trim()}
+                    disabled={!networkAllowed || testingLlm || savingLlm || !llmDraft.model.trim()}
                   >
                     {testingLlm ? t('settings.ai.test.testing') : t('settings.ai.test.label')}
                   </Button>
@@ -928,12 +980,6 @@ export function SettingsView({ onChanged }: Props) {
                   onChange={(v) => toggleFeature('search', v)}
                   disabled={!networkAllowed}
                   label={t('settings.ai.feature.searchLong')}
-                />
-                <FeatureToggleRow
-                  checked={llmFeatures.autoCategorize}
-                  onChange={(v) => toggleFeature('autoCategorize', v)}
-                  disabled={!networkAllowed}
-                  label={t('settings.ai.feature.autoCategorizeLong')}
                 />
                 <FeatureToggleRow
                   checked={llmFeatures.recommend}

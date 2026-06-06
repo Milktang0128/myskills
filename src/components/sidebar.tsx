@@ -15,6 +15,7 @@ import {
   Globe,
   EyeOff,
   FilePlus2,
+  RefreshCw,
 } from 'lucide-react';
 import type { AppStats, Platform, Scenario, SkillFilter, SkillScope } from '@shared/types';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -64,6 +65,8 @@ interface Props {
   onSelectSettings: () => void;
   /** Switch the workspace to Create Skill. */
   onSelectCreateSkill: () => void;
+  scanning: boolean;
+  onRunScan: () => void;
 }
 
 interface ScopeItem {
@@ -90,6 +93,8 @@ export function Sidebar({
   onSelectHistory,
   onSelectSettings,
   onSelectCreateSkill,
+  scanning,
+  onRunScan,
 }: Props) {
   const t = useT();
   const scopes = useMemo<ScopeItem[]>(
@@ -134,13 +139,38 @@ export function Sidebar({
     // sidebar and main area share the same canvas (#131316); contrast there
     // comes from card elevation, not from the sidebar tone.
     <aside className="flex h-full w-64 flex-col border-r bg-neutral-50/80 dark:bg-background">
-      {/* Top region — pure drag bar, same height as main header (h-12, 48px)
-          so the border-b lines up across the entire window. macOS traffic
-          lights live here; we deliberately keep this region empty so they
-          have visual breathing room. Scan status used to live below this
-          bar but moved up to the main header in PR #_ — it took a sidebar
-          row that the active-state highlight already conveyed. */}
-      <div className="titlebar-drag h-12 shrink-0 border-b" />
+      <div className="titlebar-drag flex h-12 shrink-0 items-center border-b pl-4 pr-2">
+        <div className="titlebar-no-drag flex min-w-0 flex-1 items-center gap-1.5">
+          <span
+            className={cn(
+              'h-1.5 w-1.5 shrink-0 rounded-full',
+              scanning ? 'animate-pulse bg-amber-500' : 'bg-emerald-500',
+            )}
+          />
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            {scanning ? t('sidebar.scanBanner.scanning') : t('sidebar.scanBanner.scanned')}
+          </span>
+          <span className="truncate text-[11px] tabular-nums text-muted-foreground">
+            · {t('sidebar.scanBanner.count', { count: stats?.totalSkills ?? 0 })}
+          </span>
+        </div>
+        <div className="titlebar-no-drag ml-1 flex shrink-0 items-center">
+          <button
+            type="button"
+            onClick={onRunScan}
+            disabled={scanning}
+            title={t('sidebar.scanBanner.action')}
+            aria-label={t('sidebar.scanBanner.action')}
+            className={cn(
+              'inline-flex h-7 w-7 items-center justify-center text-muted-foreground transition-colors',
+              'hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            )}
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', scanning && 'animate-spin')} />
+          </button>
+        </div>
+      </div>
 
       <ScrollArea className="flex-1 px-2 scrollbar-thin">
         <Section title={t('sidebar.section.library')}>

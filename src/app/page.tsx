@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LayoutList, Columns3, Search, Sparkles, RefreshCw } from 'lucide-react';
+import { LayoutList, Columns3, Search, Sparkles } from 'lucide-react';
 import type { AppStats, Platform, Scenario, Skill, SkillFilter, SkillSort } from '@shared/types';
 import { api } from '@/lib/api';
 import { Sidebar, type SidebarView } from '@/components/sidebar';
@@ -17,7 +17,6 @@ import {
   UNSCENARIZED_GUIDANCE_THRESHOLD,
 } from '@/components/library-overview-guidance';
 import { OnboardingWizard } from '@/components/onboarding';
-import { BulkCategorizeDialog } from '@/components/bulk-categorize-dialog';
 import { HistoryView } from '@/components/history-view';
 import { ScenariosView } from '@/components/scenarios-view';
 import { SettingsView } from '@/components/settings-view';
@@ -74,12 +73,12 @@ export default function Workspace() {
   //   true  → completed previously, hide wizard
   //   false → first launch, show wizard
   const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
-  // Bulk-categorize is only enabled when an LLM key is present.
   const [llmConfigured, setLlmConfigured] = useState(false);
-  const [bulkCatOpen, setBulkCatOpen] = useState(false);
   const [discoverMode, setDiscoverMode] = useState<SearchMode>('keyword');
   const [createSeed, setCreateSeed] = useState('');
   const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
+  const [createSkillAvailable, setCreateSkillAvailable] = useState(false);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<'ai' | null>(null);
   const [frontendSmokeActive, setFrontendSmokeActive] = useState(false);
   // True once a cached library overview exists. Drives the one-shot Day-0
   // guidance card: visible until first AI Lens generation, then silenced.
@@ -88,6 +87,7 @@ export default function Workspace() {
   const reqIdRef = useRef(0);
   const frontendSmokeRanRef = useRef(false);
   const updateCheckRanRef = useRef(false);
+  const autoScanRanRef = useRef(false);
 
   // Filter is "at default" when nothing's been narrowed — all scope + no
   // scenario + no platform. The sub-toolbar only renders in this state; any
@@ -160,6 +160,17 @@ export default function Workspace() {
       console.error('meta refresh failed', e);
     }
   }, [bridgeReady]);
+
+  const refreshAiAvailability = useCallback(async () => {
+    const [cfg, features] = await Promise.all([
+      api.llm.getConfig().catch(() => null),
+      api.llm.getFeatures().catch(() => null),
+    ]);
+    const configured = Boolean(cfg?.hasApiKey && cfg?.model && cfg?.connectionOk);
+    setLlmConfigured(configured);
+    setAiSearchAvailable(configured && Boolean(features?.search));
+    setCreateSkillAvailable(configured);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -341,20 +352,10 @@ export default function Workspace() {
 
   useEffect(() => {
     if (!bridgeReady) return;
-    let cancelled = false;
-    Promise.all([
-      api.llm.getConfig().catch(() => null),
-      api.llm.getFeatures().catch(() => null),
-    ]).then(([cfg, features]) => {
-      if (cancelled) return;
-      const configured = Boolean(cfg?.hasApiKey && cfg?.model);
-      setLlmConfigured(configured);
-      setAiSearchAvailable(configured && Boolean(features?.search));
+    refreshAiAvailability().catch(() => {
+      // Non-fatal: AI-gated surfaces stay disabled.
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [bridgeReady]);
+  }, [bridgeReady, refreshAiAvailability]);
 
   useEffect(() => {
     if (!bridgeReady) return;
@@ -399,6 +400,35 @@ export default function Workspace() {
       setScanning(false);
     }
   }, [scanning]);
+
+  useEffect(() => {
+    if (!bridgeReady || frontendSmokeActive || onboardingDone !== true || autoScanRanRef.current) return;
+    autoScanRanRef.current = true;
+    let cancelled = false;
+    api.settings
+      .get('auto_scan_on_launch')
+      .then(async (value) => {
+        if (cancelled || value !== '1') return;
+        setScanning(true);
+        try {
+          await api.scan.run();
+          if (!cancelled) {
+            refreshSkills();
+            refreshMeta();
+          }
+        } catch (error) {
+          console.error('auto scan on launch failed', error);
+        } finally {
+          if (!cancelled) setScanning(false);
+        }
+      })
+      .catch((error) => {
+        console.error('auto scan setting lookup failed', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady, frontendSmokeActive, onboardingDone, refreshSkills, refreshMeta]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -455,6 +485,8 @@ export default function Workspace() {
         canonicalPlatform={canonicalPlatform}
         scenarios={scenarios}
         stats={stats}
+        scanning={scanning}
+        onRunScan={runScan}
         onCreateScenario={() => setScenarioFormOpen(true)}
         onSelectScenarios={() => {
           setSidebarView('scenarios');
@@ -465,6 +497,7 @@ export default function Workspace() {
           setSelectedId(null);
         }}
         onSelectSettings={() => {
+          setSettingsFocusSection(null);
           setSidebarView('settings');
           setSelectedId(null);
         }}
@@ -478,42 +511,9 @@ export default function Workspace() {
             inner row in no-drag, leaving only the 68px traffic-light spacer
             draggable, which produced the "sometimes works" feeling. */}
         <header className="titlebar-drag flex h-12 shrink-0 items-center gap-3 border-b px-3">
-          {/* No traffic-light spacer here — traffic lights live above the
-              sidebar's drag region (see Sidebar's top div). The previous
-              68px spacer pushed everything in the main header inward for
-              no reason. Status now hugs the left edge. */}
-          {/* Scan status — moved here from the sidebar. The old h1 page
-              title was redundant with the sidebar highlight + the
-              sub-toolbar count + each view's inner header; deleting it
-              freed the spot for ambient state that's globally useful. */}
-          <div className="titlebar-no-drag flex items-center gap-2">
-            <span
-              className={cn(
-                'h-1.5 w-1.5 shrink-0 rounded-full',
-                scanning ? 'animate-pulse bg-amber-500' : 'bg-emerald-500',
-              )}
-            />
-            <span className="whitespace-nowrap text-xs text-muted-foreground">
-              {scanning ? t('sidebar.scanBanner.scanning') : t('sidebar.scanBanner.scanned')}
-            </span>
-            <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground">
-              · {t('sidebar.scanBanner.count', { count: stats?.totalSkills ?? 0 })}
-            </span>
-            <button
-              type="button"
-              onClick={runScan}
-              disabled={scanning}
-              title={t('sidebar.scanBanner.action')}
-              aria-label={t('sidebar.scanBanner.action')}
-              className={cn(
-                'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors',
-                'hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              )}
-            >
-              <RefreshCw className={cn('h-3 w-3', scanning && 'animate-spin')} />
-            </button>
-          </div>
+          {/* Global status lives in the sidebar titlebar. Keep this side mostly
+              empty so it stays a reliable drag surface, with controls grouped
+              on the right. */}
           <div className="titlebar-no-drag ml-auto flex items-center gap-2">
             {sidebarView === 'discover' && (
               <ModeSegmented
@@ -526,7 +526,7 @@ export default function Workspace() {
             {showSearchInput && (
               <div className="relative w-[280px]">
                 <Search
-                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 shrink-0 -translate-y-1/2 text-muted-foreground"
                   aria-hidden="true"
                 />
                 <input
@@ -535,7 +535,7 @@ export default function Workspace() {
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={searchPlaceholder}
                   aria-label={searchPlaceholder}
-                  className="h-7 w-full border bg-background pl-8 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                  className="h-7 w-full border bg-background pl-9 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                 />
                 {search && (
                   <button
@@ -595,7 +595,13 @@ export default function Workspace() {
             platforms={platforms}
             scenarios={scenarios}
             canonicalPlatform={canonicalPlatform}
+            aiAvailable={createSkillAvailable}
             onToast={showToast}
+            onOpenAiSettings={() => {
+              setSettingsFocusSection('ai');
+              setSidebarView('settings');
+              setSelectedId(null);
+            }}
             onInstalled={(skillId, name) => {
               setSidebarView('library');
               setFilter({ scope: 'all' });
@@ -616,7 +622,11 @@ export default function Workspace() {
           </div>
         ) : sidebarView === 'settings' ? (
           <div data-smoke-view="settings" className="contents">
-            <SettingsView onChanged={refreshMeta} />
+            <SettingsView
+              focusSection={settingsFocusSection}
+              onChanged={refreshMeta}
+              onAiChanged={refreshAiAvailability}
+            />
           </div>
         ) : effectiveLibraryView === 'ai-lens' ? (
           <div data-smoke-view="library-ai-lens" className="contents">
@@ -649,14 +659,13 @@ export default function Workspace() {
               />
             ) : (
               <>
-                {/* Bulk-categorize CTA — only shows on the 未分类 view, when
-                    LLM is configured, and when there's at least one skill to
-                    categorize. */}
                 {filter.scope === 'unscenarized' && (
-                  <BulkCatBanner
+                  <AiLensBanner
                     count={skills.length}
-                    llmConfigured={llmConfigured}
-                    onClick={() => setBulkCatOpen(true)}
+                    onClick={() => {
+                      setFilter({ scope: 'all' });
+                      setLibraryView('ai-lens');
+                    }}
                     t={t}
                   />
                 )}
@@ -730,23 +739,6 @@ export default function Workspace() {
           }}
         />
       )}
-
-      <BulkCategorizeDialog
-        open={bulkCatOpen}
-        skillIds={bulkCatOpen ? skills.map((s) => s.id) : []}
-        scenarios={scenarios}
-        onOpenChange={setBulkCatOpen}
-        onApplied={(r) => {
-          showToast(
-            t('bulkCat.applied', {
-              created: r.newScenariosCreated,
-              linked: r.assignmentsApplied,
-            }),
-          );
-          refreshSkills();
-          refreshMeta();
-        }}
-      />
     </main>
   );
 }
@@ -809,19 +801,16 @@ function LibrarySubToolbar({
 }
 
 /**
- * CTA bar shown above the SkillList in the 未分类 view. Three states:
- *   - LLM configured + skills present → primary button
- *   - LLM configured + no skills      → muted "nothing to categorize"
- *   - LLM unconfigured                → muted hint pointing to Settings
+ * CTA bar shown above the 未分类 view. This used to launch one-off AI
+ * categorization; route users to AI Lens instead, where clustering and
+ * scenario creation are easier to inspect before writing anything.
  */
-function BulkCatBanner({
+function AiLensBanner({
   count,
-  llmConfigured,
   onClick,
   t,
 }: {
   count: number;
-  llmConfigured: boolean;
   onClick: () => void;
   t: ReturnType<typeof useT>;
 }) {
@@ -832,25 +821,18 @@ function BulkCatBanner({
       </div>
     );
   }
-  if (!llmConfigured) {
-    return (
-      <div className="border-b bg-secondary/30 px-4 py-2 text-xs text-muted-foreground">
-        ⚙︎ {t('bulkCat.disabled.noAi')}
-      </div>
-    );
-  }
   return (
     <div className="flex items-center justify-between gap-3 border-b bg-violet-50/50 px-4 py-2.5 dark:bg-violet-950/20">
       <div className="min-w-0 flex-1">
         <p className="text-[11px] text-muted-foreground">
-          {t('bulkCat.helper')}
+          {t('uncategorized.aiLens.helper', { count })}
         </p>
       </div>
       <button
         onClick={onClick}
         className="inline-flex shrink-0 items-center gap-1.5 bg-violet-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1"
       >
-        ✨ {t('bulkCat.cta', { count })}
+        ✨ {t('uncategorized.aiLens.cta')}
       </button>
     </div>
   );

@@ -261,10 +261,12 @@ let llmConfig = {
   provider: 'openai',
   model: null,
   hasApiKey: false,
+  connectionOk: false,
   baseUrl: null,
 };
 let migrationConfirmationPath = null;
 let createSkillDraft = null;
+const aiJobs = new Map();
 
 const migrationCandidates = [
   {
@@ -430,7 +432,7 @@ function makeCreateSkillDraft(overrides = {}) {
     rawPrompt: 'Create a PR review checklist skill.',
     intentFrame: {
       userJob: 'Create a PR review checklist skill.',
-      triggerContext: 'PR review',
+      triggerContext: 'When reviewing a GitHub pull request for regression risk and missing tests.',
       inputContract: { acceptedInputs: ['PR diff'], privacyClass: 'local_only' },
       outputContract: { artifactType: 'checklist', destination: 'reply_only' },
       workflow: { steps: ['Inspect diff', 'Check tests', 'Report risks'], failClosedRules: ['Ask before writes'] },
@@ -444,7 +446,7 @@ function makeCreateSkillDraft(overrides = {}) {
       language: 'en',
       intentFrame: {
         userJob: 'Create a PR review checklist skill.',
-        triggerContext: 'PR review',
+        triggerContext: 'When reviewing a GitHub pull request for regression risk and missing tests.',
         inputContract: { acceptedInputs: ['PR diff'], privacyClass: 'local_only' },
         outputContract: { artifactType: 'checklist', destination: 'reply_only' },
         workflow: { steps: ['Inspect diff', 'Check tests', 'Report risks'], failClosedRules: ['Ask before writes'] },
@@ -651,16 +653,17 @@ function invoke(command, payload = {}) {
         provider: payload.provider ?? llmConfig.provider,
         model: payload.model ?? null,
         baseUrl: payload.baseUrl ?? null,
+        connectionOk: false,
       };
       return Promise.resolve(llmConfig);
     case 'llm_set_api_key':
       if (!payload.key || String(payload.key).length < 4) {
         return Promise.reject({ code: 'INVALID_INPUT', message: 'API key required' });
       }
-      llmConfig = { ...llmConfig, hasApiKey: true };
+      llmConfig = { ...llmConfig, hasApiKey: true, connectionOk: false };
       return Promise.resolve({ ok: true, hasApiKey: true });
     case 'llm_delete_api_key':
-      llmConfig = { ...llmConfig, hasApiKey: false };
+      llmConfig = { ...llmConfig, hasApiKey: false, connectionOk: false };
       return Promise.resolve({ ok: true, hasApiKey: false });
     case 'llm_get_features':
       return Promise.resolve(llmFeatures);
@@ -668,10 +671,34 @@ function invoke(command, payload = {}) {
       llmFeatures = { ...llmFeatures, ...payload };
       return Promise.resolve(llmFeatures);
     case 'llm_test_connection':
-      return Promise.resolve({ ok: false, message: 'network disabled in UI smoke' });
+      llmConfig = { ...llmConfig, connectionOk: true };
+      return Promise.resolve({ ok: true, message: 'OK (PONG)' });
+    case 'ai_job_get':
+      return Promise.resolve(aiJobs.get(payload.jobId) ?? null);
+    case 'ai_job_latest': {
+      const jobs = Array.from(aiJobs.values())
+        .filter((job) => job.kind === payload.kind && (!payload.key || job.key === payload.key))
+        .sort((a, b) => b.createdAt - a.createdAt);
+      return Promise.resolve(jobs[0] ?? null);
+    }
     case 'ai_create_skill_start':
       createSkillDraft = makeCreateSkillDraft({ rawPrompt: payload.prompt });
-      return Promise.resolve({ draft: createSkillDraft, aiUsed: false });
+      return Promise.resolve({ draft: createSkillDraft, aiUsed: true });
+    case 'ai_create_skill_start_job': {
+      createSkillDraft = makeCreateSkillDraft({ rawPrompt: payload.prompt });
+      const job = {
+        jobId: 'job-create-skill-start',
+        kind: 'create_skill_start',
+        key: `${payload.language ?? 'zh'}:ui-smoke`,
+        status: 'succeeded',
+        createdAt: now,
+        updatedAt: now,
+        result: { draft: createSkillDraft, aiUsed: true },
+        error: null,
+      };
+      aiJobs.set(job.jobId, job);
+      return Promise.resolve({ ...job, status: 'running', result: null });
+    }
     case 'ai_create_skill_refine':
       createSkillDraft = makeCreateSkillDraft({
         ...createSkillDraft,
@@ -776,6 +803,20 @@ function invoke(command, payload = {}) {
       });
     case 'ai_library_overview_get':
       return Promise.resolve({ overview: null, language: payload.language ?? 'en', generatedAt: null });
+    case 'ai_library_overview_generate_job': {
+      const job = {
+        jobId: 'job-library-overview',
+        kind: 'library_overview_generate',
+        key: payload.language ?? 'en',
+        status: 'running',
+        createdAt: now,
+        updatedAt: now,
+        result: null,
+        error: null,
+      };
+      aiJobs.set(job.jobId, job);
+      return Promise.resolve(job);
+    }
     case 'scenarios_export':
       return Promise.resolve({
         version: '1',
@@ -1126,10 +1167,38 @@ try {
   await waitFor('discover install plan close', () => !text().includes('Apply 1 write'));
 
   clickButton('Create Skill');
+  await waitFor('create skill AI gate', () =>
+    text().includes('Create Skill') &&
+    text().includes('Set up AI') &&
+    text().includes('pass a connection test first'),
+  );
+  clickButton('Set up AI');
+  await waitFor('create skill routes to AI settings', () =>
+    text().includes('AI integration') &&
+    document.activeElement?.id === 'llm-key',
+  );
+  setSelectValue('llm-provider', 'openai');
+  setInputValue('llm-model', 'gpt-4o-mini');
+  setInputValue('llm-key', 'sk-ui-smoke-secret');
+  await waitFor('save AI settings button', () => text().includes('Save AI settings'));
+  clickButton('Save AI settings');
+  await waitFor('api key saved before create skill', () => llmConfig.hasApiKey === true);
+  await waitFor('AI settings save completed before create skill', () => hasEnabledButton('Save AI settings'));
+  await waitFor('test connection button enabled before create skill', () => hasEnabledButton('Test connection'));
+  clickButton('Test connection');
+  await waitFor('AI connection verified before create skill', () => llmConfig.connectionOk === true);
+  clickButton('Create Skill');
   await waitFor('create skill view', () => text().includes('Create Skill') && text().includes('Generate outline'));
   setTextareaBySmokeAction('create-skill-input', 'Create a PR review checklist skill.');
   clickButton('Generate outline');
   await waitFor('create skill outline', () => text().includes('Directory / skill name') && text().includes('ui-smoke-created-skill'));
+  expectText('create skill outline back action', 'Back to input');
+  expectText('create skill outline regenerate action', 'Regenerate');
+  expectText('create skill outline discard action', 'Discard draft');
+  clickButton('Back to input');
+  await waitFor('create skill returned to input', () => text().includes('Generate outline'));
+  clickButton('Generate outline');
+  await waitFor('create skill outline after return', () => text().includes('Directory / skill name') && text().includes('ui-smoke-created-skill'));
   clickButton('Continue questions');
   await waitFor('create skill question', () => text().includes('How cautious should it be before taking action?'));
   clickButton('Confirm writes');
@@ -1138,8 +1207,8 @@ try {
   await waitFor('create skill draft', () => text().includes('SKILL.md') && text().includes('Local safety checks passed'));
   clickButton('Review draft');
   await waitFor('create skill review', () => text().includes('Local safety checks passed'));
-  await waitFor('create skill plan button enabled', () => hasEnabledButton('Create install plan'));
-  clickButton('Create install plan');
+  await waitFor('create skill install button enabled', () => hasEnabledButton('Install skill'));
+  clickButton('Install skill');
   await waitFor('create skill plan', () => text().includes('Create skill') && text().includes('Apply 1 write'));
   clickButton('Apply 1 write');
   await waitFor('create skill done', () => text().includes('Skill was written, scanned, and added to the library.'));
@@ -1181,26 +1250,28 @@ try {
   expectText('settings view', 'Stats');
   setSelectValue('llm-provider', 'openai');
   setInputValue('llm-model', 'gpt-4o-mini');
-  clickButton('Save');
   setInputValue('llm-key', 'sk-ui-smoke-secret');
-  await waitFor('save API key button', () => text().includes('Save API key'));
-  clickButton('Save API key');
+  await waitFor('save AI settings button', () => text().includes('Save AI settings'));
+  clickButton('Save AI settings');
   await waitFor('api key write-only placeholder', () => {
     const input = document.getElementById('llm-key');
-    return input instanceof HTMLInputElement && input.placeholder.includes('saved in the OS credential store');
+    return input instanceof HTMLInputElement && input.placeholder.includes('saved');
   });
-  expectInputPlaceholder('llm-key', 'saved in the OS credential store');
+  await waitFor('AI settings save completed', () => hasEnabledButton('Save AI settings'));
+  expectInputPlaceholder('llm-key', 'saved');
   expectNoText('api key write-only UI', 'sk-ui-smoke-secret');
   clickButton('Use AI for catalog search (Discover)');
   await waitFor('AI search feature enabled', () => llmFeatures.search === true);
-  clickButton('Suggest scenarios for new skills (auto-categorize)');
-  await waitFor('auto categorize feature enabled', () => llmFeatures.autoCategorize === true);
+  expectNoText('auto categorize feature removed', 'Suggest scenarios for new skills (auto-categorize)');
   clickButton('Recommend missing skills for active scenarios');
   await waitFor('recommend feature enabled', () => llmFeatures.recommend === true);
-  clickButton('Assist Create Skill with outlines, questions, and drafts');
+  if (!llmFeatures.createSkill) {
+    clickButton('Assist Create Skill with outlines, questions, and drafts');
+  }
   await waitFor('create skill feature enabled', () => llmFeatures.createSkill === true);
+  await waitFor('test connection button enabled', () => hasEnabledButton('Test connection'));
   clickButton('Test connection');
-  await waitFor('LLM test result', () => text().includes('Failed: network disabled in UI smoke'));
+  await waitFor('LLM test result', () => text().includes('OK: OK (PONG)'));
   clickButton('Allow external network requests');
   await waitFor('network toggle', () => text().includes('Offline mode'));
   clickButton('Discover');

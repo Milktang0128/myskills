@@ -13,6 +13,18 @@ pub struct StoredPlan {
     pub expires_at: SystemTime,
 }
 
+#[derive(Clone)]
+pub struct AiJob {
+    pub id: String,
+    pub kind: String,
+    pub key: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub result: Option<Value>,
+    pub error: Option<Value>,
+}
+
 pub struct AppState {
     pub paths: AppPaths,
     pub db: Pool<SqliteConnectionManager>,
@@ -21,6 +33,7 @@ pub struct AppState {
     pub sync_lock: Mutex<()>,
     pub ai_queue: Arc<Mutex<VecDeque<String>>>,
     pub ai_worker_running: Arc<AtomicBool>,
+    pub ai_jobs: Arc<Mutex<HashMap<String, AiJob>>>,
 }
 
 impl AppState {

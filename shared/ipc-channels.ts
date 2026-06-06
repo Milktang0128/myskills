@@ -11,6 +11,7 @@ export const IPC = {
     create: 'platforms:create',
     delete: 'platforms:delete',
     probe: 'platforms:probe',
+    pickDir: 'platforms:pickDir',
     knownCandidates: 'platforms:knownCandidates',
     openDir: 'platforms:openDir',
   },
@@ -101,11 +102,14 @@ export const IPC = {
     setFeatures: 'llm:setFeatures',
   },
   ai: {
+    jobGet: 'ai:job:get',
+    jobLatest: 'ai:job:latest',
     getSuggestionsForSkill: 'ai:getSuggestionsForSkill',
     acceptSuggestion: 'ai:acceptSuggestion',
     dismissSuggestion: 'ai:dismissSuggestion',
     queueStatus: 'ai:queueStatus',
     createSkillStart: 'ai:createSkill:start',
+    createSkillStartJob: 'ai:createSkill:startJob',
     createSkillGet: 'ai:createSkill:get',
     createSkillRefine: 'ai:createSkill:refine',
     createSkillAnswer: 'ai:createSkill:answer',
@@ -128,6 +132,7 @@ export const IPC = {
      * writes the single-row cache, returns the fresh overview.
      */
     libraryOverviewGenerate: 'ai:libraryOverview:generate',
+    libraryOverviewGenerateJob: 'ai:libraryOverview:generateJob',
   },
   events: {
     scanStarted: 'event:scanStarted',

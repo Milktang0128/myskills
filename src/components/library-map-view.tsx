@@ -28,6 +28,7 @@ import {
   Plus,
 } from 'lucide-react';
 import type {
+  AiJob,
   LibraryOverview,
   LibraryOverviewCluster,
   LibraryOverviewSnapshot,
@@ -71,6 +72,7 @@ export function LibraryMapView({
   const [snapshot, setSnapshot] = useState<LibraryOverviewSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [generateJob, setGenerateJob] = useState<AiJob<LibraryOverview> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bridgeReady, setBridgeReady] = useState(false);
   // Per-cluster in-flight state. Keyed by cluster.key (slug). Don't track
@@ -153,17 +155,65 @@ export function LibraryMapView({
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!bridgeReady || !llmConfigured) return;
+    let cancelled = false;
+    void api.ai
+      .jobLatest<LibraryOverview>('library_overview_generate', lang)
+      .then((job) => {
+        if (cancelled || !job || !['queued', 'running'].includes(job.status)) return;
+        setGenerateJob(job);
+        setGenerating(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady, lang, llmConfigured]);
+
+  useEffect(() => {
+    if (!generateJob || !['queued', 'running'].includes(generateJob.status)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const job = await api.ai.jobGet<LibraryOverview>(generateJob.jobId);
+        if (cancelled) return;
+        setGenerateJob(job);
+        if (job.status === 'succeeded') {
+          const snap = await api.ai.libraryOverviewGet(lang);
+          if (cancelled) return;
+          setSnapshot({ ...snap, overview: job.result ?? snap.overview });
+          setGenerating(false);
+          setGenerateJob(null);
+        } else if (job.status === 'failed') {
+          setError(messageOf(job.error));
+          setGenerating(false);
+          setGenerateJob(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(messageOf(err));
+          setGenerating(false);
+          setGenerateJob(null);
+        }
+      }
+    };
+    void poll();
+    const id = window.setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [generateJob, lang]);
+
   async function generate(): Promise<void> {
     setGenerating(true);
     setError(null);
     try {
-      const fresh = await api.ai.libraryOverviewGenerate(lang);
-      // Re-pull the snapshot so the stale flag + currentSetHash refresh.
-      const snap = await api.ai.libraryOverviewGet(lang);
-      setSnapshot({ ...snap, overview: fresh });
+      const job = await api.ai.libraryOverviewGenerateJob(lang);
+      setGenerateJob(job);
     } catch (err) {
       setError(messageOf(err));
-    } finally {
       setGenerating(false);
     }
   }

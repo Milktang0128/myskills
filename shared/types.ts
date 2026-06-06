@@ -616,8 +616,10 @@ export interface LlmConfig {
   model: string;
   /** For custom / ollama (or override). Optional for the four built-in providers. */
   baseUrl?: string;
-  /** Whether a key is stored in the OS credential store. The key itself is never returned. */
+  /** Whether a key is stored in the encrypted local vault. The key itself is never returned. */
   hasApiKey: boolean;
+  /** True only after the current saved provider/model/key combination has passed a connection test. */
+  connectionOk?: boolean;
 }
 
 export interface LlmChatMessage {
@@ -800,4 +802,17 @@ export interface LibraryOverviewSnapshot {
   stale: boolean;
   /** Current set hash; UI uses this to decide whether to show "Refresh". */
   currentSetHash: string;
+}
+
+export type AiJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface AiJob<T = unknown> {
+  jobId: string;
+  kind: string;
+  key: string;
+  status: AiJobStatus;
+  createdAt: number;
+  updatedAt: number;
+  result: T | null;
+  error: { code?: string; message: string; detail?: unknown } | null;
 }
