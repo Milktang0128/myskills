@@ -34,6 +34,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
   const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [bodyCopied, setBodyCopied] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AiScenarioSuggestion[]>([]);
 
   async function fetchAll() {
@@ -356,9 +357,29 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
             <>
               <Separator />
               <section>
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  {t('detail.section.skillmd')}
-                </h3>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    {t('detail.section.skillmd')}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(skill.bodyExcerpt ?? '')
+                        .then(() => {
+                          setBodyCopied(true);
+                          window.setTimeout(() => setBodyCopied(false), 1500);
+                        })
+                        .catch(() => {});
+                    }}
+                    title={t('detail.skillmd.copy')}
+                    aria-label={t('detail.skillmd.copy')}
+                    className="inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {bodyCopied ? <Check className="h-3 w-3" /> : <CopyIcon className="h-3 w-3" />}
+                    {bodyCopied ? t('detail.skillmd.copied') : t('detail.skillmd.copy')}
+                  </button>
+                </div>
                 <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
                   {skill.bodyExcerpt}
                 </pre>

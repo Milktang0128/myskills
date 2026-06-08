@@ -78,7 +78,7 @@ export default function Workspace() {
   const [createSeed, setCreateSeed] = useState('');
   const [aiSearchAvailable, setAiSearchAvailable] = useState(false);
   const [createSkillAvailable, setCreateSkillAvailable] = useState(false);
-  const [settingsFocusSection, setSettingsFocusSection] = useState<'ai' | null>(null);
+  const [settingsFocusSection, setSettingsFocusSection] = useState<'ai' | 'updates' | null>(null);
   const [frontendSmokeActive, setFrontendSmokeActive] = useState(false);
   // True once a cached library overview exists. Drives the one-shot Day-0
   // guidance card: visible until first AI Lens generation, then silenced.
@@ -200,7 +200,17 @@ export default function Workspace() {
         .check()
         .then((update) => {
           if (update.available && update.version) {
-            showToast(t('updates.toast.available', { version: update.version }));
+            showToast(
+              t('updates.toast.available', { version: update.version }),
+              {
+                label: t('updates.toast.action'),
+                onClick: () => {
+                  setSettingsFocusSection('updates');
+                  setSidebarView('settings');
+                },
+              },
+              12000,
+            );
           }
         })
         .catch(() => {

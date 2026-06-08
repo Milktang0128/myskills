@@ -39,6 +39,7 @@ pub fn run() {
             commands::platforms_pick_dir,
             commands::platforms_known_candidates,
             commands::platforms_open_dir,
+            commands::app_open_url,
             commands::skills_list,
             commands::skills_get,
             commands::skills_open_location,

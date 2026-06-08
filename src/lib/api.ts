@@ -96,6 +96,8 @@ declare global {
 }
 
 const COMMANDS: Record<IpcChannel, string> = {
+  [IPC.app.openUrl]: 'app_open_url',
+
   [IPC.platforms.list]: 'platforms_list',
   [IPC.platforms.update]: 'platforms_update',
   [IPC.platforms.create]: 'platforms_create',
@@ -261,6 +263,9 @@ function updateToInfo(update: Update | null, currentVersion?: string): AppUpdate
 export const api = {
   app: {
     version: async () => getVersion(),
+    /** Open an external https URL in the user's default browser. */
+    openUrl: (url: string) =>
+      bridge().invoke(IPC.app.openUrl, { url }) as Promise<{ ok: true; url: string }>,
   },
   updates: {
     check: async () => {
