@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS skill_locations (
   is_disabled     INTEGER NOT NULL DEFAULT 0,
   content_hash    TEXT,
   mtime           INTEGER,
+  birthtime       INTEGER,
   last_seen_at    INTEGER NOT NULL,
   UNIQUE(platform_id, install_path)
 );

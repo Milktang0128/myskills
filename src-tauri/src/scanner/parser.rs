@@ -22,6 +22,10 @@ pub struct ParsedSkill {
     pub size_bytes: i64,
     pub file_count: i64,
     pub mtime: i64,
+    /// Filesystem creation time (birthtime) of SKILL.md, ms. Falls back to
+    /// mtime when the platform/FS doesn't expose a birthtime. Drives the
+    /// "recently added" sort so it reflects real file age, not scan time.
+    pub birthtime: i64,
 }
 
 pub fn parse_skill_dir(dir: &Path) -> AppResult<Option<ParsedSkill>> {
@@ -56,9 +60,17 @@ pub fn parse_skill_dir(dir: &Path) -> AppResult<Option<ParsedSkill>> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default();
+    let birthtime = meta
+        .created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .filter(|&ms| ms > 0)
+        .unwrap_or(mtime);
     parsed.size_bytes = size_bytes;
     parsed.file_count = file_count;
     parsed.mtime = mtime;
+    parsed.birthtime = birthtime;
 
     Ok(Some(parsed))
 }
@@ -94,6 +106,7 @@ pub fn parse_skill_markdown(raw: &str) -> AppResult<ParsedSkill> {
         size_bytes: normalized.len() as i64,
         file_count: 1,
         mtime: 0,
+        birthtime: 0,
     })
 }
 

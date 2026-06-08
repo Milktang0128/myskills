@@ -662,8 +662,13 @@ fn skills_list_response(db: &Connection, payload: Option<&Value>) -> AppResult<V
         format!("WHERE {}", where_sql.join(" AND "))
     };
     let order = match payload.and_then(|p| p.get("sort")).and_then(Value::as_str) {
-        Some("updated") => "ORDER BY s.updated_at DESC, s.name COLLATE NOCASE",
-        Some("created") => "ORDER BY s.created_at DESC, s.name COLLATE NOCASE",
+        // Sort by real filesystem times, not DB scan times: on a fresh bulk
+        // import every row shares one created_at/updated_at (the scan moment),
+        // so those degenerate to ties. "recently modified" → max location
+        // mtime; "recently added" → max location birthtime. Both fall back to
+        // the DB column for legacy rows not yet rescanned.
+        Some("updated") => "ORDER BY COALESCE((SELECT MAX(mtime) FROM skill_locations WHERE skill_id = s.id), s.updated_at) DESC, s.name COLLATE NOCASE",
+        Some("created") => "ORDER BY COALESCE((SELECT MAX(birthtime) FROM skill_locations WHERE skill_id = s.id), s.created_at) DESC, s.name COLLATE NOCASE",
         Some("mtime") => "ORDER BY COALESCE((SELECT MAX(mtime) FROM skill_locations WHERE skill_id = s.id), 0) DESC, s.name COLLATE NOCASE",
         _ => "ORDER BY s.name COLLATE NOCASE",
     };
