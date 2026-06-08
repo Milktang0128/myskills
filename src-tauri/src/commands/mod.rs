@@ -446,6 +446,24 @@ pub fn platforms_open_dir(
     Ok(json!({ "ok": true, "path": path }))
 }
 
+/// Open an external https URL in the user's default browser. Used by the
+/// About section's repository link. Only https URLs are accepted so this can
+/// never be coaxed into launching arbitrary local handlers.
+#[tauri::command]
+pub fn app_open_url(payload: Option<Value>) -> AppResult<Value> {
+    let url = required_str(&payload, "url")?.to_string();
+    if !url.starts_with("https://") {
+        return Err(AppError::new(
+            "OPEN_URL_REJECTED",
+            "only https URLs are allowed",
+        ));
+    }
+    tauri_plugin_opener::open_url(url.clone(), None::<&str>).map_err(|err| {
+        AppError::detail("OPEN_URL_FAILED", err.to_string(), json!({ "url": url }))
+    })?;
+    Ok(json!({ "ok": true, "url": url }))
+}
+
 #[tauri::command]
 pub fn settings_get(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let key = required_str(&payload, "key")?;

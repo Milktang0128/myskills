@@ -21,6 +21,7 @@ import {
   Power,
   ShieldCheck,
   Boxes,
+  Github,
 } from 'lucide-react';
 import type {
   AppUpdateInfo,
@@ -49,12 +50,13 @@ interface Props {
    * (registering a platform, rescanning, switching canonical). */
   onChanged?: () => void;
   onAiChanged?: () => void;
-  focusSection?: 'ai' | null;
+  focusSection?: 'ai' | 'updates' | null;
 }
 
 export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   const t = useT();
   const aiSectionRef = useRef<HTMLElement | null>(null);
+  const updateSectionRef = useRef<HTMLElement | null>(null);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
   const [lastScan, setLastScan] = useState<ScanResult | null>(null);
@@ -101,11 +103,16 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
 
   useEffect(() => {
-    if (focusSection !== 'ai') return;
-    window.requestAnimationFrame(() => {
-      aiSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      window.setTimeout(() => document.getElementById('llm-key')?.focus(), 250);
-    });
+    if (focusSection === 'ai') {
+      window.requestAnimationFrame(() => {
+        aiSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        window.setTimeout(() => document.getElementById('llm-key')?.focus(), 250);
+      });
+    } else if (focusSection === 'updates') {
+      window.requestAnimationFrame(() => {
+        updateSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    }
   }, [focusSection]);
   const [appVersion, setAppVersion] = useState('');
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -750,18 +757,20 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
 
           <Separator />
 
-          <UpdateSection
-            currentVersion={appVersion}
-            update={updateInfo}
-            checking={checkingUpdate}
-            installing={installingUpdate}
-            installed={updateInstalled}
-            progress={updateProgress}
-            error={updateError}
-            onCheck={checkForUpdate}
-            onInstall={installUpdate}
-            onRelaunch={relaunchApp}
-          />
+          <section ref={updateSectionRef} className="scroll-mt-4">
+            <UpdateSection
+              currentVersion={appVersion}
+              update={updateInfo}
+              checking={checkingUpdate}
+              installing={installingUpdate}
+              installed={updateInstalled}
+              progress={updateProgress}
+              error={updateError}
+              onCheck={checkForUpdate}
+              onInstall={installUpdate}
+              onRelaunch={relaunchApp}
+            />
+          </section>
 
           <Separator />
 
@@ -1035,6 +1044,25 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
             {stats && (
               <p className="font-mono text-[10px] text-muted-foreground break-all">{t('settings.stats.dbPath', { path: stats.dbPath })}</p>
             )}
+          </section>
+
+          <Separator />
+
+          <section className="space-y-2">
+            <h2 className="text-base font-semibold">{t('settings.about.header')}</h2>
+            <p className="text-sm text-muted-foreground">
+              {t('settings.about.author', { author: 'Milk Tang' })}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                void api.app.openUrl('https://github.com/Milktang0128/myskills').catch(() => {});
+              }}
+              className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"
+            >
+              <Github className="h-3.5 w-3.5" />
+              github.com/Milktang0128/myskills
+            </button>
           </section>
         </div>
       </ScrollArea>

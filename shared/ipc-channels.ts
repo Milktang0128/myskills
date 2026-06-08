@@ -5,6 +5,10 @@
  */
 
 export const IPC = {
+  app: {
+    /** Open an external https URL in the user's default browser. */
+    openUrl: 'app:openUrl',
+  },
   platforms: {
     list: 'platforms:list',
     update: 'platforms:update',
@@ -129,6 +133,7 @@ export const IPC = {
 } as const;
 
 export type IpcChannel =
+  | typeof IPC.app[keyof typeof IPC.app]
   | typeof IPC.platforms[keyof typeof IPC.platforms]
   | typeof IPC.skills[keyof typeof IPC.skills]
   | typeof IPC.scenarios[keyof typeof IPC.scenarios]
@@ -143,6 +148,7 @@ export type IpcChannel =
 export type IpcEventChannel = typeof IPC.events[keyof typeof IPC.events];
 
 export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
+  ...Object.values(IPC.app),
   ...Object.values(IPC.platforms),
   ...Object.values(IPC.skills),
   ...Object.values(IPC.scenarios),
