@@ -34,8 +34,6 @@ import type {
   CreateSkillReviewReport,
   CreateSkillSpec,
   CreateSkillStartResult,
-  ElectronMigrationCandidate,
-  ElectronMigrationConfirmationResult,
   LibraryOverview,
   LibraryOverviewSnapshot,
   LlmChatRequest,
@@ -123,8 +121,6 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.scenarios.import]: 'scenarios_import',
   [IPC.scenarios.createFromCluster]: 'scenarios_create_from_cluster',
 
-  [IPC.migration.discover]: 'migration_discover',
-  [IPC.migration.confirm]: 'migration_confirm',
 
   [IPC.scan.run]: 'scan_run',
   [IPC.scan.lastResult]: 'scan_last_result',
@@ -359,19 +355,6 @@ export const api = {
      */
     createFromCluster: (req: CreateFromClusterRequest) =>
       bridge().invoke(IPC.scenarios.createFromCluster, req) as Promise<CreateFromClusterResult>,
-  },
-  migration: {
-    discover: (extraDirs?: string[]) =>
-      bridge().invoke(
-        IPC.migration.discover,
-        extraDirs?.length ? { extraDirs } : undefined,
-      ) as Promise<ElectronMigrationCandidate[]>,
-    confirm: (candidate: ElectronMigrationCandidate) =>
-      bridge().invoke(IPC.migration.confirm, {
-        sourceDb: candidate.dbPath,
-        backupRoot: candidate.backupRoot,
-        sourceSha256: candidate.sourceSha256,
-      }) as Promise<ElectronMigrationConfirmationResult>,
   },
   scan: {
     run: () => bridge().invoke(IPC.scan.run) as Promise<ScanResult>,

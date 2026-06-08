@@ -30,7 +30,6 @@
     "smoke:tauri:launch": "node scripts/smoke-tauri-launch.mjs",
     "smoke:tauri:dmg": "node scripts/smoke-tauri-dmg.mjs",
     "smoke:tauri:fixtures": "node scripts/create-tauri-smoke-fixtures.mjs",
-    "smoke:tauri:migration": "cargo test --manifest-path src-tauri/Cargo.toml migration::tests::stable_migration_drill_imports_copy_and_rolls_back_without_source_mutation -- --exact",
     "smoke:create-skill": "cargo test --manifest-path src-tauri/Cargo.toml commands::tests::create_skill_user_simulation_generates_reviews_plans_and_installs -- --exact --nocapture",
     "smoke:create-skill:live": "cargo test --manifest-path src-tauri/Cargo.toml commands::tests::create_skill_live_llm_user_simulation_generates_reviewable_skill -- --ignored --exact --nocapture",
     "smoke:ui:workbench": "node scripts/smoke-ui-workbench.mjs",
