@@ -8781,6 +8781,10 @@ fn create_skill_coerce_start_payload(parsed: Value, prompt: &str, language: &str
     })
 }
 
+// Superseded in production by create_skill_status_envelope (which also reads
+// status/understanding and no longer forces skillSpec); retained only for the
+// coerce-shape unit test, so gate it to test builds to avoid a dead-code warn.
+#[cfg(test)]
 fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Value, Value)> {
     if parsed.get("schemaVersion").and_then(Value::as_str) != Some("create-skill.v1") {
         return Err(AppError::new(
