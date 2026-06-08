@@ -27,7 +27,7 @@ export function LibraryOverviewGuidance({
 }) {
   const t = useT();
   return (
-    <div className="border-b bg-secondary/30 px-6 py-3">
+    <div className="border-b bg-violet-50/50 px-6 py-3 dark:bg-violet-950/20">
       <div className="flex items-start gap-3">
         <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -43,8 +43,8 @@ export function LibraryOverviewGuidance({
           onClick={onOpenAiLens}
           className={cn(
             'inline-flex h-7 shrink-0 items-center gap-1.5 px-3 text-[12px] font-medium',
-            'bg-primary text-primary-foreground transition-colors hover:bg-primary/85',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            'bg-violet-600 text-white shadow-sm transition-colors hover:bg-violet-700',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1',
           )}
         >
           <Sparkles className="h-3.5 w-3.5" />
