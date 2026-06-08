@@ -51,15 +51,15 @@ jobs:
           - os: macos-latest
             label: macOS (universal)
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            args: --target universal-apple-darwin --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.macos.signing.conf.json
+            args: --target universal-apple-darwin --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.macos.signing.conf.json --config src-tauri/tauri.updater.conf.json
           - os: ubuntu-24.04
             label: Linux
             rust-targets: ''
-            args: --config src-tauri/tauri.stable.conf.json
+            args: --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.updater.conf.json
           - os: windows-latest
             label: Windows
             rust-targets: ''
-            args: --config src-tauri/tauri.stable.conf.json --bundles nsis
+            args: --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.updater.conf.json --bundles nsis
 
     steps:
       - name: Checkout

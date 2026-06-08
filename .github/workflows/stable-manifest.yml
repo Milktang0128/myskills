@@ -1,0 +1,45 @@
+name: Publish stable update manifest
+
+# In-app auto-update reads its manifest from a fixed URL:
+#   https://github.com/<repo>/releases/download/stable/latest.json
+# (see plugins.updater.endpoints in tauri.stable.conf.json).
+#
+# The Release workflow builds signed updater artifacts and a latest.json onto
+# each versioned (v*) release. When you PUBLISH that release, this workflow
+# copies its latest.json onto the fixed `stable` release, so the artifact URLs
+# inside it are already public. Running on `published` (not on tag) guarantees
+# the updater only ever points at assets users can actually download.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish-manifest:
+    # Only versioned releases carry an updater manifest; skip the `stable`
+    # channel release itself and any non-v* tags.
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Copy latest.json to the stable channel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! gh release download "$TAG" -R "$REPO" -p latest.json -D manifest 2>/dev/null; then
+            echo "::notice::$TAG has no latest.json (no updater artifacts) — nothing to publish."
+            exit 0
+          fi
+          if ! gh release view stable -R "$REPO" >/dev/null 2>&1; then
+            gh release create stable -R "$REPO" \
+              --title "Stable update channel" \
+              --notes "Holds latest.json for the in-app auto-updater. Managed automatically by CI — do not delete." \
+              --prerelease
+          fi
+          gh release upload stable -R "$REPO" manifest/latest.json --clobber
+          echo "::notice::Published $TAG's latest.json to the stable channel."
