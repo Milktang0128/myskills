@@ -2,13 +2,24 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Pencil, Sparkles } from 'lucide-react';
+import {
+  AlertTriangle,
+  ChevronDown,
+  CheckCircle2,
+  FilePlus2,
+  Loader2,
+  LogIn,
+  Pencil,
+  Sparkles,
+  Wand2,
+} from 'lucide-react';
 import type {
   AiJob,
   CreateSkillDraft,
   CreateSkillExecuteResult,
   CreateSkillQuestion,
   CreateSkillReviewReport,
+  CreateSkillSafety,
   CreateSkillSpec,
   CreateSkillStartResult,
   Platform,
@@ -62,7 +73,6 @@ export function CreateSkillView({
   const [executeResult, setExecuteResult] = useState<CreateSkillExecuteResult | null>(null);
   const [targetPlatformIds, setTargetPlatformIds] = useState<PlatformId[]>([canonicalPlatform]);
   const [targetScenarioIds, setTargetScenarioIds] = useState<number[]>([]);
-  const [manualMode, setManualMode] = useState(false);
   const [startJob, setStartJob] = useState<AiJob<CreateSkillStartResult> | null>(null);
 
   useEffect(() => {
@@ -142,16 +152,20 @@ export function CreateSkillView({
 
   function applyStartResult(result: CreateSkillStartResult) {
     const nextDraft = normalizeCreateSkillDraft(result.draft);
-    if (!nextDraft.skillSpec || !isUsableOutline(nextDraft.skillSpec, nextDraft.followupQuestions)) {
+    if (!nextDraft.skillSpec) {
       throw new Error(copy.badOutline);
     }
     setDraft(nextDraft);
     setSpec(nextDraft.skillSpec);
     setMarkdown(nextDraft.draftMarkdown ?? '');
     setReview(nextDraft.validation);
-    setStep('outline');
-    setManualMode(!result.aiUsed);
-    if (!result.aiUsed) onToast(copy.localMode);
+    // 澄清在先，纯按 Rust 自评的 status 路由：还有未答追问 → 澄清步；问清楚（ready，
+    // 无未答题）→ 结晶轮廓。不再用旧的 isUsableOutline 硬门——它要求“必须有带选项的
+    // 追问”，与新模型 ready 时无追问的契约直接冲突，会把清晰需求误判为不完整。ready
+    // spec 的完整性已由 Rust 质量门（start_quality_issues）保证。
+    const answers = nextDraft.answers ?? {};
+    const hasOpenQuestions = (nextDraft.followupQuestions ?? []).some((q) => !answers[q.id]);
+    setStep(hasOpenQuestions ? 'questions' : 'outline');
   }
 
   async function start() {
@@ -207,7 +221,10 @@ export function CreateSkillView({
       const nextDraft = normalizeCreateSkillDraft(result.draft);
       setDraft(nextDraft);
       setSpec(nextDraft.skillSpec);
-      setStep('questions');
+      // 还有未答题 → 继续澄清；问清楚了 → 结晶出轮廓供确认。
+      const answers = nextDraft.answers ?? {};
+      const hasOpenQuestions = (nextDraft.followupQuestions ?? []).some((q) => !answers[q.id]);
+      setStep(hasOpenQuestions ? 'questions' : 'outline');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -227,8 +244,6 @@ export function CreateSkillView({
       setMarkdown(nextDraft.draftMarkdown ?? '');
       setReview(nextDraft.validation);
       setStep('draft');
-      setManualMode(!result.aiUsed);
-      if (!result.aiUsed) onToast(copy.localDraft);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -250,7 +265,8 @@ export function CreateSkillView({
       const nextReview = normalizeCreateSkillReview(result.review);
       setDraft(nextDraft);
       setReview(nextReview);
-      if (nextReview.blocking.length === 0 && nextReview.warnings.length === 0) {
+      // 可安装性只看 blocking；warning 为非阻塞提示，不阻止进入安装步骤。
+      if (nextReview.blocking.length === 0) {
         setStep('install');
         onToast(copy.reviewPassedToast);
       } else {
@@ -291,107 +307,32 @@ export function CreateSkillView({
     setSpec({ ...spec, [key]: value });
   }
 
-  function setIntentUserJob(value: string) {
+  // 直写 intentFrame 上的某个字符串/数组字段（新 5 支柱）。
+  function setIntentField<K extends keyof CreateSkillSpec['intentFrame']>(
+    key: K,
+    value: CreateSkillSpec['intentFrame'][K],
+  ) {
     if (!spec) return;
     setSpec({
       ...spec,
       intentFrame: {
         ...spec.intentFrame,
-        userJob: value,
+        [key]: value,
       },
     });
   }
 
-  function setTriggerContext(value: string) {
+  // 直写 intentFrame.safety 上的某个枚举（折叠高级区）。
+  function setSafetyField<K extends keyof CreateSkillSafety>(key: K, value: CreateSkillSafety[K]) {
     if (!spec) return;
     setSpec({
       ...spec,
       intentFrame: {
         ...spec.intentFrame,
-        triggerContext: value,
-      },
-    });
-  }
-
-  function setAcceptedInputs(value: string) {
-    if (!spec) return;
-    setSpec({
-      ...spec,
-      intentFrame: {
-        ...spec.intentFrame,
-        inputContract: {
-          ...spec.intentFrame.inputContract,
-          acceptedInputs: lines(value),
+        safety: {
+          ...spec.intentFrame.safety,
+          [key]: value,
         },
-      },
-    });
-  }
-
-  function setOutputArtifact(value: CreateSkillSpec['intentFrame']['outputContract']['artifactType']) {
-    if (!spec) return;
-    setSpec({
-      ...spec,
-      intentFrame: {
-        ...spec.intentFrame,
-        outputContract: {
-          ...spec.intentFrame.outputContract,
-          artifactType: value,
-        },
-      },
-    });
-  }
-
-  function setOutputDestination(value: CreateSkillSpec['intentFrame']['outputContract']['destination']) {
-    if (!spec) return;
-    setSpec({
-      ...spec,
-      writesFiles: value !== 'reply_only',
-      intentFrame: {
-        ...spec.intentFrame,
-        outputContract: {
-          ...spec.intentFrame.outputContract,
-          destination: value,
-        },
-      },
-    });
-  }
-
-  function setWorkflow(value: string) {
-    if (!spec) return;
-    setSpec({
-      ...spec,
-      intentFrame: {
-        ...spec.intentFrame,
-        workflow: {
-          ...spec.intentFrame.workflow,
-          steps: lines(value),
-        },
-      },
-    });
-  }
-
-  function setBoundaryAndNonGoals(value: string) {
-    if (!spec) return;
-    setSpec({
-      ...spec,
-      intentFrame: {
-        ...spec.intentFrame,
-        workflow: {
-          ...spec.intentFrame.workflow,
-          failClosedRules: lines(value),
-        },
-        nonGoals: [],
-      },
-    });
-  }
-
-  function setCriteria(value: string) {
-    if (!spec) return;
-    setSpec({
-      ...spec,
-      intentFrame: {
-        ...spec.intentFrame,
-        successCriteria: lines(value),
       },
     });
   }
@@ -405,11 +346,25 @@ export function CreateSkillView({
     setReview(null);
     setPlan(null);
     setExecuteResult(null);
-    setManualMode(false);
     setStartJob(null);
     setBusy(false);
     setTargetScenarioIds([]);
     setTargetPlatformIds([canonicalPlatform]);
+  }
+
+  // Explicit "discard draft": tell the backend to mark the draft discarded and
+  // clean its staging dir, THEN reset the UI. Without this the DB row + staging
+  // temp dir leak forever (the button used to only reset front-end state).
+  async function discardDraft() {
+    const id = draft?.id;
+    resetAll();
+    if (id) {
+      try {
+        await api.ai.createSkill.discard(id);
+      } catch {
+        /* best-effort cleanup; UI already reset */
+      }
+    }
   }
 
   return (
@@ -474,110 +429,215 @@ export function CreateSkillView({
 
             {step === 'outline' && spec && (
               <section className="space-y-4">
-                {manualMode && (
-                  <Notice tone="info" icon={<Sparkles className="h-4 w-4" />}>
-                    {copy.manualModeNotice}
-                  </Notice>
-                )}
-                <Field label={copy.name}>
-                  <input
-                    value={spec.name}
-                    onChange={(e) => setSpecField('name', slugInput(e.target.value))}
-                    className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <Field label={copy.description}>
-                  <input
-                    value={spec.description}
-                    onChange={(e) => setSpecField('description', e.target.value)}
-                    className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <Field label={copy.trigger}>
-                  <textarea
-                    value={spec.intentFrame.triggerContext}
-                    onChange={(e) => setTriggerContext(e.target.value)}
-                    className="min-h-[80px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <Field label={copy.intent}>
-                  <textarea
-                    value={spec.intentFrame.userJob}
-                    onChange={(e) => setIntentUserJob(e.target.value)}
-                    className="min-h-[96px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <Field label={copy.inputs}>
-                  <textarea
-                    value={safeStringList(spec.intentFrame.inputContract.acceptedInputs).join('\n')}
-                    onChange={(e) => setAcceptedInputs(e.target.value)}
-                    className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <Field label={copy.outputArtifact}>
-                    <select
-                      value={spec.intentFrame.outputContract.artifactType}
-                      onChange={(e) =>
-                        setOutputArtifact(e.target.value as CreateSkillSpec['intentFrame']['outputContract']['artifactType'])
-                      }
-                      className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <option value="markdown">Markdown</option>
-                      <option value="checklist">Checklist</option>
-                      <option value="report">Report</option>
-                      <option value="code_patch">Code patch</option>
-                      <option value="file">File</option>
-                      <option value="other">Other</option>
-                    </select>
-                  </Field>
-                  <Field label={copy.outputDestination}>
-                    <select
-                      value={spec.intentFrame.outputContract.destination}
-                      onChange={(e) =>
-                        setOutputDestination(e.target.value as CreateSkillSpec['intentFrame']['outputContract']['destination'])
-                      }
-                      className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <option value="reply_only">{copy.destinationReply}</option>
-                      <option value="same_folder">{copy.destinationSameFolder}</option>
-                      <option value="user_selected">{copy.destinationUserSelected}</option>
-                    </select>
-                  </Field>
+                {/* 技能的本质 = 输入 → [这个技能] → 输出。把输入/输出做成视觉主体，
+                    技能名作为中间的“变换”；其余（何时触发/工作流/边界/安全/验收）
+                    全部收进下方「更多细节」折叠区，由 LLM 推断、用户可不管。 */}
+                {/* 技能 = 输入 → [这台机器] → 输出。把输入/输出做成视觉主体，技能名
+                    是中间的“变换”节点；三者连成一条竖向流水线，其余信息（何时触发 /
+                    工作流 / 边界 / 安全 / 验收）折叠进下方「更多细节」。 */}
+                <div className="mx-auto max-w-xl">
+                  {/* ── 输入 ── */}
+                  <div className="rounded-xl border bg-card p-4 shadow-sm">
+                    <div className="mb-2.5 flex items-center gap-2.5">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <LogIn className="h-4 w-4" />
+                      </span>
+                      <div className="leading-tight">
+                        <div className="text-sm font-semibold">{copy.flowInput}</div>
+                        <div className="text-[11px] text-muted-foreground">{copy.flowInputSub}</div>
+                      </div>
+                    </div>
+                    <textarea
+                      value={spec.intentFrame.userInput}
+                      onChange={(e) => setIntentField('userInput', e.target.value)}
+                      placeholder={copy.flowInputHint}
+                      className="min-h-[120px] w-full resize-none rounded-lg border bg-muted/30 px-3.5 py-3 text-sm leading-7 transition-colors placeholder:text-muted-foreground/50 focus:bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                  </div>
+
+                  {/* 连接线 + 节点 */}
+                  <div className="flex flex-col items-center">
+                    <span className="h-4 w-px bg-border" />
+                    <ChevronDown className="-my-1 h-4 w-4 text-muted-foreground/40" />
+                  </div>
+
+                  {/* ── 技能名：中间的“变换”节点（焦点）── */}
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                      {copy.skillNodeLabel}
+                    </span>
+                    <div className="inline-flex items-center gap-2 rounded-full border bg-background px-3.5 py-1.5 shadow-sm focus-within:ring-2 focus-within:ring-ring">
+                      <Wand2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <input
+                        value={spec.name}
+                        onChange={(e) => setSpecField('name', slugInput(e.target.value))}
+                        placeholder="skill-name"
+                        aria-label={copy.name}
+                        className="w-48 max-w-full border-0 bg-transparent p-0 text-center text-sm font-medium focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col items-center">
+                    <ChevronDown className="-mb-1 h-4 w-4 text-muted-foreground/40" />
+                    <span className="h-4 w-px bg-border" />
+                  </div>
+
+                  {/* ── 输出 ── */}
+                  <div className="rounded-xl border bg-card p-4 shadow-sm">
+                    <div className="mb-2.5 flex items-center gap-2.5">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                        <Sparkles className="h-4 w-4" />
+                      </span>
+                      <div className="leading-tight">
+                        <div className="text-sm font-semibold">{copy.flowOutput}</div>
+                        <div className="text-[11px] text-muted-foreground">{copy.flowOutputSub}</div>
+                      </div>
+                    </div>
+                    <textarea
+                      value={spec.intentFrame.output}
+                      onChange={(e) => setIntentField('output', e.target.value)}
+                      placeholder={copy.flowOutputHint}
+                      className="min-h-[120px] w-full resize-none rounded-lg border bg-muted/30 px-3.5 py-3 text-sm leading-7 transition-colors placeholder:text-muted-foreground/50 focus:bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                    {/* outputParts：“输出包含” —— 把输出定清楚的防空洞要点，从属于输出框 */}
+                    <div className="mt-3 border-t pt-3">
+                      <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">{copy.outputPartsLabel}</div>
+                      <textarea
+                        value={safeStringList(spec.intentFrame.outputParts).join('\n')}
+                        onChange={(e) => setIntentField('outputParts', lines(e.target.value))}
+                        placeholder={copy.outputPartsHint}
+                        className="min-h-[60px] w-full resize-none rounded-lg border bg-muted/20 px-3.5 py-2.5 text-xs leading-6 transition-colors placeholder:text-muted-foreground/50 focus:bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                      />
+                    </div>
+                  </div>
                 </div>
-                <Field label={copy.workflow}>
-                  <textarea
-                    value={safeStringList(spec.intentFrame.workflow.steps).join('\n')}
-                    onChange={(e) => setWorkflow(e.target.value)}
-                    className="min-h-[132px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <Field label={copy.boundaries}>
-                  <textarea
-                    value={boundaryLines(spec).join('\n')}
-                    onChange={(e) => setBoundaryAndNonGoals(e.target.value)}
-                    className="min-h-[104px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
-                <Field label={copy.criteria}>
-                  <textarea
-                    value={safeStringList(spec.intentFrame.successCriteria).join('\n')}
-                    onChange={(e) => setCriteria(e.target.value)}
-                    className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  />
-                </Field>
+
+                <details className="border bg-background/50 p-3 text-sm [&[open]>summary]:mb-3">
+                  <summary className="cursor-pointer select-none font-medium text-muted-foreground">
+                    {copy.moreDetailsTitle}
+                  </summary>
+                  <div className="space-y-3">
+                    <Field label={copy.whenToUse}>
+                      <textarea
+                        value={spec.intentFrame.whenToUse}
+                        onChange={(e) => setIntentField('whenToUse', e.target.value)}
+                        className="min-h-[72px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    </Field>
+                    <Field label={copy.workflow}>
+                      <textarea
+                        value={safeStringList(spec.intentFrame.workflow).join('\n')}
+                        onChange={(e) => setIntentField('workflow', lines(e.target.value))}
+                        className="min-h-[120px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    </Field>
+                    <Field label={copy.boundaries}>
+                      <textarea
+                        value={boundaryLines(spec).join('\n')}
+                        onChange={(e) => setIntentField('boundaries', lines(e.target.value))}
+                        className="min-h-[96px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    </Field>
+                    <Field label={copy.description}>
+                      <input
+                        value={spec.description}
+                        onChange={(e) => setSpecField('description', e.target.value)}
+                        className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    </Field>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field label={copy.safetyArtifactType}>
+                        <select
+                          value={spec.intentFrame.safety.artifactType}
+                          onChange={(e) =>
+                            setSafetyField('artifactType', e.target.value as CreateSkillSafety['artifactType'])
+                          }
+                          className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="markdown">Markdown</option>
+                          <option value="checklist">Checklist</option>
+                          <option value="report">Report</option>
+                          <option value="code_patch">Code patch</option>
+                          <option value="file">File</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </Field>
+                      <Field label={copy.safetyNetwork}>
+                        <select
+                          value={spec.intentFrame.safety.network}
+                          onChange={(e) =>
+                            setSafetyField('network', e.target.value as CreateSkillSafety['network'])
+                          }
+                          className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="no">{copy.networkNo}</option>
+                          <option value="reads_only">{copy.networkReadsOnly}</option>
+                          <option value="reads_writes">{copy.networkReadsWrites}</option>
+                        </select>
+                      </Field>
+                      <Field label={copy.safetyFileWrites}>
+                        <select
+                          value={spec.intentFrame.safety.fileWrites}
+                          onChange={(e) =>
+                            setSafetyField('fileWrites', e.target.value as CreateSkillSafety['fileWrites'])
+                          }
+                          className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="none">{copy.fileWritesNone}</option>
+                          <option value="same_folder">{copy.fileWritesSameFolder}</option>
+                          <option value="user_selected">{copy.fileWritesUserSelected}</option>
+                        </select>
+                      </Field>
+                      <Field label={copy.safetyOverwrite}>
+                        <select
+                          value={spec.intentFrame.safety.overwrite}
+                          onChange={(e) =>
+                            setSafetyField('overwrite', e.target.value as CreateSkillSafety['overwrite'])
+                          }
+                          className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="never">{copy.overwriteNever}</option>
+                          <option value="confirm_each_time">{copy.overwriteConfirm}</option>
+                        </select>
+                      </Field>
+                      <Field label={copy.safetyPrivacy}>
+                        <select
+                          value={spec.intentFrame.safety.privacy}
+                          onChange={(e) =>
+                            setSafetyField('privacy', e.target.value as CreateSkillSafety['privacy'])
+                          }
+                          className="h-9 w-full border bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <option value="local_only">{copy.privacyLocalOnly}</option>
+                          <option value="may_send_summary">{copy.privacyMaySendSummary}</option>
+                          <option value="may_send_content">{copy.privacyMaySendContent}</option>
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label={copy.criteria}>
+                      <textarea
+                        value={safeStringList(spec.intentFrame.successCriteria).join('\n')}
+                        onChange={(e) => setIntentField('successCriteria', lines(e.target.value))}
+                        className="min-h-[88px] w-full resize-none border bg-background p-3 text-sm leading-6 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      />
+                    </Field>
+                  </div>
+                </details>
+
                 <div className="flex gap-2">
-                  <Button onClick={() => saveOutline('questions')} disabled={busy}>
-                    <Pencil className="mr-2 h-4 w-4" />
-                    {copy.continueQuestions}
+                  {/* 轮廓 = 澄清后的结晶确认面：主操作直接生成 SKILL.md。 */}
+                  <Button onClick={generate} disabled={busy || !spec}>
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    {copy.generateDraft}
                   </Button>
-                  <Button variant="outline" onClick={() => setStep('input')} disabled={busy}>
-                    {copy.backInput}
+                  <Button variant="outline" onClick={() => setStep('questions')} disabled={busy}>
+                    {copy.refineMore}
                   </Button>
                   <Button variant="outline" onClick={start} disabled={busy || prompt.trim().length < 4}>
                     {copy.regenerateOutline}
                   </Button>
-                  <Button variant="outline" onClick={resetAll} disabled={busy}>
+                  <Button variant="outline" onClick={discardDraft} disabled={busy}>
                     {copy.discardDraft}
                   </Button>
                 </div>
@@ -586,6 +646,19 @@ export function CreateSkillView({
 
             {step === 'questions' && (
               <section className="space-y-4">
+                {/* 澄清在先：先把卡住输入/输出契约的关键点问清楚，再结晶出轮廓。
+                    顶部一行 AI 理解复述，让用户在答细节前就能纠正根本误读。 */}
+                {draft?.understanding && (
+                  <Notice tone="info" icon={<Sparkles className="h-4 w-4" />}>
+                    {copy.understandingPrefix}
+                    {draft.understanding}
+                  </Notice>
+                )}
+                {busy && (
+                  <Notice tone="info" icon={<Loader2 className="h-4 w-4 animate-spin" />}>
+                    {copy.crystallizing}
+                  </Notice>
+                )}
                 {currentQuestion ? (
                   <QuestionBlock
                     question={currentQuestion}
@@ -598,11 +671,17 @@ export function CreateSkillView({
                   </Notice>
                 )}
                 <div className="flex gap-2">
-                  <Button onClick={generate} disabled={busy || !spec || Boolean(currentQuestion)}>
-                    {copy.generateDraft}
-                  </Button>
-                  <Button variant="outline" onClick={() => setStep('outline')}>
-                    {copy.backOutline}
+                  {currentQuestion ? (
+                    <Button variant="outline" onClick={() => setStep('outline')} disabled={busy || !spec}>
+                      {copy.enoughGenerate}
+                    </Button>
+                  ) : (
+                    <Button onClick={() => setStep('outline')} disabled={busy || !spec}>
+                      {copy.viewOutline}
+                    </Button>
+                  )}
+                  <Button variant="outline" onClick={() => setStep('input')} disabled={busy}>
+                    {copy.backInput}
                   </Button>
                 </div>
               </section>
@@ -668,21 +747,29 @@ export function CreateSkillView({
               <section className="space-y-2">
                 <h2 className="text-xs font-semibold uppercase tracking-normal text-muted-foreground">{copy.installTarget}</h2>
                 <div className="space-y-1">
-                  {platforms.map((platform) => (
-                    <label key={platform.id} className="flex items-center gap-2 border bg-background px-2 py-2 text-xs">
-                      <input
-                        type="checkbox"
-                        checked={targetPlatformIds.includes(platform.id)}
-                        onChange={(e) => {
-                          setTargetPlatformIds((ids) =>
-                            e.target.checked ? [...new Set([...ids, platform.id])] : ids.filter((id) => id !== platform.id),
-                          );
-                        }}
-                      />
-                      <span className="min-w-0 flex-1 truncate">{platform.label}</span>
-                      {platform.id === canonicalPlatform && <Badge>{copy.mainSource}</Badge>}
-                    </label>
-                  ))}
+                  {platforms.map((platform) => {
+                    // The source platform is always written (the engine copies
+                    // there unconditionally), so its checkbox is locked on —
+                    // unchecking it would desync the UI from what actually happens.
+                    const isSource = platform.id === canonicalPlatform;
+                    return (
+                      <label key={platform.id} className="flex items-center gap-2 border bg-background px-2 py-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={isSource || targetPlatformIds.includes(platform.id)}
+                          disabled={isSource}
+                          onChange={(e) => {
+                            if (isSource) return;
+                            setTargetPlatformIds((ids) =>
+                              e.target.checked ? [...new Set([...ids, platform.id])] : ids.filter((id) => id !== platform.id),
+                            );
+                          }}
+                        />
+                        <span className="min-w-0 flex-1 truncate">{platform.label}</span>
+                        {isSource && <Badge>{copy.mainSource}</Badge>}
+                      </label>
+                    );
+                  })}
                 </div>
               </section>
 
@@ -735,8 +822,8 @@ export function CreateSkillView({
                     !draft ||
                     !markdown.trim() ||
                     review == null ||
+                    // 只看 blocking：warning 为非阻塞质量提示，仍允许安装。
                     review.blocking.length !== 0 ||
-                    review.warnings.length !== 0 ||
                     targetPlatformIds.length === 0
                   }
                   data-smoke-action="create-skill-plan"
@@ -886,12 +973,13 @@ function SkillBehaviorSummary({ spec, copy }: { spec: CreateSkillSpec; copy: Cop
   const safeSpec = normalizeSpec(spec);
   return (
     <div className="grid gap-3 border bg-background p-4 text-xs md:grid-cols-2">
-      <SummaryItem label={copy.description} value={safeSpec.description} />
-      <SummaryItem label={copy.trigger} value={safeSpec.intentFrame.triggerContext} />
-      <SummaryItem label={copy.inputs} value={safeSpec.intentFrame.inputContract.acceptedInputs.join('\n')} />
+      <SummaryItem label={copy.whenToUse} value={safeSpec.intentFrame.whenToUse} />
+      <SummaryItem label={copy.userInput} value={safeSpec.intentFrame.userInput} />
+      <SummaryItem label={copy.output} value={safeSpec.intentFrame.output} />
+      <SummaryItem label={copy.outputParts} value={safeSpec.intentFrame.outputParts.join('\n')} />
       <SummaryItem
-        label={copy.outputArtifact}
-        value={`${safeSpec.intentFrame.outputContract.artifactType} / ${safeSpec.intentFrame.outputContract.destination}`}
+        label={copy.safetyArtifactType}
+        value={`${safeSpec.intentFrame.safety.artifactType} / ${safeSpec.intentFrame.safety.fileWrites}`}
       />
       <SummaryItem label={copy.boundaries} value={boundaryLines(safeSpec).join('\n')} />
       <SummaryItem label={copy.criteria} value={safeSpec.intentFrame.successCriteria.join('\n')} />
@@ -940,25 +1028,23 @@ function QualityChecklist({
   const qualityItems = [
     {
       label: copy.qualityTrigger,
-      ok: checks?.triggerDescription ?? safeSpec.description.trim().length > 20,
+      ok: checks?.triggerDescription ?? safeSpec.intentFrame.whenToUse.trim().length > 20,
     },
     {
       label: copy.qualityInputs,
-      ok: checks?.hasInputs ?? safeSpec.intentFrame.inputContract.acceptedInputs.length > 0,
+      ok: checks?.hasInputs ?? safeSpec.intentFrame.userInput.trim().length > 0,
     },
     {
       label: copy.qualityWorkflow,
-      ok: checks?.hasWorkflow ?? safeSpec.intentFrame.workflow.steps.length >= 3,
+      ok: checks?.hasWorkflow ?? safeSpec.intentFrame.workflow.length >= 3,
     },
     {
       label: copy.qualityOutput,
-      ok: checks?.hasOutput ?? Boolean(safeSpec.intentFrame.outputContract.artifactType),
+      ok: checks?.hasOutput ?? (safeSpec.intentFrame.output.trim().length > 0 && safeSpec.intentFrame.outputParts.length >= 2),
     },
     {
       label: copy.qualityBoundaries,
-      ok:
-        checks?.hasBoundaries ??
-        safeSpec.intentFrame.workflow.failClosedRules.length + safeSpec.intentFrame.nonGoals.length > 0,
+      ok: checks?.hasBoundaries ?? safeSpec.intentFrame.boundaries.length > 0,
     },
     {
       label: copy.qualityCriteria,
@@ -1040,6 +1126,7 @@ function normalizeCreateSkillDraft(draft: CreateSkillDraft): CreateSkillDraft {
     skillSpec,
     followupQuestions: normalizeQuestions(source.followupQuestions),
     answers: isRecord(source.answers) ? (source.answers as Record<string, string>) : {},
+    understanding: stringOrNull(source.understanding),
     draftMarkdown: stringOrNull(source.draftMarkdown),
     targetPlatformIds: safeStringList(source.targetPlatformIds),
     targetScenarioIds: safeNumberList(source.targetScenarioIds),
@@ -1063,9 +1150,6 @@ function normalizeSpec(spec: CreateSkillSpec): CreateSkillSpec {
     description: stringValue(source.description),
     language: source.language === 'en' ? 'en' : 'zh',
     intentFrame,
-    needsNetwork: Boolean(source.needsNetwork),
-    writesFiles: Boolean(source.writesFiles),
-    overwritePolicy: source.overwritePolicy === 'confirm_each_time' ? 'confirm_each_time' : 'never',
     ready: Boolean(source.ready),
     missing: safeStringList(source.missing),
   };
@@ -1079,38 +1163,87 @@ function isUsableOutline(spec: CreateSkillSpec, questions: CreateSkillQuestion[]
     slugInput(safeSpec.name) &&
       safeSpec.description.trim().length >= 20 &&
       !safeSpec.description.toLowerCase().includes('structured agent workflow') &&
-      intent.userJob.trim().length >= 12 &&
-      intent.triggerContext.trim().length >= 12 &&
-      intent.inputContract.acceptedInputs.some((item) => item.trim()) &&
-      intent.workflow.steps.filter((item) => item.trim()).length >= 3 &&
+      intent.whenToUse.trim().length >= 12 &&
+      intent.userInput.trim().length >= 12 &&
+      intent.output.trim().length > 0 &&
+      intent.outputParts.filter((item) => item.trim()).length >= 2 &&
+      intent.workflow.filter((item) => item.trim()).length >= 3 &&
       intent.successCriteria.some((item) => item.trim()) &&
       safeQuestions.some((question) => question.options.length > 0),
   );
 }
 
+// 镜像 Rust create_skill_normalize_spec 的旧→新惰性迁移：旧字段缺失时填默认/迁移。
 function normalizeIntentFrame(value: unknown): CreateSkillSpec['intentFrame'] {
   const source: Record<string, unknown> = isRecord(value) ? value : {};
-  const inputContract: Record<string, unknown> = isRecord(source.inputContract) ? source.inputContract : {};
-  const outputContract: Record<string, unknown> = isRecord(source.outputContract) ? source.outputContract : {};
-  const workflow: Record<string, unknown> = isRecord(source.workflow) ? source.workflow : {};
+  const legacyInputContract: Record<string, unknown> = isRecord(source.inputContract) ? source.inputContract : {};
+  const legacyOutputContract: Record<string, unknown> = isRecord(source.outputContract) ? source.outputContract : {};
+  const legacyWorkflowObj: Record<string, unknown> = isRecord(source.workflow) ? source.workflow : {};
+
+  // whenToUse：空 → 旧 triggerContext。userInput：空 → 旧 userJob + 旧 acceptedInputs。
+  const whenToUse = stringValue(source.whenToUse) || stringValue(source.triggerContext);
+  const legacyInputs = safeStringList(legacyInputContract.acceptedInputs);
+  let userInput = stringValue(source.userInput) || stringValue(source.userJob);
+  if (legacyInputs.length > 0) {
+    const joined = legacyInputs.join('\n');
+    userInput = userInput && !userInput.includes(joined) ? `${userInput}\n${joined}` : userInput || joined;
+  }
+
+  // workflow：去掉 .steps 嵌套（数组优先，否则取旧 workflow.steps）。
+  const workflow = Array.isArray(source.workflow)
+    ? safeStringList(source.workflow)
+    : safeStringList(legacyWorkflowObj.steps);
+
+  // boundaries：合并旧 failClosedRules + nonGoals。
+  const boundaries = Array.isArray(source.boundaries)
+    ? safeStringList(source.boundaries)
+    : [
+        ...safeStringList(legacyWorkflowObj.failClosedRules),
+        ...safeStringList(source.failClosedRules),
+        ...safeStringList(source.nonGoals),
+      ];
+
+  const safetySource: Record<string, unknown> = isRecord(source.safety) ? source.safety : {};
+  const legacyDestination = stringValue(legacyOutputContract.destination);
+  const safety: CreateSkillSafety = {
+    network: oneOf(
+      safetySource.network,
+      ['no', 'reads_only', 'reads_writes'] as const,
+      source.needsNetwork ? 'reads_only' : 'no',
+    ),
+    fileWrites: oneOf(
+      safetySource.fileWrites,
+      ['none', 'same_folder', 'user_selected'] as const,
+      legacyDestination === 'same_folder'
+        ? 'same_folder'
+        : legacyDestination === 'user_selected'
+          ? 'user_selected'
+          : source.writesFiles
+            ? 'user_selected'
+            : 'none',
+    ),
+    overwrite: oneOf(safetySource.overwrite, ['never', 'confirm_each_time'] as const, source.overwritePolicy === 'confirm_each_time' ? 'confirm_each_time' : 'never'),
+    privacy: oneOf(
+      safetySource.privacy,
+      ['local_only', 'may_send_summary', 'may_send_content'] as const,
+      oneOf(legacyInputContract.privacyClass, ['local_only', 'may_send_summary', 'may_send_content'] as const, 'local_only'),
+    ),
+    artifactType: oneOf(
+      safetySource.artifactType,
+      ['markdown', 'report', 'checklist', 'code_patch', 'file', 'other'] as const,
+      oneOf(legacyOutputContract.artifactType, ['markdown', 'report', 'checklist', 'code_patch', 'file', 'other'] as const, 'markdown'),
+    ),
+  };
+
   return {
-    userJob: stringValue(source.userJob),
-    triggerContext: stringValue(source.triggerContext),
-    inputContract: {
-      acceptedInputs: safeStringList(inputContract.acceptedInputs),
-      privacyClass: oneOf(inputContract.privacyClass, ['local_only', 'may_send_summary', 'may_send_content'] as const, 'may_send_summary'),
-    },
-    outputContract: {
-      artifactType: oneOf(outputContract.artifactType, ['markdown', 'report', 'checklist', 'code_patch', 'file', 'other'] as const, 'markdown'),
-      destination: oneOf(outputContract.destination, ['reply_only', 'same_folder', 'user_selected'] as const, 'reply_only'),
-    },
-    workflow: {
-      steps: safeStringList(workflow.steps),
-      failClosedRules: safeStringList(workflow.failClosedRules),
-    },
-    stylePreferences: safeStringList(source.stylePreferences),
-    nonGoals: safeStringList(source.nonGoals),
+    whenToUse,
+    userInput,
+    output: stringValue(source.output),
+    outputParts: safeStringList(source.outputParts),
+    workflow,
+    boundaries,
     successCriteria: safeStringList(source.successCriteria),
+    safety,
   };
 }
 
@@ -1193,7 +1326,7 @@ function normalizeQuestions(value: unknown): CreateSkillQuestion[] {
 }
 
 function boundaryLines(spec: CreateSkillSpec): string[] {
-  return [...safeStringList(spec.intentFrame?.workflow?.failClosedRules), ...safeStringList(spec.intentFrame?.nonGoals)];
+  return safeStringList(spec.intentFrame?.boundaries);
 }
 
 function safeStringList(value: unknown): string[] {
@@ -1253,20 +1386,22 @@ function createSkillIssueLabel(field: string, locale: 'zh' | 'en'): string {
   const zh: Record<string, string> = {
     name: '技能名',
     description: '触发描述',
-    'intentFrame.userJob': '用户需求',
-    'intentFrame.triggerContext': '触发时机',
-    'intentFrame.inputContract.acceptedInputs': '适合输入',
-    'intentFrame.workflow.steps': '工作流步骤',
+    'intentFrame.whenToUse': '何时使用',
+    'intentFrame.userInput': '用户输入',
+    'intentFrame.output': '技能输出',
+    'intentFrame.outputParts': '输出组成',
+    'intentFrame.workflow': '工作流步骤',
     'intentFrame.successCriteria': '验收标准',
     schema: '返回格式',
   };
   const en: Record<string, string> = {
     name: 'skill name',
     description: 'trigger description',
-    'intentFrame.userJob': 'user need',
-    'intentFrame.triggerContext': 'trigger context',
-    'intentFrame.inputContract.acceptedInputs': 'accepted inputs',
-    'intentFrame.workflow.steps': 'workflow steps',
+    'intentFrame.whenToUse': 'when to use',
+    'intentFrame.userInput': 'user input',
+    'intentFrame.output': 'skill output',
+    'intentFrame.outputParts': 'output parts',
+    'intentFrame.workflow': 'workflow steps',
     'intentFrame.successCriteria': 'success criteria',
     schema: 'response schema',
   };
@@ -1299,24 +1434,44 @@ interface Copy {
   aiRequired: string;
   aiRequiredNotice: string;
   badOutline: string;
-  localMode: string;
-  localDraft: string;
   backgroundRunning: string;
   backgroundRunningShort: string;
-  manualModeNotice: string;
   name: string;
   description: string;
-  trigger: string;
-  intent: string;
-  inputs: string;
-  outputArtifact: string;
-  outputDestination: string;
-  destinationReply: string;
-  destinationSameFolder: string;
-  destinationUserSelected: string;
+  whenToUse: string;
+  userInput: string;
+  output: string;
+  outputParts: string;
   workflow: string;
   boundaries: string;
   criteria: string;
+  advancedTitle: string;
+  flowInput: string;
+  flowInputSub: string;
+  flowInputHint: string;
+  flowOutput: string;
+  flowOutputSub: string;
+  flowOutputHint: string;
+  skillNodeLabel: string;
+  outputPartsLabel: string;
+  outputPartsHint: string;
+  moreDetailsTitle: string;
+  safetyNetwork: string;
+  safetyFileWrites: string;
+  safetyOverwrite: string;
+  safetyPrivacy: string;
+  safetyArtifactType: string;
+  networkNo: string;
+  networkReadsOnly: string;
+  networkReadsWrites: string;
+  fileWritesNone: string;
+  fileWritesSameFolder: string;
+  fileWritesUserSelected: string;
+  overwriteNever: string;
+  overwriteConfirm: string;
+  privacyLocalOnly: string;
+  privacyMaySendSummary: string;
+  privacyMaySendContent: string;
   continueQuestions: string;
   backInput: string;
   regenerateOutline: string;
@@ -1324,6 +1479,11 @@ interface Copy {
   generateNow: string;
   questionsDone: string;
   generateDraft: string;
+  enoughGenerate: string;
+  viewOutline: string;
+  refineMore: string;
+  understandingPrefix: string;
+  crystallizing: string;
   backOutline: string;
   review: string;
   reviewAgain: string;
@@ -1377,31 +1537,56 @@ const zhCopy: Copy = {
   aiRequired: '创造技能需要先保存 AI 设置并测试连接。',
   aiRequiredNotice: '创造技能依赖大模型追问和生成；请先在设置中保存 AI 设置并通过连接测试。',
   badOutline: 'AI 返回的技能轮廓不完整，未进入下一步。请补充需求后重新生成。',
-  localMode: 'AI 未启用，已进入可编辑的本地轮廓模式。',
-  localDraft: 'AI 未启用，已生成本地模板草案；请检查后再安装。',
   backgroundRunning: '技能轮廓正在后台生成。你可以离开此页，回来后会继续显示进度和结果。',
   backgroundRunningShort: '后台生成中',
-  manualModeNotice: '当前是本地模板模式：不会调用外部模型，所有轮廓字段都可以手动调整。',
   name: '目录名 / 技能名',
   description: '触发描述',
-  trigger: '触发时机',
-  intent: '用户输入 / 困境',
-  inputs: '适合输入',
-  outputArtifact: '期待产物',
-  outputDestination: '交付位置',
-  destinationReply: '仅回复',
-  destinationSameFolder: '同目录文件',
-  destinationUserSelected: '用户选择位置',
+  whenToUse: '何时使用',
+  userInput: '用户输入 / 困境 / 问题',
+  output: '技能输出 / 方案 / 结果',
+  outputParts: '输出包含哪些部分',
   workflow: '工作流步骤',
   boundaries: '边界 / 不做什么',
   criteria: '验收标准',
+  advancedTitle: '高级（安全 / 分类，可选）',
+  flowInput: '输入',
+  flowInputSub: '需求 · 困境 · 问题',
+  flowInputHint: '描述你反复遇到、想交给这个技能处理的需求或困境 —— 你会带来什么材料、要解决什么问题。',
+  flowOutput: '输出',
+  flowOutputSub: '方案 · 结果',
+  flowOutputHint: '这个技能给出什么方案、产出什么结果 —— 写清产物的形态、结构与关键内容。',
+  skillNodeLabel: '技能',
+  outputPartsLabel: '输出包含哪些部分',
+  outputPartsHint: '每行一条，例如：润色后的全文 / 改动清单 / 风险标记（可选）',
+  moreDetailsTitle: '更多细节（何时触发 / 工作流 / 边界 / 安全 / 验收 —— 可不管，AI 会推断）',
+  safetyNetwork: '联网',
+  safetyFileWrites: '文件写入',
+  safetyOverwrite: '覆盖策略',
+  safetyPrivacy: '隐私',
+  safetyArtifactType: '产物类型',
+  networkNo: '不联网',
+  networkReadsOnly: '仅读取',
+  networkReadsWrites: '读写',
+  fileWritesNone: '不写文件',
+  fileWritesSameFolder: '同目录',
+  fileWritesUserSelected: '用户选择位置',
+  overwriteNever: '从不覆盖',
+  overwriteConfirm: '每次先确认',
+  privacyLocalOnly: '仅本地',
+  privacyMaySendSummary: '可发送摘要',
+  privacyMaySendContent: '可发送内容',
   continueQuestions: '继续追问',
   backInput: '返回输入',
   regenerateOutline: '重新生成',
   discardDraft: '放弃草稿',
   generateNow: '直接生成草案',
-  questionsDone: '关键问题已回答，可以生成草案。',
+  questionsDone: '关键问题已回答，下面是结晶出的技能轮廓。',
   generateDraft: '生成 SKILL.md',
+  enoughGenerate: '够了，直接看轮廓',
+  viewOutline: '查看技能轮廓',
+  refineMore: '继续补充澄清',
+  understandingPrefix: '我的理解：',
+  crystallizing: 'AI 正在据你的回答结晶技能轮廓…',
   backOutline: '返回轮廓',
   review: '检查草案',
   reviewAgain: '重新检查草案',
@@ -1416,7 +1601,7 @@ const zhCopy: Copy = {
   noScenarios: '暂无场景，可安装后再归类。',
   installSummary: '安装摘要',
   basename: '目录名',
-  mainSource: '主源',
+  mainSource: '来源',
   selectedPlatforms: '平台数',
   noWriteUntilConfirm: '这里只是安装前摘要；确认之前不会写入任何 skill 目录。',
   qualityTitle: '专业性检查',
@@ -1462,31 +1647,56 @@ const enCopy: Copy = {
   aiRequired: 'Create Skill needs saved AI settings and a successful connection test.',
   aiRequiredNotice: 'Create Skill relies on an LLM for follow-up questions and generation. Save AI settings and pass a connection test first.',
   badOutline: 'The AI returned an incomplete skill outline, so the draft was not advanced. Add more detail and regenerate.',
-  localMode: 'AI is not enabled; using an editable local outline.',
-  localDraft: 'AI is not enabled; generated a local template draft for review.',
   backgroundRunning: 'The outline is generating in the background. You can leave this page and come back without interrupting it.',
   backgroundRunningShort: 'Running in background',
-  manualModeNotice: 'Local template mode: no external model is called, and every outline field remains editable.',
   name: 'Directory / skill name',
   description: 'Trigger description',
-  trigger: 'Trigger moment',
-  intent: 'User input / problem',
-  inputs: 'Accepted inputs',
-  outputArtifact: 'Expected artifact',
-  outputDestination: 'Destination',
-  destinationReply: 'Reply only',
-  destinationSameFolder: 'Same-folder file',
-  destinationUserSelected: 'User-selected path',
+  whenToUse: 'When to use',
+  userInput: 'User input / problem / pain point',
+  output: 'Skill output / result',
+  outputParts: 'What the output is made of',
   workflow: 'Workflow steps',
   boundaries: 'Boundaries / non-goals',
   criteria: 'Acceptance criteria',
+  advancedTitle: 'Advanced (safety / classification, optional)',
+  flowInput: 'Input',
+  flowInputSub: 'need · problem · pain point',
+  flowInputHint: 'Describe the recurring need or problem you want this skill to handle — what you bring in, and what you need solved.',
+  flowOutput: 'Output',
+  flowOutputSub: 'solution · result',
+  flowOutputHint: 'What this skill delivers — spell out the shape, structure, and key contents of the result.',
+  skillNodeLabel: 'Skill',
+  outputPartsLabel: 'What the output contains',
+  outputPartsHint: 'One per line, e.g. polished full text / change list / risk flags (optional)',
+  moreDetailsTitle: 'More detail (when to use / workflow / boundaries / safety / criteria — optional, AI infers it)',
+  safetyNetwork: 'Network',
+  safetyFileWrites: 'File writes',
+  safetyOverwrite: 'Overwrite policy',
+  safetyPrivacy: 'Privacy',
+  safetyArtifactType: 'Artifact type',
+  networkNo: 'No network',
+  networkReadsOnly: 'Reads only',
+  networkReadsWrites: 'Reads & writes',
+  fileWritesNone: 'No file writes',
+  fileWritesSameFolder: 'Same folder',
+  fileWritesUserSelected: 'User-selected path',
+  overwriteNever: 'Never overwrite',
+  overwriteConfirm: 'Confirm each time',
+  privacyLocalOnly: 'Local only',
+  privacyMaySendSummary: 'May send summary',
+  privacyMaySendContent: 'May send content',
   continueQuestions: 'Continue questions',
   backInput: 'Back to input',
   regenerateOutline: 'Regenerate',
   discardDraft: 'Discard draft',
   generateNow: 'Generate draft now',
-  questionsDone: 'Key questions are answered. Generate the draft next.',
+  questionsDone: 'Key questions are answered — here is the crystallized outline.',
   generateDraft: 'Generate SKILL.md',
+  enoughGenerate: 'Enough — show the outline',
+  viewOutline: 'Review the outline',
+  refineMore: 'Add more clarification',
+  understandingPrefix: 'What I understand: ',
+  crystallizing: 'AI is crystallizing the skill outline from your answers…',
   backOutline: 'Back to outline',
   review: 'Review draft',
   reviewAgain: 'Review draft again',
@@ -1501,7 +1711,7 @@ const enCopy: Copy = {
   noScenarios: 'No scenarios yet. You can categorize after install.',
   installSummary: 'Install summary',
   basename: 'Basename',
-  mainSource: 'Main source',
+  mainSource: 'Source',
   selectedPlatforms: 'Platforms',
   noWriteUntilConfirm: 'This is only a pre-install summary; no skill directory is written before confirmation.',
   qualityTitle: 'Quality checks',

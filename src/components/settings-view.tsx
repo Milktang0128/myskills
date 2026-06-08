@@ -7,7 +7,7 @@ import {
   FileWarning,
   FolderSearch,
   FolderOpen,
-  Crown,
+  Target,
   CloudOff,
   FileX2,
   Database,
@@ -548,8 +548,8 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                           </span>
                         </div>
                         {isCanonical ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
-                            <Crown className="h-3 w-3" />
+                          <span className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            <Target className="h-3 w-3" />
                             {t('settings.platforms.canonical.badge')}
                           </span>
                         ) : (
@@ -557,9 +557,9 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                             type="button"
                             onClick={() => saveCanonical(p.id)}
                             disabled={savingCanonical}
-                            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
+                            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-border hover:bg-accent disabled:opacity-50"
                           >
-                            <Crown className="h-3 w-3" />
+                            <Target className="h-3 w-3" />
                             {t('settings.platforms.canonical.setAs')}
                           </button>
                         )}

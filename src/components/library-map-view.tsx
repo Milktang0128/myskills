@@ -26,6 +26,7 @@ import {
   Loader2,
   Map as MapIcon,
   Plus,
+  Layers,
 } from 'lucide-react';
 import type {
   AiJob,
@@ -79,6 +80,8 @@ export function LibraryMapView({
   // "already converted" — regenerating the Map invalidates that boolean,
   // and merging into an existing scenario is idempotent anyway.
   const [converting, setConverting] = useState<Set<string>>(() => new Set());
+  // Batch "turn every cluster into a scenario" in-flight flag.
+  const [convertingAll, setConvertingAll] = useState(false);
 
   const convertCluster = useCallback(
     async (cluster: LibraryOverviewCluster) => {
@@ -115,6 +118,49 @@ export function LibraryMapView({
           return next;
         });
       }
+    },
+    [onScenariosChanged, onToast, t],
+  );
+
+  // One-click: turn EVERY non-empty cluster into a scenario. Sequential (not
+  // parallel) — createFromCluster merges by name, and scenario rows are cheap
+  // DB writes, so a serial loop avoids write races and keeps a clean aggregate
+  // count. Failures per cluster are tolerated and summarised, not fatal.
+  const convertAllClusters = useCallback(
+    async (clusters: LibraryOverviewCluster[]) => {
+      const targets = clusters.filter((c) => c.skills.length > 0);
+      if (targets.length === 0) {
+        onToast(t('map.convertAll.empty'));
+        return;
+      }
+      setConvertingAll(true);
+      let created = 0;
+      let merged = 0;
+      let linked = 0;
+      let failed = 0;
+      for (const cluster of targets) {
+        try {
+          const result = await api.scenarios.createFromCluster({
+            name: cluster.name,
+            skillIds: cluster.skills.map((s) => s.skillId),
+          });
+          if (result.created) created += 1;
+          else merged += 1;
+          linked += result.skillsLinked;
+        } catch {
+          failed += 1;
+        }
+      }
+      setConvertingAll(false);
+      onScenariosChanged();
+      onToast(
+        t(failed > 0 ? 'map.convertAll.donePartial' : 'map.convertAll.done', {
+          created,
+          merged,
+          linked,
+          failed,
+        }),
+      );
     },
     [onScenariosChanged, onToast, t],
   );
@@ -274,28 +320,49 @@ export function LibraryMapView({
                   {t('map.heading', { count: overview.totalSkills })}
                 </h1>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={generate}
-                disabled={generating}
-                title={t('map.regenerate.title', {
-                  when: formatRelative(overview.generatedAt),
-                  model: overview.model,
-                })}
-              >
-                {generating ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    {t('map.regenerating')}
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                    {t('map.regenerate')}
-                  </>
-                )}
-              </Button>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => convertAllClusters(overview.clusters)}
+                  disabled={generating || convertingAll || overview.clusters.length === 0}
+                  title={t('map.convertAll.title')}
+                  className="bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
+                >
+                  {convertingAll ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      {t('map.convertAll.converting')}
+                    </>
+                  ) : (
+                    <>
+                      <Layers className="mr-1.5 h-3.5 w-3.5" />
+                      {t('map.convertAll')}
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={generate}
+                  disabled={generating || convertingAll}
+                  title={t('map.regenerate.title', {
+                    when: formatRelative(overview.generatedAt),
+                    model: overview.model,
+                  })}
+                >
+                  {generating ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      {t('map.regenerating')}
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                      {t('map.regenerate')}
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
             {overview.intro && (
               <p className="text-sm text-muted-foreground">{overview.intro}</p>

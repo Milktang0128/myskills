@@ -6,7 +6,6 @@ import {
   Copy as CopyIcon,
   HelpCircle,
   Folder,
-  Crown,
   Settings as SettingsIcon,
   Plus,
   Pencil,
@@ -228,35 +227,26 @@ export function Sidebar({
         </Section>
 
         <Section title={t('sidebar.section.platforms')}>
-          {/* Canonical platform leads — it's the main source that the
-              other platforms point to. Crown icon mirrors the coverage
-              matrix's column marker so users learn one symbol once. */}
+          {/* All platforms read as peers now — the source-of-truth lives in
+              the sync engine, not in the user's mental model, so no platform
+              gets a crown. Canonical still leads the list for stable ordering. */}
           {[...platforms]
             .sort((a, b) => {
               if (a.id === canonicalPlatform) return -1;
               if (b.id === canonicalPlatform) return 1;
               return a.sortOrder - b.sortOrder;
             })
-            .map((p) => {
-              const isCanonical = p.id === canonicalPlatform;
-              return (
-                <SidebarRow
-                  key={p.id}
-                  active={isPlatformActive(p.id)}
-                  onClick={() => onFilterChange({ scope: 'all', platforms: [p.id] })}
-                  icon={
-                    isCanonical ? (
-                      <Crown className="h-4 w-4 text-amber-500" />
-                    ) : (
-                      <Folder className="h-4 w-4" />
-                    )
-                  }
-                  count={stats?.byPlatform?.[p.id]}
-                >
-                  {p.label}
-                </SidebarRow>
-              );
-            })}
+            .map((p) => (
+              <SidebarRow
+                key={p.id}
+                active={isPlatformActive(p.id)}
+                onClick={() => onFilterChange({ scope: 'all', platforms: [p.id] })}
+                icon={<Folder className="h-4 w-4" />}
+                count={stats?.byPlatform?.[p.id]}
+              >
+                {p.label}
+              </SidebarRow>
+            ))}
         </Section>
 
         <Section

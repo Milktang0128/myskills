@@ -643,14 +643,14 @@ function CanonicalStep({
               className={cn(
                 'flex w-full items-center gap-3 rounded-lg border-2 bg-background px-3 py-3 text-left transition-colors',
                 active
-                  ? 'border-amber-500 bg-amber-50/40 dark:bg-amber-950/20'
+                  ? 'border-primary bg-accent/40'
                   : 'border-border hover:border-foreground/20 hover:bg-accent/40',
               )}
             >
               <div
                 className={cn(
                   'flex h-4 w-4 items-center justify-center rounded-full border-2',
-                  active ? 'border-amber-500 bg-amber-500' : 'border-muted-foreground/40',
+                  active ? 'border-primary bg-primary' : 'border-muted-foreground/40',
                 )}
               >
                 {active && <Check className="h-2.5 w-2.5 text-white" />}

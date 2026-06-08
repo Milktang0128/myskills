@@ -111,6 +111,7 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.skills.get]: 'skills_get',
   [IPC.skills.openLocation]: 'skills_open_location',
   [IPC.skills.copyLocationPath]: 'skills_copy_location_path',
+  [IPC.skills.readLocation]: 'skills_read_location',
 
   [IPC.scenarios.list]: 'scenarios_list',
   [IPC.scenarios.create]: 'scenarios_create',
@@ -334,6 +335,8 @@ export const api = {
       bridge().invoke(IPC.skills.openLocation, { locationId, kind }) as Promise<{ ok: true; path: string }>,
     copyLocationPath: (locationId: number, kind: 'install' | 'target' = 'install') =>
       bridge().invoke(IPC.skills.copyLocationPath, { locationId, kind }) as Promise<{ ok: true; path: string }>,
+    readLocation: (locationId: number) =>
+      bridge().invoke(IPC.skills.readLocation, { locationId }) as Promise<{ content: string; path: string }>,
   },
   scenarios: {
     list: () => bridge().invoke(IPC.scenarios.list) as Promise<Scenario[]>,
@@ -392,8 +395,10 @@ export const api = {
     matrix: () => bridge().invoke(IPC.coverage.matrix) as Promise<CoverageMatrix>,
   },
   sync: {
-    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[]; forceReplace?: boolean }>) =>
+    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[]; sourcePlatformId?: PlatformId; forceReplace?: boolean }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'sync_from_canonical', requests }) as Promise<SyncPlan>,
+    planCopyToPlatform: (requests: Array<{ skillId: string; targetPlatformId: PlatformId }>) =>
+      bridge().invoke(IPC.sync.plan, { kind: 'copy_to_platform', requests }) as Promise<SyncPlan>,
     planPromote: (requests: Array<{ skillId: string; sourceLocationId?: number }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', requests }) as Promise<SyncPlan>,
     planToggleDisabled: (

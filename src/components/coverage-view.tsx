@@ -5,11 +5,9 @@ import {
   Check,
   Link2,
   Minus,
+  Plus,
   AlertTriangle,
   EyeOff,
-  Zap,
-  Crown,
-  Upload,
   ChevronDown,
   HelpCircle,
   Globe,
@@ -19,7 +17,20 @@ import {
   Copy,
   ArrowUpToLine,
   Replace,
+  Wrench,
+  Sparkles,
+  ArrowLeftRight,
+  Crown,
+  FilePlus2,
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import type {
   CoverageCell,
   CoverageDrift,
@@ -31,10 +42,12 @@ import type {
   SyncExecuteResult,
   SyncPlan,
 } from '@shared/types';
+import { isPlanSafeToAutoApply } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { PlatformBadge } from '@/components/platform-badge';
 import { SyncConfirm } from '@/components/sync-confirm';
+import type { ToastAction } from '@/components/ui/toast';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -42,8 +55,9 @@ import { cn } from '@/lib/utils';
 interface Props {
   /** Sidebar/search filter from the workspace; matrix narrows rows accordingly. */
   outerFilter: SkillFilter;
-  /** Toast pipe — set from workspace, parent decides display. */
-  onToast: (msg: string) => void;
+  /** Toast pipe — set from workspace, parent decides display. Optional action
+   *  drives the "undo" affordance after a safe-instant write. */
+  onToast: (msg: string, action?: ToastAction, durationMs?: number) => void;
   onSelectSkill: (id: string) => void;
   selectedSkillId: string | null;
   /** Notify workspace to refetch any shared state after a write. */
@@ -64,6 +78,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
   const [sort, setSort] = useState<CoverageSort>('updated');
   const [pendingPlan, setPendingPlan] = useState<SyncPlan | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
+  // The row whose "需要确认" drawer is open (drift / broken / misdirected).
+  const [resolveRow, setResolveRow] = useState<CoverageRow | null>(null);
   const [busy, setBusy] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
   // Snapshot of rows captured the moment they were acted on. While a row's
@@ -78,9 +94,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
   const MATRIX_FILTERS: { value: CoverageFilter; label: string; hint: string }[] = useMemo(
     () => [
       { value: 'all', label: t('matrix.filter.all'), hint: t('matrix.filter.all.hint') },
-      { value: 'gaps', label: t('matrix.filter.gaps'), hint: t('matrix.filter.gaps.hint') },
-      { value: 'orphans', label: t('matrix.filter.orphans'), hint: t('matrix.filter.orphans.hint') },
-      { value: 'drift', label: t('matrix.filter.drift'), hint: t('matrix.filter.drift.hint') },
+      { value: 'attention', label: t('matrix.filter.attention'), hint: t('matrix.filter.attention.hint') },
       { value: 'broken', label: t('matrix.filter.broken'), hint: t('matrix.filter.broken.hint') },
     ],
     [t],
@@ -118,6 +132,54 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     setPlanOpen(true);
   }
 
+  /**
+   * The heart of the "safe instant / dangerous confirm" model (SPEC §9).
+   * A plan whose every change is in the safe set (symlink_create / disable /
+   * enable) is applied immediately with an undo toast — no dialog. Anything
+   * that overwrites or moves real bytes falls through to the confirm dialog.
+   */
+  async function applyPlan(plan: SyncPlan, undoMessage: string) {
+    if (plan.items.length > 0 && plan.items.every((i) => i.action === 'skip')) {
+      await api.scan.run();
+      await refresh();
+      onMutated?.();
+      onToast(t('matrix.toast.alreadyCurrent'));
+      return;
+    }
+    if (!isPlanSafeToAutoApply(plan.items)) {
+      // Destructive (or unresolvable conflict) → confirm path.
+      setPendingPlan(plan);
+      setPlanOpen(true);
+      return;
+    }
+    const result = await api.sync.execute(plan.token);
+    onApplied(result);
+    if (result.undoableHistoryIds.length > 0) {
+      onToast(
+        undoMessage,
+        { label: t('common.undo'), onClick: () => undoWrites(result.undoableHistoryIds) },
+        6000,
+      );
+    }
+  }
+
+  async function undoWrites(historyIds: number[]) {
+    setBusy(true);
+    try {
+      // Rollback by any one id sweeps the whole op-group; iterate distinct groups.
+      for (const id of historyIds) {
+        await api.sync.rollback(id);
+      }
+      await refresh();
+      onMutated?.();
+      onToast(t('matrix.toast.undone'));
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -152,12 +214,10 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
       // (Implemented in useEffect below to keep this filter pure.)
       const anyBroken = matrix.platforms.some((p) => r.cells[p]?.state === 'broken');
       switch (filter) {
-        case 'gaps':
-          return r.hasCanonicalSource && r.missingOn.length > 0;
-        case 'orphans':
-          return !r.hasCanonicalSource;
-        case 'drift':
-          return r.hasDrift;
+        case 'attention':
+          // Anything not 已就绪: a gap/orphan/disabled to tidy, or a
+          // divergence/broken/misdirected link to confirm.
+          return !classifyRow(r, matrix).ready;
         case 'broken':
           return anyBroken;
         default:
@@ -197,53 +257,68 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     setPinnedRows(new Map());
   }, [sort, outerFilter.search, outerFilter.scenarioId, outerFilter.scope, outerFilter.platforms, filter]);
 
-  // "Syncable" = missing + stale on a non-canonical platform, for any row that
-  // has a canonical source.
-  const syncableTotal = useMemo(() => {
+  // Rows with safe housekeeping pending (gaps to fill / an orphan to spread).
+  // Drives the one bulk button. 'enable' rows are excluded — re-enabling in bulk
+  // is rarely what the user wants, so it stays a per-row action.
+  const tidyTotal = useMemo(() => {
     if (!matrix) return 0;
-    let total = 0;
-    for (const r of visibleRows) {
-      if (!r.hasCanonicalSource) continue;
-      for (const p of matrix.platforms) {
-        if (p === matrix.canonicalPlatform) continue;
-        const cell = r.cells[p];
-        if (!cell) continue;
-        if (cell.state === 'missing' || cell.drift === 'stale') total += 1;
-      }
-    }
-    return total;
+    return visibleRows.filter((r) => {
+      const c = classifyRow(r, matrix);
+      return c.tidyKind === 'gaps' || c.tidyKind === 'orphan';
+    }).length;
   }, [visibleRows, matrix]);
 
-  const orphanTotal = useMemo(
-    () => visibleRows.filter((r) => !r.hasCanonicalSource).length,
-    [visibleRows],
-  );
+  // Rows that need a human decision (content diverges / link broken / link
+  // misdirected). Shown as a passive count; resolved per-row, never in bulk.
+  const confirmTotal = useMemo(() => {
+    if (!matrix) return 0;
+    return visibleRows.filter((r) => classifyRow(r, matrix).confirmCount > 0).length;
+  }, [visibleRows, matrix]);
 
-  async function handleSyncRow(row: CoverageRow) {
+  // 整理 — the safe bucket. Fill gaps / spread an orphan / re-enable, all as a
+  // single reversible action that applies instantly with an undo toast. Never
+  // promotes and never overwrites a diverging copy (that's the confirm bucket).
+  async function handleTidyRow(row: CoverageRow) {
     if (!matrix) return;
+    const cls = classifyRow(row, matrix);
     setBusy(true);
     try {
-      // Include both missing AND stale platforms — planner will skip whatever's
-      // already in sync and emit symlink_replace for stale.
-      const targets = matrix.platforms.filter((p) => {
-        if (p === matrix.canonicalPlatform) return false;
-        const cell = row.cells[p];
-        if (!cell) return false;
-        return cell.state === 'missing' || cell.drift === 'stale';
-      });
+      if (cls.tidyKind === 'enable') {
+        const cell = row.cells[matrix.canonicalPlatform];
+        if (!cell?.locationId) return;
+        const plan = await api.sync.planToggleDisabled([
+          { skillId: row.skillId, locationId: cell.locationId, disable: false },
+        ]);
+        await applyPlan(plan, t('matrix.toast.enabled', { skill: row.skillName }));
+        return;
+      }
+      if (cls.tidyTargets.length === 0) return;
+      const source = pickInstallSource(row, matrix, cls.tidyTargets[0]);
+      if (!source) return;
       const plan = await api.sync.planFromCanonical([
-        { skillId: row.skillId, targetPlatformIds: targets },
+        { skillId: row.skillId, targetPlatformIds: cls.tidyTargets, sourcePlatformId: source },
       ]);
-      await presentPlan(plan);
+      await applyPlan(plan, t('matrix.toast.tidied', { skill: row.skillName }));
     } finally {
       setBusy(false);
     }
   }
-  async function handlePromoteRow(row: CoverageRow) {
+
+  // 修复链接 — re-link broken cells from a healthy copy. Safe (creates symlinks),
+  // so it applies instantly. Called from inside the 需要确认 drawer.
+  async function handleRepairBroken(row: CoverageRow) {
+    if (!matrix) return;
+    const cls = classifyRow(row, matrix);
+    if (cls.brokenPlats.length === 0) return;
+    const source = pickInstallSource(row, matrix, cls.brokenPlats[0]);
+    if (!source) return;
     setBusy(true);
     try {
-      const plan = await api.sync.planPromote([{ skillId: row.skillId }]);
-      await presentPlan(plan);
+      const plan = await api.sync.planFromCanonical([
+        { skillId: row.skillId, targetPlatformIds: cls.brokenPlats, sourcePlatformId: source },
+      ]);
+      await applyPlan(plan, t('matrix.toast.repaired', { skill: row.skillName }));
+      setResolveRow(null);
     } finally {
       setBusy(false);
     }
@@ -288,12 +363,14 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     }
   }
 
-  async function handleDisableCell(row: CoverageRow, cell: CoverageCell) {
-    if (!cell.locationId) return;
+  // "存放技能副本" — write an independent real copy of the skill onto this
+  // platform (not a symlink). Destructive (may replace an existing symlink), so
+  // it goes through the confirm dialog; backed up + rollback-able.
+  async function handleCopyRealToCell(row: CoverageRow, platformId: string) {
     setBusy(true);
     try {
-      const plan = await api.sync.planToggleDisabled([
-        { skillId: row.skillId, locationId: cell.locationId, disable: true },
+      const plan = await api.sync.planCopyToPlatform([
+        { skillId: row.skillId, targetPlatformId: platformId },
       ]);
       await presentPlan(plan);
     } finally {
@@ -301,35 +378,106 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     }
   }
 
-  async function handleSyncAllGaps() {
-    if (!matrix) return;
+  async function handleDisableCell(row: CoverageRow, cell: CoverageCell) {
+    if (!cell.locationId) return;
     setBusy(true);
     try {
-      const requests = visibleRows
-        .filter((r) => r.hasCanonicalSource)
-        .map((r) => ({
-          skillId: r.skillId,
-          targetPlatformIds: matrix.platforms.filter((p) => {
-            if (p === matrix.canonicalPlatform) return false;
-            const cell = r.cells[p];
-            if (!cell) return false;
-            return cell.state === 'missing' || cell.drift === 'stale';
-          }),
-        }))
-        .filter((r) => (r.targetPlatformIds?.length ?? 0) > 0);
-      const plan = await api.sync.planFromCanonical(requests);
-      await presentPlan(plan);
+      const plan = await api.sync.planToggleDisabled([
+        { skillId: row.skillId, locationId: cell.locationId, disable: true },
+      ]);
+      await applyPlan(plan, t('matrix.toast.disabled', { skill: row.skillName }));
     } finally {
       setBusy(false);
     }
   }
-  async function handlePromoteAll() {
+
+  /**
+   * Cell-as-toggle — the cc-switch-style primary interaction. One left-click
+   * flips a platform on/off; safe flips apply instantly with an undo toast,
+   * dangerous ones (drift overwrite, promote, present-with-dependents) fall
+   * through to the confirm dialog via applyPlan.
+   */
+  async function handleToggleCell(row: CoverageRow, platformId: string) {
+    if (!matrix) return;
+    const cell = row.cells[platformId];
+    const state: CoverageCellState = cell?.state ?? 'missing';
+    const skill = row.skillName;
+    const enabledMsg = t('matrix.toast.enabled', { skill });
+    setBusy(true);
+    try {
+      // OFF → ON: enable a disabled location (move back out of .disabled/).
+      if (state === 'disabled') {
+        if (!cell?.locationId) return;
+        const plan = await api.sync.planToggleDisabled([
+          { skillId: row.skillId, locationId: cell.locationId, disable: false },
+        ]);
+        await applyPlan(plan, enabledMsg);
+        return;
+      }
+      // empty → ON: link this platform to wherever the skill already lives —
+      // canonical if it has it, else any existing copy (the shared pool, a real
+      // dir, etc.). This is a single safe symlink; it never promotes or replaces,
+      // so "install here" matches the user's expectation regardless of which
+      // platform happens to be the configured source.
+      if (state === 'missing') {
+        const sourcePlatformId = pickInstallSource(row, matrix, platformId);
+        if (!sourcePlatformId) return; // nothing to link from (shouldn't happen for a visible row)
+        const plan = await api.sync.planFromCanonical([
+          { skillId: row.skillId, targetPlatformIds: [platformId], sourcePlatformId },
+        ]);
+        await applyPlan(plan, enabledMsg);
+        return;
+      }
+      // broken symlink → repair by re-linking from an existing copy.
+      if (state === 'broken') {
+        const sourcePlatformId = pickInstallSource(row, matrix, platformId);
+        if (!sourcePlatformId) return;
+        const plan = await api.sync.planFromCanonical([
+          { skillId: row.skillId, targetPlatformIds: [platformId], sourcePlatformId },
+        ]);
+        await applyPlan(plan, t('matrix.toast.repaired', { skill }));
+        return;
+      }
+      // present/symlink that differs from the shared source → resolve (confirm).
+      if (cell?.drift === 'stale') {
+        const plan = await api.sync.planFromCanonical([
+          { skillId: row.skillId, targetPlatformIds: [platformId] },
+        ]);
+        await applyPlan(plan, ''); // not safe → confirm dialog
+        return;
+      }
+      // ON → OFF: disable this location (reversible move into .disabled/).
+      // A real dir with live dependents comes back as a conflict → confirm.
+      if (!cell?.locationId) return;
+      const plan = await api.sync.planToggleDisabled([
+        { skillId: row.skillId, locationId: cell.locationId, disable: true },
+      ]);
+      await applyPlan(plan, t('matrix.toast.disabled', { skill }));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 整理全部 — batch the safe housekeeping (gaps + orphans) across all visible
+  // rows into one plan, then show the confirm dialog so the user sees the full
+  // scope before a multi-row write. Each row links from its own existing copy.
+  async function handleTidyAll() {
+    if (!matrix) return;
     setBusy(true);
     try {
       const requests = visibleRows
-        .filter((r) => !r.hasCanonicalSource)
-        .map((r) => ({ skillId: r.skillId }));
-      const plan = await api.sync.planPromote(requests);
+        .map((r) => {
+          const c = classifyRow(r, matrix);
+          if ((c.tidyKind !== 'gaps' && c.tidyKind !== 'orphan') || c.tidyTargets.length === 0) {
+            return null;
+          }
+          const source = pickInstallSource(r, matrix, c.tidyTargets[0]);
+          if (!source) return null;
+          return { skillId: r.skillId, targetPlatformIds: c.tidyTargets, sourcePlatformId: source };
+        })
+        .filter((r): r is NonNullable<typeof r> => r != null);
+      if (requests.length === 0) return;
+      const plan = await api.sync.planFromCanonical(requests);
       await presentPlan(plan);
     } finally {
       setBusy(false);
@@ -394,13 +542,6 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
               {f.label}
             </button>
           ))}
-          {matrix && (
-            <span className="ml-2 inline-flex items-center gap-1 text-xs text-muted-foreground">
-              {t('matrix.canonicalLabel')}
-              <PlatformBadge platformId={matrix.canonicalPlatform} />
-              <Crown className="h-3 w-3 text-amber-500" />
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="relative inline-flex items-center">
@@ -417,41 +558,27 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             </select>
             <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-muted-foreground" />
           </div>
-          {orphanTotal > 0 && (
+          {confirmTotal > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-900/20 dark:text-amber-400"
+              title={t('matrix.bulk.confirm.title')}
+            >
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              {t('matrix.bulk.confirm', { count: confirmTotal })}
+            </span>
+          )}
+          {tidyTotal > 0 && (
             <Button
               size="sm"
-              variant="outline"
-              onClick={handlePromoteAll}
+              onClick={handleTidyAll}
               disabled={busy}
-              title={t('matrix.bulk.promote.title')}
               className="gap-1.5"
+              title={t('matrix.bulk.tidy.title')}
             >
-              <Upload className="h-3.5 w-3.5 shrink-0" />
-              <span className="min-w-0">
-                {orphanTotal === 1
-                  ? t('matrix.bulk.promote', { count: orphanTotal })
-                  : t('matrix.bulk.promotePlural', { count: orphanTotal })}
-              </span>
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0">{t('matrix.bulk.tidy', { count: tidyTotal })}</span>
             </Button>
           )}
-          <Button
-            size="sm"
-            onClick={handleSyncAllGaps}
-            disabled={busy || syncableTotal === 0}
-            className="gap-1.5"
-            title={
-              syncableTotal === 0
-                ? t('matrix.bulk.sync.titleNone')
-                : t('matrix.bulk.sync.title')
-            }
-          >
-            <Zap className="h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0">
-              {syncableTotal === 1
-                ? t('matrix.bulk.sync', { count: syncableTotal })
-                : t('matrix.bulk.syncPlural', { count: syncableTotal })}
-            </span>
-          </Button>
         </div>
       </div>
 
@@ -461,13 +588,15 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             matrix={matrix}
             rows={visibleRows}
             selectedSkillId={selectedSkillId}
-            onSyncRow={handleSyncRow}
-            onPromoteRow={handlePromoteRow}
+            onTidyRow={handleTidyRow}
+            onResolveRow={setResolveRow}
             onOpenCellLocation={handleOpenCellLocation}
             onCopyCellPath={handleCopyCellPath}
             onMoveCellToCanonical={handleMoveCellToCanonical}
             onSetCellAsCopy={handleSetCellAsCopy}
+            onCopyReal={handleCopyRealToCell}
             onDisableCell={handleDisableCell}
+            onToggleCell={handleToggleCell}
             onSelectRow={onSelectSkill}
             busy={busy}
             onOpenSettings={onOpenSettings}
@@ -483,6 +612,17 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         onOpenChange={setPlanOpen}
         onApplied={onApplied}
       />
+
+      {matrix && (
+        <RowResolveDialog
+          row={resolveRow}
+          matrix={matrix}
+          busy={busy}
+          onClose={() => setResolveRow(null)}
+          onRepair={handleRepairBroken}
+          onCopyPath={handleCopyCellPath}
+        />
+      )}
     </div>
   );
 }
@@ -491,13 +631,15 @@ function Table({
   matrix,
   rows,
   selectedSkillId,
-  onSyncRow,
-  onPromoteRow,
+  onTidyRow,
+  onResolveRow,
   onOpenCellLocation,
   onCopyCellPath,
   onMoveCellToCanonical,
   onSetCellAsCopy,
+  onCopyReal,
   onDisableCell,
+  onToggleCell,
   onSelectRow,
   busy,
   onOpenSettings,
@@ -505,13 +647,15 @@ function Table({
   matrix: CoverageMatrix | null;
   rows: CoverageRow[];
   selectedSkillId: string | null;
-  onSyncRow: (r: CoverageRow) => void;
-  onPromoteRow: (r: CoverageRow) => void;
+  onTidyRow: (r: CoverageRow) => void;
+  onResolveRow: (r: CoverageRow) => void;
   onOpenCellLocation: (cell: CoverageCell) => void;
   onCopyCellPath: (cell: CoverageCell) => void;
   onMoveCellToCanonical: (row: CoverageRow, platformId: string) => void;
   onSetCellAsCopy: (row: CoverageRow, platformId: string, forceReplace?: boolean) => void;
+  onCopyReal: (row: CoverageRow, platformId: string) => void;
   onDisableCell: (row: CoverageRow, cell: CoverageCell) => void;
+  onToggleCell: (row: CoverageRow, platformId: string) => void;
   onSelectRow: (id: string) => void;
   busy: boolean;
   onOpenSettings: () => void;
@@ -544,22 +688,13 @@ function Table({
         <tr className="border-b">
           <th className="px-3 py-2 text-left font-medium">{t('matrix.col.skill')}</th>
           {matrix.platforms.map((p) => (
-            <th
-              key={p}
-              className={cn(
-                'px-3 py-2 text-center font-medium',
-                // Canonical column: visible amber wash on the header + side
-                // rules. amber-50 (#fffbeb) is pale enough that it doesn't
-                // compete with the inner-cell state glyphs (broken/stale
-                // still read cleanly on top), but provides the column-wide
-                // identity the side-strokes-only version was missing.
-                p === matrix.canonicalPlatform &&
-                  'bg-amber-50 dark:bg-amber-900/25 border-x border-amber-200/80 dark:border-amber-800/40',
-              )}
-            >
+            <th key={p} className="px-3 py-2 text-center font-medium">
               <div className="inline-flex items-center gap-1">
+                {/* Small crown marks the source platform. Once a skill can hold
+                    more than one real copy, the user needs to see which platform
+                    is the source others link to. */}
                 {p === matrix.canonicalPlatform && (
-                  <Crown className="h-3 w-3 text-amber-500" aria-label="canonical platform" />
+                  <Crown className="h-3 w-3 text-amber-500" aria-label={t('matrix.col.sourceMarker')} />
                 )}
                 <PlatformBadge platformId={p} />
               </div>
@@ -570,57 +705,52 @@ function Table({
       </thead>
       <tbody>
         {rows.map((row) => {
-          const targets = row.missingOn.filter((p) => p !== matrix.canonicalPlatform);
-          const gapCount = targets.length;
-          const staleCount = matrix.platforms.filter(
-            (p) => p !== matrix.canonicalPlatform && row.cells[p]?.drift === 'stale',
-          ).length;
-          const isOrphan = !row.hasCanonicalSource;
-          const canSync = row.hasCanonicalSource && (gapCount > 0 || staleCount > 0);
+          const cls = classifyRow(row, matrix);
           const isSelected = selectedSkillId === row.skillId;
-          const syncedOutsideMain =
-            row.hasCanonicalSource &&
-            !canSync &&
-            row.cells[matrix.canonicalPlatform]?.state === 'symlink';
 
-          let actionNode: React.ReactNode;
-          if (isOrphan) {
-            actionNode = (
-              <Button size="sm" variant="outline" onClick={() => onPromoteRow(row)} disabled={busy}>
-                {t('matrix.action.promote')}
-              </Button>
-            );
-          } else if (canSync) {
-            const label =
-              gapCount > 0 && staleCount > 0
-                ? t('matrix.action.syncTotal', { count: gapCount + staleCount })
-                : staleCount > 0
-                ? t('matrix.action.replaceStale', { count: staleCount })
-                : gapCount === 1
-                ? t('matrix.action.fillGap', { count: gapCount })
-                : t('matrix.action.fillGaps', { count: gapCount });
-            actionNode = (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onSyncRow(row)}
-                disabled={busy}
-                title={
-                  staleCount > 0
-                    ? t('matrix.action.syncTitle.stale', { count: staleCount })
-                    : undefined
-                }
-              >
-                {label}
-              </Button>
-            );
-          } else {
-            actionNode = (
-              <span className={cn('text-[11px]', syncedOutsideMain ? 'text-amber-700' : 'text-emerald-600')}>
-                {syncedOutsideMain ? t('matrix.action.syncedOutsideMain') : t('matrix.action.inSync')}
-              </span>
-            );
-          }
+          // Three visible states, two of which can appear side by side on one
+          // row (e.g. a gap to fill AND a diverging copy to confirm). 已就绪 is
+          // the quiet green default — "不在主源" folds in here with no nag.
+          const tidyLabel =
+            cls.tidyKind === 'enable'
+              ? t('matrix.action.enable')
+              : cls.tidyKind === 'orphan'
+              ? t('matrix.action.spread', { count: cls.tidyCount })
+              : t('matrix.action.tidy', { count: cls.tidyCount });
+          const actionNode = (
+            <div className="flex items-center justify-end gap-1.5">
+              {cls.confirmCount > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onResolveRow(row)}
+                  disabled={busy}
+                  title={t('matrix.action.confirm.title')}
+                  className="border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800/60 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                >
+                  <AlertTriangle className="mr-1 h-3.5 w-3.5 shrink-0" />
+                  {t('matrix.action.confirm', { count: cls.confirmCount })}
+                </Button>
+              )}
+              {cls.tidyKind != null && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onTidyRow(row)}
+                  disabled={busy}
+                  title={t('matrix.action.tidy.title')}
+                >
+                  {tidyLabel}
+                </Button>
+              )}
+              {cls.ready && (
+                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600">
+                  <Check className="h-3.5 w-3.5" />
+                  {t('matrix.action.ready')}
+                </span>
+              )}
+            </div>
+          );
 
           return (
             <tr
@@ -651,16 +781,7 @@ function Table({
                   <td
                     key={p}
                     onClick={(e) => e.stopPropagation()}
-                    className={cn(
-                      'cursor-default px-3 py-2 text-center',
-                      // Canonical column body: lighter amber wash than the
-                      // header so the eye still reads the header as "louder"
-                      // but every cell in the column is now visibly tied
-                      // back to it. Row hover/selected accents don't paint
-                      // <td>s, so this wash stays through interaction states.
-                      p === matrix.canonicalPlatform &&
-                        'bg-amber-50/60 dark:bg-amber-900/15 border-x border-amber-200/60 dark:border-amber-800/30',
-                    )}
+                    className="cursor-default px-3 py-2 text-center"
                   >
                     <CellActionMenu
                       row={row}
@@ -670,10 +791,12 @@ function Table({
                       open={openCellKey === cellKey}
                       busy={busy}
                       onOpenChange={(open) => setOpenCellKey(open ? cellKey : null)}
+                      onToggle={onToggleCell}
                       onOpenLocation={onOpenCellLocation}
                       onCopyPath={onCopyCellPath}
                       onMoveToCanonical={onMoveCellToCanonical}
                       onSetAsCopy={onSetCellAsCopy}
+                      onCopyReal={onCopyReal}
                       onDisable={onDisableCell}
                     />
                   </td>
@@ -687,6 +810,261 @@ function Table({
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * 需要确认 drawer — the only place that surfaces content divergence, broken
+ * links, and misdirected links. Broken links get a one-click safe repair.
+ * Divergence/misdirection are READ-ONLY in Phase 1 (decision: no blind
+ * overwrite until a real diff+winner picker exists) — the user gets open/copy
+ * affordances to compare the copies manually.
+ */
+type DiffState =
+  | { state: 'loading' }
+  | { state: 'error'; message: string }
+  | { state: 'ready'; left: string | null; right: string; leftLabel: string; rightLabel: string };
+
+function RowResolveDialog({
+  row,
+  matrix,
+  busy,
+  onClose,
+  onRepair,
+  onCopyPath,
+}: {
+  row: CoverageRow | null;
+  matrix: CoverageMatrix;
+  busy: boolean;
+  onClose: () => void;
+  onRepair: (row: CoverageRow) => void;
+  onCopyPath: (cell: CoverageCell) => void;
+}) {
+  const t = useT();
+  const [diffPlat, setDiffPlat] = useState<string | null>(null);
+  const [diff, setDiff] = useState<DiffState | null>(null);
+
+  // Reset the diff view whenever the dialog is reused for a different row.
+  useEffect(() => {
+    setDiffPlat(null);
+    setDiff(null);
+  }, [row?.skillId]);
+
+  if (!row) return null;
+  const cls = classifyRow(row, matrix);
+  const divergent = [...cls.driftPlats, ...cls.misdirectedPlats];
+  const canonical = matrix.canonicalPlatform;
+
+  async function openDiff(platformId: string) {
+    if (!row) return;
+    setDiffPlat(platformId);
+    setDiff({ state: 'loading' });
+    try {
+      const cell = row.cells[platformId];
+      const canonCell = row.cells[canonical];
+      if (cell?.locationId == null) {
+        setDiff({ state: 'error', message: t('matrix.resolve.diff.unreadable') });
+        return;
+      }
+      const right = await api.skills.readLocation(cell.locationId);
+      const left =
+        canonCell?.locationId != null ? await api.skills.readLocation(canonCell.locationId) : null;
+      setDiff({
+        state: 'ready',
+        left: left?.content ?? null,
+        right: right.content,
+        leftLabel: t('matrix.resolve.diff.reference'),
+        rightLabel: platformId,
+      });
+    } catch (err) {
+      setDiff({ state: 'error', message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  const showingDiff = diffPlat != null;
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className={cn(showingDiff ? 'max-w-4xl' : 'max-w-xl')}>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            {t('matrix.resolve.title', { skill: row.skillName })}
+          </DialogTitle>
+          <DialogDescription>{t('matrix.resolve.subtitle')}</DialogDescription>
+        </DialogHeader>
+
+        {showingDiff ? (
+          <div className="space-y-3">
+            <button
+              onClick={() => { setDiffPlat(null); setDiff(null); }}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              ← {t('matrix.resolve.diff.back')}
+            </button>
+            {diff?.state === 'loading' && (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                {t('matrix.resolve.diff.loading')}
+              </div>
+            )}
+            {diff?.state === 'error' && (
+              <div className="p-6 text-center text-sm text-destructive">{diff.message}</div>
+            )}
+            {diff?.state === 'ready' && (
+              <DiffView
+                left={diff.left}
+                right={diff.right}
+                leftLabel={diff.leftLabel}
+                rightLabel={diff.rightLabel}
+              />
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4 text-sm">
+            {cls.brokenPlats.length > 0 && (
+              <section className="rounded-md border p-3">
+                <div className="mb-2 font-medium">
+                  {t('matrix.resolve.broken.heading', { count: cls.brokenPlats.length })}
+                </div>
+                <div className="mb-3 flex flex-wrap gap-1.5">
+                  {cls.brokenPlats.map((p) => (
+                    <PlatformBadge key={p} platformId={p} />
+                  ))}
+                </div>
+                <p className="mb-3 text-xs text-muted-foreground">{t('matrix.resolve.broken.body')}</p>
+                <Button size="sm" onClick={() => onRepair(row)} disabled={busy} className="gap-1.5">
+                  <Wrench className="h-3.5 w-3.5" />
+                  {t('matrix.resolve.broken.action')}
+                </Button>
+              </section>
+            )}
+
+            {divergent.length > 0 && (
+              <section className="rounded-md border p-3">
+                <div className="mb-2 font-medium">
+                  {t('matrix.resolve.diverge.heading', { count: divergent.length })}
+                </div>
+                <p className="mb-3 text-xs text-muted-foreground">{t('matrix.resolve.diverge.body')}</p>
+                <ul className="space-y-2">
+                  {divergent.map((p) => {
+                    const cell = row.cells[p];
+                    if (!cell) return null;
+                    return (
+                      <li
+                        key={p}
+                        className="flex items-center justify-between gap-2 rounded border bg-muted/30 px-2 py-1.5"
+                      >
+                        <span className="flex items-center gap-2">
+                          <PlatformBadge platformId={p} />
+                          {cls.misdirectedPlats.includes(p) && (
+                            <span className="text-[10px] text-amber-700">
+                              {t('matrix.resolve.diverge.misdirected')}
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 gap-1 px-2 text-xs"
+                            onClick={() => openDiff(p)}
+                          >
+                            <ArrowLeftRight className="h-3.5 w-3.5" />
+                            {t('matrix.resolve.diff.view')}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 gap-1 px-2 text-xs"
+                            onClick={() => onCopyPath(cell)}
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            {t('matrix.resolve.diverge.copy')}
+                          </Button>
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-3 text-[11px] text-muted-foreground">{t('matrix.resolve.diverge.note')}</p>
+              </section>
+            )}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            {t('common.close')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Read-only side-by-side comparison of two SKILL.md versions. Computes a common
+ * head/tail and highlights only the differing middle block on each side — no
+ * external diff lib, good enough for the small SKILL.md files. Read-only by
+ * design (Phase 1): there is intentionally no "overwrite" button here.
+ */
+function DiffView({
+  left,
+  right,
+  leftLabel,
+  rightLabel,
+}: {
+  left: string | null;
+  right: string;
+  leftLabel: string;
+  rightLabel: string;
+}) {
+  const t = useT();
+  if (left == null) {
+    return (
+      <div className="rounded border">
+        <div className="border-b bg-muted/40 px-2 py-1 text-xs font-medium">{rightLabel}</div>
+        <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap p-2 text-[11px] leading-relaxed">
+          {right}
+        </pre>
+      </div>
+    );
+  }
+  const a = left.split('\n');
+  const b = right.split('\n');
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let ta = a.length;
+  let tb = b.length;
+  while (ta > head && tb > head && a[ta - 1] === b[tb - 1]) {
+    ta--;
+    tb--;
+  }
+  const identical = ta === head && tb === head;
+  const pane = (lines: string[], midStart: number, midEnd: number, tone: string, label: string) => (
+    <div className="min-w-0 flex-1 rounded border">
+      <div className="border-b bg-muted/40 px-2 py-1 text-xs font-medium">{label}</div>
+      <div className="max-h-[55vh] overflow-auto font-mono text-[11px] leading-relaxed">
+        {lines.map((ln, i) => (
+          <div
+            key={i}
+            className={cn('whitespace-pre-wrap break-words px-2', i >= midStart && i < midEnd && tone)}
+          >
+            {ln || ' '}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  return (
+    <div className="space-y-2">
+      {identical && (
+        <div className="text-xs text-emerald-600">{t('matrix.resolve.diff.identical')}</div>
+      )}
+      <div className="flex gap-2">
+        {pane(a, head, ta, 'bg-rose-50 dark:bg-rose-950/30', leftLabel)}
+        {pane(b, head, tb, 'bg-emerald-50 dark:bg-emerald-950/30', rightLabel)}
+      </div>
+    </div>
   );
 }
 
@@ -710,10 +1088,9 @@ function CellGlyph({
   );
   switch (state) {
     case 'present':
-      return wrapper(
-        <Check className="h-4 w-4" />,
-        isCanonical ? 'text-amber-600' : stale ? 'text-amber-600' : 'text-emerald-600',
-      );
+      // Canonical is no longer surfaced as a distinct identity — a real copy
+      // reads as "present" (green) everywhere; only drift recolors it amber.
+      return wrapper(<Check className="h-4 w-4" />, stale ? 'text-amber-600' : 'text-emerald-600');
     case 'symlink':
       return wrapper(<Link2 className="h-4 w-4" />, 'text-blue-600');
     case 'symlink_other':
@@ -724,7 +1101,14 @@ function CellGlyph({
       return wrapper(<EyeOff className="h-4 w-4" />, 'text-muted-foreground');
     case 'missing':
     default:
-      return wrapper(<Minus className="h-4 w-4 text-muted-foreground/40" />, '');
+      // Faint dash by default; a "+" fades in on hover to signal "click to add"
+      // (the group-hover comes from the enclosing toggle button).
+      return (
+        <span className="inline-flex items-center" title={label} aria-label={label}>
+          <Minus className="h-4 w-4 text-muted-foreground/30 group-hover:hidden" />
+          <Plus className="hidden h-4 w-4 text-primary group-hover:inline" />
+        </span>
+      );
   }
 }
 
@@ -736,10 +1120,12 @@ function CellActionMenu({
   open,
   busy,
   onOpenChange,
+  onToggle,
   onOpenLocation,
   onCopyPath,
   onMoveToCanonical,
   onSetAsCopy,
+  onCopyReal,
   onDisable,
 }: {
   row: CoverageRow;
@@ -749,10 +1135,12 @@ function CellActionMenu({
   open: boolean;
   busy: boolean;
   onOpenChange: (open: boolean) => void;
+  onToggle: (row: CoverageRow, platformId: string) => void;
   onOpenLocation: (cell: CoverageCell) => void;
   onCopyPath: (cell: CoverageCell) => void;
   onMoveToCanonical: (row: CoverageRow, platformId: string) => void;
   onSetAsCopy: (row: CoverageRow, platformId: string, forceReplace?: boolean) => void;
+  onCopyReal: (row: CoverageRow, platformId: string) => void;
   onDisable: (row: CoverageRow, cell: CoverageCell) => void;
 }) {
   const t = useT();
@@ -761,6 +1149,13 @@ function CellActionMenu({
   const canonicalCell = row.cells[matrix.canonicalPlatform];
   const canonicalHasRealSource = canonicalCell?.state === 'present';
   const hasLocation = Boolean(cell?.locationId);
+  // "存放技能副本": place an independent real copy here. Offered whenever a real
+  // copy exists on some OTHER platform and this cell isn't already a real dir —
+  // lets the user deliberately keep a second editable copy (source unchanged).
+  const hasRealSourceElsewhere = matrix.platforms.some(
+    (p) => p !== platformId && row.cells[p]?.state === 'present',
+  );
+  const canCopyReal = hasRealSourceElsewhere && state !== 'present';
   const label = describeCell(state, cell?.drift, isCanonical, t);
   const canMoveToCanonical = Boolean(promoteSourceLocationId(row, platformId, matrix));
   const canReplace =
@@ -776,7 +1171,7 @@ function CellActionMenu({
     state === 'present' &&
     cell?.drift !== 'stale';
   const canDisable = hasLocation && state !== 'missing' && state !== 'disabled';
-  const hasWriteAction = canMoveToCanonical || canReplace || canSetAsCopy || canDisable;
+  const hasWriteAction = canMoveToCanonical || canReplace || canSetAsCopy || canCopyReal || canDisable;
 
   async function run(action: () => void | Promise<void>) {
     onOpenChange(false);
@@ -787,21 +1182,49 @@ function CellActionMenu({
     <span className={cn('relative inline-flex', open && 'z-50')}>
       <button
         type="button"
-        disabled={state === 'missing' || busy}
+        disabled={busy}
+        // Left-click is the primary toggle (cc-switch style): on↔off, instant
+        // when safe. Right-click opens the advanced per-cell menu (open dir,
+        // copy path, resolve) — only meaningful when the cell has a location.
         onClick={(e) => {
           e.stopPropagation();
-          if (state !== 'missing') onOpenChange(!open);
+          onToggle(row, platformId);
         }}
-        title={label}
+        onContextMenu={(e) => {
+          if (!cell || state === 'missing') return;
+          e.preventDefault();
+          e.stopPropagation();
+          onOpenChange(!open);
+        }}
+        title={t('matrix.cell.toggleHint', { state: label })}
         aria-label={label}
         className={cn(
-          'inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-transparent px-1',
+          'group inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-transparent px-1',
           'hover:border-border hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-          'disabled:cursor-default disabled:opacity-100 disabled:hover:border-transparent disabled:hover:bg-transparent',
+          'disabled:cursor-default disabled:opacity-50',
         )}
       >
         <CellGlyph state={state} drift={cell?.drift} isCanonical={isCanonical} />
       </button>
+      {open && cell && (
+        // Transparent full-screen backdrop: any click/right-click anywhere
+        // dismisses the menu. Needed because the matrix cells/rows stopPropagate
+        // their own clicks, so a bubbling window listener never sees an
+        // outside click — only an explicit backdrop catches it.
+        <span
+          aria-hidden
+          className="fixed inset-0 z-[90]"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenChange(false);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onOpenChange(false);
+          }}
+        />
+      )}
       {open && cell && (
         <span
           role="menu"
@@ -831,6 +1254,13 @@ function CellActionMenu({
               icon={<Link2 className="h-3.5 w-3.5" />}
               label={t('matrix.cellMenu.setAsCopy')}
               onClick={() => run(() => onSetAsCopy(row, platformId, true))}
+            />
+          )}
+          {canCopyReal && (
+            <CellMenuButton
+              icon={<FilePlus2 className="h-3.5 w-3.5" />}
+              label={t('matrix.cellMenu.copyReal')}
+              onClick={() => run(() => onCopyReal(row, platformId))}
             />
           )}
           {canReplace && (
@@ -907,6 +1337,130 @@ function describeCell(
   }
 }
 
+/**
+ * Pick which platform's existing copy to symlink FROM when enabling a skill on
+ * `targetPlatformId`. Prefers the canonical platform (the normal source of
+ * truth), then any real directory, then any live symlink. Returns null only if
+ * the skill exists nowhere usable. This is what lets "install here" stay a
+ * single safe symlink instead of falling back to a promote when the canonical
+ * platform doesn't happen to hold the skill.
+ */
+function pickInstallSource(
+  row: CoverageRow,
+  matrix: CoverageMatrix,
+  targetPlatformId: string,
+): string | null {
+  const has = (p: string, states: CoverageCellState[]) =>
+    p !== targetPlatformId && states.includes(row.cells[p]?.state ?? 'missing');
+  const canon = matrix.canonicalPlatform;
+  if (has(canon, ['present', 'symlink'])) return canon;
+  for (const p of matrix.platforms) if (has(p, ['present'])) return p;
+  for (const p of matrix.platforms) if (has(p, ['symlink', 'symlink_other'])) return p;
+  return null;
+}
+
+/**
+ * The single source of truth for the action column, the bulk counts, and the
+ * "needs attention" filter. Collapses every row situation into at most two
+ * buckets:
+ *
+ *   tidy    — safe, reversible housekeeping (fill gaps / spread an orphan /
+ *             re-enable). One click, applies instantly with undo.
+ *   confirm — content actually diverges (drift), a link is broken, or a link
+ *             points somewhere unexpected. The ONLY amber state. Never folded
+ *             into green, because folding hidden divergence into "已就绪" would
+ *             let one copy silently overwrite another later.
+ *
+ * Drift is computed by comparing content hashes DIRECTLY here, not via the
+ * engine's `cell.drift`: `drift_for` returns `in_sync` whenever either hash is
+ * null (scan interrupted / permission error), which would wrongly paint a real
+ * divergence green. A non-canonical real copy is "safely green" only when its
+ * hash is confirmed byte-identical to canonical.
+ */
+export interface RowClass {
+  tidyKind: 'gaps' | 'orphan' | 'enable' | null;
+  tidyTargets: string[];
+  tidyCount: number;
+  driftPlats: string[];
+  brokenPlats: string[];
+  misdirectedPlats: string[];
+  confirmCount: number;
+  ready: boolean;
+}
+
+function classifyRow(row: CoverageRow, matrix: CoverageMatrix): RowClass {
+  const canonical = matrix.canonicalPlatform;
+  const nonCanon = matrix.platforms.filter((p) => p !== canonical);
+  const cellOf = (p: string) => row.cells[p];
+  const stateOf = (p: string): CoverageCellState => cellOf(p)?.state ?? 'missing';
+  const canonHash = cellOf(canonical)?.contentHash ?? null;
+
+  // --- amber: 需要确认 (content-honest) ---
+  const brokenPlats = nonCanon.filter((p) => stateOf(p) === 'broken');
+  // "Misdirected" (symlink pointing somewhere other than canonical) is only a
+  // real concern when there IS a canonical copy to diverge from AND the link's
+  // resolved content actually differs from it:
+  //   • No canonical copy (skill not on the canonical platform) → there is no
+  //     anchor to be "misdirected" from. The skill is just an orphan relative to
+  //     canonical; its symlinks correctly point at whatever real copy DOES exist.
+  //     Flagging it 需要确认 is a false alarm — the dominant cause of the
+  //     confusing "链接指到别处" reports on a heterogeneous setup where some
+  //     skills simply aren't on the canonical platform yet. The orphan tidy path
+  //     below offers the real action: also place it on canonical.
+  //   • Canonical copy exists but the link is byte-identical to it → harmless
+  //     (it re-flags the instant content truly diverges).
+  const misdirectedPlats = !row.hasCanonicalSource
+    ? []
+    : nonCanon.filter((p) => {
+        if (stateOf(p) !== 'symlink_other') return false;
+        const c = cellOf(p);
+        const confirmedIdentical =
+          c?.contentHash != null && canonHash != null && c.contentHash === canonHash;
+        return !confirmedIdentical;
+      });
+  // A real (non-symlink) copy on a non-canonical platform diverges unless we can
+  // confirm it is byte-identical to canonical. Only meaningful when a canonical
+  // source exists to compare against (orphans have no canonical to diff).
+  const driftPlats = row.hasCanonicalSource
+    ? nonCanon.filter((p) => {
+        const c = cellOf(p);
+        if (c?.state !== 'present') return false;
+        return !(c.contentHash != null && canonHash != null && c.contentHash === canonHash);
+      })
+    : [];
+  const confirmCount = brokenPlats.length + misdirectedPlats.length + driftPlats.length;
+
+  // --- blue: 整理 (all safe, reversible) ---
+  const canonState = stateOf(canonical);
+  let tidyKind: RowClass['tidyKind'] = null;
+  let tidyTargets: string[] = [];
+  if (!row.hasCanonicalSource && canonState === 'disabled') {
+    // The skill exists only as a disabled copy on the canonical platform.
+    tidyKind = 'enable';
+  } else if (!row.hasCanonicalSource) {
+    // Orphan: the real file lives only on a non-canonical platform → spread it
+    // to every platform that is missing it (linking from the existing copy).
+    tidyTargets = matrix.platforms.filter((p) => stateOf(p) === 'missing');
+    if (tidyTargets.length > 0) tidyKind = 'orphan';
+  } else {
+    // Has a canonical source: fill plain gaps (platforms with no copy at all).
+    tidyTargets = nonCanon.filter((p) => stateOf(p) === 'missing');
+    if (tidyTargets.length > 0) tidyKind = 'gaps';
+  }
+  const tidyCount = tidyKind === 'enable' ? 1 : tidyTargets.length;
+
+  return {
+    tidyKind: tidyCount > 0 ? tidyKind : null,
+    tidyTargets,
+    tidyCount,
+    driftPlats,
+    brokenPlats,
+    misdirectedPlats,
+    confirmCount,
+    ready: tidyCount === 0 && confirmCount === 0,
+  };
+}
+
 function promoteSourceLocationId(
   row: CoverageRow,
   platformId: string,
@@ -944,9 +1498,6 @@ function Legend() {
   return (
     <div className="mt-4 rounded-md border bg-card/40 px-3 py-2 text-[11px] text-muted-foreground">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
-        <span className="inline-flex items-center gap-1">
-          <Crown className="h-3 w-3 text-amber-500" /> {t('matrix.legend.canonical')}
-        </span>
         <span className="inline-flex items-center gap-1">
           <Check className="h-3 w-3 text-emerald-600" /> {t('matrix.legend.inSync')}
         </span>

@@ -21,7 +21,7 @@ import { HistoryView } from '@/components/history-view';
 import { ScenariosView } from '@/components/scenarios-view';
 import { SettingsView } from '@/components/settings-view';
 import { CreateSkillView } from '@/components/create-skill/create-skill-view';
-import { Toast } from '@/components/ui/toast';
+import { Toast, type ToastAction } from '@/components/ui/toast';
 import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
@@ -67,7 +67,7 @@ export default function Workspace() {
   const [scenarioFormOpen, setScenarioFormOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; action?: ToastAction; durationMs?: number } | null>(null);
   // Onboarding state:
   //   null  → unknown (still resolving — don't flash either UI)
   //   true  → completed previously, hide wizard
@@ -430,8 +430,8 @@ export default function Workspace() {
     };
   }, [bridgeReady, frontendSmokeActive, onboardingDone, refreshSkills, refreshMeta]);
 
-  function showToast(msg: string) {
-    setToast(msg);
+  function showToast(msg: string, action?: ToastAction, durationMs?: number) {
+    setToast({ message: msg, action, durationMs });
   }
 
   const searchPlaceholder =
@@ -727,7 +727,12 @@ export default function Workspace() {
       />
 
       {toast && (
-        <Toast message={toast} onDismiss={() => setToast(null)} />
+        <Toast
+          message={toast.message}
+          action={toast.action}
+          durationMs={toast.durationMs}
+          onDismiss={() => setToast(null)}
+        />
       )}
 
       {onboardingDone === false && (

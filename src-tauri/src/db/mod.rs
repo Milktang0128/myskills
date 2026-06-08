@@ -118,6 +118,8 @@ fn ensure_schema_compatibility(conn: &Connection) -> AppResult<()> {
           validation_json           TEXT,
           plan_token                TEXT,
           installed_skill_id        TEXT REFERENCES skills(id) ON DELETE SET NULL,
+          clarify_round             INTEGER NOT NULL DEFAULT 0,
+          understanding             TEXT,
           created_at                INTEGER NOT NULL,
           updated_at                INTEGER NOT NULL,
           installed_at              INTEGER,
@@ -128,6 +130,16 @@ fn ensure_schema_compatibility(conn: &Connection) -> AppResult<()> {
         CREATE INDEX IF NOT EXISTS idx_skill_creation_updated ON skill_creation_drafts(updated_at);
         "#,
     )?;
+
+    // 自适应澄清循环新增列：累积轮次计数 + 当前 AI 理解复述。旧草稿行靠 ADD COLUMN 惰性补齐，
+    // 无需独立 SQL 迁移；clarify_round 默认 0，understanding 可空。
+    ensure_column(
+        conn,
+        "skill_creation_drafts",
+        "clarify_round",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "skill_creation_drafts", "understanding", "TEXT")?;
 
     conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('canonical_platform', 'shared')",

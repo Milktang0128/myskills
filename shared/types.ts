@@ -263,9 +263,7 @@ export interface CoverageMatrix {
 
 export type CoverageFilter =
   | 'all'
-  | 'gaps'              // any non-canonical platform missing the skill
-  | 'orphans'           // canonical doesn't have it but somewhere does
-  | 'drift'             // present on canonical and elsewhere but hashes differ
+  | 'attention'         // anything actionable: gap, orphan, drift, or broken
   | 'broken';           // has at least one broken-link cell
 
 /* ---------------------------------------------------------------------------
@@ -290,6 +288,9 @@ export type SyncAction =
   | 'symlink_create'           // create a symlink at target (target is absent or broken)
   | 'symlink_replace'          // backup existing target dir, then symlink_create
   | 'copy_to_canonical'        // copy source dir into canonical (promote step 1)
+  | 'copy_real'                // copy source dir into a NON-source platform as an
+                               // independent real directory (deliberate 2nd real
+                               // copy; backs up an existing entry first)
   // Enable/disable a single location by moving its folder between the
   // platform's live dir and its `.disabled/` subdir. The agent tool reads
   // only the live dir, so this is how a skill is hidden from / restored to
@@ -299,6 +300,37 @@ export type SyncAction =
   | 'enable'                   // move <platform>/.disabled/<name>/ → <platform>/<name>/
   | 'skip'                     // already in sync — no FS change
   | 'conflict';                // user must resolve manually before execute
+
+/**
+ * Actions that can be executed WITHOUT a confirm dialog — "safe instant"
+ * (SPEC §9, post-v0.2): they never touch real bytes, so they are fully
+ * reversible with no data loss, and we apply them immediately + offer an
+ * undo toast instead of a pre-confirmation.
+ *
+ *   symlink_create — target was absent or a broken link; undo = unlink
+ *   disable        — move <name>/ → .disabled/<name>/; undo = move back
+ *   enable         — move .disabled/<name>/ → <name>/; undo = move back
+ *   skip           — no FS change at all
+ *
+ * Everything else (symlink_replace, copy_to_canonical, conflict) overwrites
+ * or moves real content and MUST be confirmed. `symlink_create` is only ever
+ * emitted when the target is absent/broken (see classifyTarget), so it can
+ * never silently clobber a real directory.
+ */
+export const SAFE_SYNC_ACTIONS: readonly SyncAction[] = [
+  'symlink_create',
+  'disable',
+  'enable',
+  'skip',
+];
+
+/** True iff every non-skip item in a plan can be applied without confirmation. */
+export function isPlanSafeToAutoApply(items: { action: SyncAction }[]): boolean {
+  if (items.length === 0) return false;
+  // At least one real change, and every item is in the safe set.
+  const hasRealChange = items.some((i) => i.action !== 'skip');
+  return hasRealChange && items.every((i) => SAFE_SYNC_ACTIONS.includes(i.action));
+}
 
 export type SyncConflictReason =
   | 'target_exists_dir'
@@ -391,6 +423,13 @@ export interface SyncExecuteResult {
   applied: SyncPlanItem[];
   skipped: SyncPlanItem[];
   failed: Array<{ item: SyncPlanItem; message: string }>;
+  /**
+   * One representative history id per applied op-group (the newest row in the
+   * group). Passing any one of these to sync:rollback undoes that whole
+   * user-level action. Drives the "undo" affordance on safe-instant toggles.
+   * Empty when nothing was applied.
+   */
+  undoableHistoryIds: number[];
 }
 
 /* ---------------------------------------------------------------------------
@@ -412,23 +451,35 @@ export type CreateSkillDraftStatus =
   | 'discarded';
 
 export interface CreateSkillIntentFrame {
-  userJob: string;
-  triggerContext: string;
-  inputContract: {
-    acceptedInputs: string[];
-    privacyClass: 'local_only' | 'may_send_summary' | 'may_send_content';
-  };
-  outputContract: {
-    artifactType: 'markdown' | 'report' | 'checklist' | 'code_patch' | 'file' | 'other';
-    destination: 'reply_only' | 'same_folder' | 'user_selected';
-  };
-  workflow: {
-    steps: string[];
-    failClosedRules: string[];
-  };
-  stylePreferences: string[];
-  nonGoals: string[];
+  /** 何时触发（合并旧 description + triggerContext）= frontmatter description */
+  whenToUse: string;
+  /** 用户带来什么（合并旧 userJob + inputContract.acceptedInputs） */
+  userInput: string;
+  /** 技能产出什么（自由正文，## 输出 主体） */
+  output: string;
+  /** 输出由哪几部分组成（≥2，防 mush） */
+  outputParts: string[];
+  /** 工作流步骤（旧 workflow.steps 提升一层） */
+  workflow: string[];
+  /** 边界（合并旧 workflow.failClosedRules + nonGoals） */
+  boundaries: string[];
+  /** 验收标准（折叠区） */
   successCriteria: string[];
+  /** 安全/分类支柱（完全折叠、靠 LLM 推断） */
+  safety: CreateSkillSafety;
+}
+
+export interface CreateSkillSafety {
+  /** 旧 needsNetwork 升三态 */
+  network: 'no' | 'reads_only' | 'reads_writes';
+  /** 合并旧 writesFiles + outputContract.destination */
+  fileWrites: 'none' | 'same_folder' | 'user_selected';
+  /** = 旧 overwritePolicy */
+  overwrite: 'never' | 'confirm_each_time';
+  /** = 旧 inputContract.privacyClass */
+  privacy: 'local_only' | 'may_send_summary' | 'may_send_content';
+  /** 旧 outputContract.artifactType 降级保留 */
+  artifactType: 'markdown' | 'report' | 'checklist' | 'code_patch' | 'file' | 'other';
 }
 
 export interface CreateSkillSpec {
@@ -436,9 +487,6 @@ export interface CreateSkillSpec {
   description: string;
   language: 'zh' | 'en';
   intentFrame: CreateSkillIntentFrame;
-  needsNetwork: boolean;
-  writesFiles: boolean;
-  overwritePolicy: 'never' | 'confirm_each_time';
   ready: boolean;
   missing: string[];
 }
@@ -483,6 +531,8 @@ export interface CreateSkillDraft {
   skillSpec: CreateSkillSpec | null;
   followupQuestions: CreateSkillQuestion[];
   answers: Record<string, string>;
+  /** 自适应澄清循环：Agent 当前一行「理解复述」（早抓大偏差用）。 */
+  understanding: string | null;
   draftMarkdown: string | null;
   targetPlatformIds: PlatformId[];
   targetScenarioIds: number[];

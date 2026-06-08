@@ -727,6 +727,30 @@ pub fn skills_copy_location_path(
     Ok(json!({ "ok": true, "path": path }))
 }
 
+/// Read the effective SKILL.md text at a location (following symlinks). Used by
+/// the 需要确认 drawer to show a read-only diff between diverging copies. Read
+/// ONLY — it never writes, so it is safe to expose for comparison.
+#[tauri::command]
+pub fn skills_read_location(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let db = conn(&state)?;
+    let id = optional_i64(&payload, "locationId")
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "locationId required"))?;
+    let install: String = db.query_row(
+        "SELECT install_path FROM skill_locations WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    let skill_md = Path::new(&install).join("SKILL.md");
+    let content = std::fs::read_to_string(&skill_md).map_err(|err| {
+        AppError::detail(
+            "READ_FAILED",
+            err.to_string(),
+            json!({ "path": skill_md.to_string_lossy() }),
+        )
+    })?;
+    Ok(json!({ "content": content, "path": skill_md.to_string_lossy() }))
+}
+
 #[tauri::command]
 pub fn scenarios_list(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
@@ -1061,6 +1085,28 @@ pub fn scenarios_create_from_cluster(
         )?;
         (tx.last_insert_rowid(), true)
     };
+    // Cluster→scenario conversions don't pick a colour, which used to persist
+    // NULL → all-grey dots in the sidebar. Backfill a stable palette colour for
+    // any scenario still missing one (covers both freshly-created clusters and
+    // older grey scenarios from before this fix — re-running the conversion
+    // repairs them). Colour by sort_order so dots stay distinct; the
+    // `color IS NULL OR color = ''` guard means a user-picked colour is never
+    // overridden. Mirrors the frontend PALETTE in scenario-form.tsx.
+    const SCENARIO_PALETTE: [&str; 8] = [
+        "#3B82F6", "#10B981", "#F59E0B", "#EC4899", "#8B5CF6", "#6366F1", "#EF4444", "#14B8A6",
+    ];
+    let sort_order: i64 = tx
+        .query_row(
+            "SELECT sort_order FROM scenarios WHERE id = ?1",
+            params![scenario_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let auto_color = SCENARIO_PALETTE[(sort_order.max(0) as usize) % SCENARIO_PALETTE.len()];
+    tx.execute(
+        "UPDATE scenarios SET color = ?2 WHERE id = ?1 AND (color IS NULL OR color = '')",
+        params![scenario_id, auto_color],
+    )?;
     let mut seen = std::collections::HashSet::new();
     let mut linked = 0;
     let mut skipped = 0;
@@ -1297,6 +1343,7 @@ pub fn sync_plan(payload: Option<Value>, state: State<'_, AppState>) -> AppResul
     let plan = match operation {
         "sync_from_canonical" => plan_sync_from_canonical(&db, requests)?,
         "promote_to_canonical" => plan_promote_to_canonical(&db, requests)?,
+        "copy_to_platform" => plan_copy_to_platform(&db, requests)?,
         _ => return Err(AppError::new("INVALID_INPUT", "unknown plan kind")),
     };
     store_plan(&state, &plan)?;
@@ -1316,7 +1363,16 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
         let Some(skill) = sync_skill(db, skill_id)? else {
             continue;
         };
-        let source = sync_location(db, skill_id, &canonical, false)?;
+        // Source defaults to the canonical platform, but the caller may name an
+        // explicit `sourcePlatformId` — this is how "enable on platform X" links
+        // from wherever the skill already lives (e.g. the shared pool) instead
+        // of forcing a promote when the canonical platform doesn't have it.
+        let source_platform = req
+            .get("sourcePlatformId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| canonical.clone());
+        let source = sync_location(db, skill_id, &source_platform, false)?;
         let target_ids = req
             .get("targetPlatformIds")
             .and_then(Value::as_array)
@@ -1333,7 +1389,7 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
             .unwrap_or(false);
         for target_id in target_ids
             .into_iter()
-            .filter(|id| id != &canonical)
+            .filter(|id| id != &source_platform)
             .filter(|id| platforms.iter().any(|p| p.id == *id))
         {
             let target_platform = platforms.iter().find(|p| p.id == target_id).unwrap();
@@ -1342,7 +1398,7 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
                 skill: &skill,
                 source: source.as_ref(),
                 target: target.as_ref(),
-                source_platform_id: &canonical,
+                source_platform_id: &source_platform,
                 target_platform_id: &target_id,
                 target_platform_dir: &target_platform.skills_dir,
                 op_group_id: &op_group_id,
@@ -1440,6 +1496,58 @@ fn plan_promote_to_canonical(db: &Connection, requests: &[Value]) -> AppResult<V
         }
     }
     Ok(finalize_sync_plan("promote_to_canonical", items))
+}
+
+/// Plan an independent REAL copy of a skill onto a non-source platform. Unlike
+/// sync_from_canonical (which links) this writes a real directory, so the user
+/// ends up with a second editable copy. The source designation is unchanged —
+/// this is the "存放技能副本 / place a real copy here" action. The source must be
+/// a real directory (do_copy_item rejects symlinked trees), so we pick the
+/// canonical platform's real copy when it has one, else any real copy.
+fn plan_copy_to_platform(db: &Connection, requests: &[Value]) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let canonical = canonical_platform(db, &platform_ids)?;
+    let mut items = Vec::new();
+    for req in requests {
+        let Some(skill_id) = req.get("skillId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(target_id) = req.get("targetPlatformId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(skill) = sync_skill(db, skill_id)? else {
+            continue;
+        };
+        let Some(target_platform) = platforms.iter().find(|p| p.id == target_id) else {
+            continue;
+        };
+        let locs = sync_locations_for_skill(db, skill_id)?;
+        let source = locs
+            .iter()
+            .find(|loc| loc.platform_id == canonical && !loc.is_symlink && !loc.is_disabled)
+            .or_else(|| locs.iter().find(|loc| !loc.is_symlink && !loc.is_disabled))
+            .cloned();
+        let Some(source) = source else {
+            continue;
+        };
+        if source.platform_id == target_id {
+            continue; // target already holds the real source
+        }
+        let op_group_id = Uuid::new_v4().to_string();
+        let target = sync_location(db, skill_id, target_id, false)?;
+        items.push(build_sync_item(SyncBuildItemArgs {
+            skill: &skill,
+            source: Some(&source),
+            target: target.as_ref(),
+            source_platform_id: &source.platform_id,
+            target_platform_id: target_id,
+            target_platform_dir: &target_platform.skills_dir,
+            op_group_id: &op_group_id,
+            override_action: Some("copy_real"),
+        }));
+    }
+    Ok(finalize_sync_plan("copy_to_platform", items))
 }
 
 #[tauri::command]
@@ -1544,6 +1652,10 @@ pub(crate) fn execute_sync_items(
     let mut skipped = Vec::new();
     let mut failed = Vec::new();
     let mut aborted_groups = std::collections::HashSet::new();
+    // Newest applied history id per op-group → one undo handle per user action.
+    // Drives the "undo" affordance on safe-instant toggles; rolling back any one
+    // id sweeps its whole group, so one representative per group is enough.
+    let mut undo_by_group: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
 
     for item in items {
         let group = item
@@ -1570,6 +1682,14 @@ pub(crate) fn execute_sync_items(
                     "UPDATE sync_history SET success = 1, message = NULL, before_hash = ?1, after_hash = ?2, backup_path = ?3 WHERE id = ?4",
                     params![outcome.before_hash, outcome.after_hash, outcome.backup_path, history_id],
                 )?;
+                undo_by_group
+                    .entry(group)
+                    .and_modify(|prev| {
+                        if history_id > *prev {
+                            *prev = history_id;
+                        }
+                    })
+                    .or_insert(history_id);
                 applied.push(item);
             }
             Err(err) => {
@@ -1583,7 +1703,13 @@ pub(crate) fn execute_sync_items(
             }
         }
     }
-    Ok(json!({ "applied": applied, "skipped": skipped, "failed": failed }))
+    let undoable_history_ids: Vec<i64> = undo_by_group.into_values().collect();
+    Ok(json!({
+        "applied": applied,
+        "skipped": skipped,
+        "failed": failed,
+        "undoableHistoryIds": undoable_history_ids,
+    }))
 }
 
 #[tauri::command]
@@ -1734,7 +1860,7 @@ fn rollback_one_row(row: &RollbackRow) -> AppResult<()> {
     match row.action.as_str() {
         "symlink_create" | "symlink_replace" => rollback_symlink_row(row),
         "disable" | "enable" => rollback_move_row(row),
-        "copy_to_canonical" => rollback_copy_row(row),
+        "copy_to_canonical" | "copy_real" => rollback_copy_row(row),
         action => Err(AppError::new(
             "UNSUPPORTED",
             format!("rollback unsupported for action={action}"),
@@ -2412,7 +2538,7 @@ fn execute_sync_item(
     {
         "symlink_create" => do_symlink_item(db, history_id, backup_root, item, false),
         "symlink_replace" => do_symlink_item(db, history_id, backup_root, item, true),
-        "copy_to_canonical" => do_copy_item(db, history_id, backup_root, item),
+        "copy_to_canonical" | "copy_real" => do_copy_item(db, history_id, backup_root, item),
         "disable" | "enable" => do_move_item(item),
         action => Err(AppError::new(
             "SYNC_EXECUTE_FAILED",
@@ -3379,6 +3505,21 @@ mod tests {
         result
     }
 
+    /// 与 with_create_skill_mock_responses 并列：额外桩住追问回灌路径的 LLM 响应。
+    /// answer_response = None 时移除 env，模拟 LLM 失败 → 走确定性 fallback。
+    fn with_create_skill_answer_mock<T>(answer_response: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let lock = CREATE_SKILL_ENV_LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().expect("create skill env lock");
+        if let Some(response) = answer_response {
+            std::env::set_var("MYSKILLS_CREATE_SKILL_ANSWER_RESPONSE", response);
+        } else {
+            std::env::remove_var("MYSKILLS_CREATE_SKILL_ANSWER_RESPONSE");
+        }
+        let result = f();
+        std::env::remove_var("MYSKILLS_CREATE_SKILL_ANSWER_RESPONSE");
+        result
+    }
+
     fn create_skill_mock_start_response(prompt: &str) -> String {
         json!({
             "schemaVersion": "create-skill.v1",
@@ -3389,24 +3530,21 @@ mod tests {
                 "description": "当用户需要审查 Tauri 桌面发布风险、CI 结果和安装包验证路径时使用。",
                 "language": "zh",
                 "intentFrame": {
-                    "userJob": prompt,
-                    "triggerContext": "用户提供发布说明、CI 结果、安装包路径或待发布变更，希望得到发布风险判断。",
-                    "inputContract": {
-                        "acceptedInputs": ["发布说明", "CI 结果", "安装包路径", "变更摘要"],
-                        "privacyClass": "local_only"
-                    },
-                    "outputContract": { "artifactType": "checklist", "destination": "reply_only" },
-                    "workflow": {
-                        "steps": ["核对发布范围和平台差异。", "检查 CI、签名、安装包和更新机制风险。", "输出阻断项、警告项和下一步验证清单。"],
-                        "failClosedRules": ["缺少安装包路径时先追问。", "不得假设签名或 notarization 已完成。"]
-                    },
-                    "stylePreferences": ["直接", "按风险分层"],
-                    "nonGoals": ["不直接发布版本"],
-                    "successCriteria": ["阻断项明确", "每个风险都有下一步验证动作"]
+                    "whenToUse": prompt,
+                    "userInput": "用户提供发布说明、CI 结果、安装包路径或待发布变更，希望得到发布风险判断。",
+                    "output": "一份发布风险 checklist，标注阻断项、警告项和下一步验证动作。",
+                    "outputParts": ["阻断项与警告项分层", "每个风险对应的下一步验证动作"],
+                    "workflow": ["核对发布范围和平台差异。", "检查 CI、签名、安装包和更新机制风险。", "输出阻断项、警告项和下一步验证清单。"],
+                    "boundaries": ["缺少安装包路径时先追问。", "不得假设签名或 notarization 已完成。", "不直接发布版本。"],
+                    "successCriteria": ["阻断项明确", "每个风险都有下一步验证动作"],
+                    "safety": {
+                        "network": "no",
+                        "fileWrites": "none",
+                        "overwrite": "never",
+                        "privacy": "local_only",
+                        "artifactType": "checklist"
+                    }
                 },
-                "needsNetwork": false,
-                "writesFiles": false,
-                "overwritePolicy": "never",
                 "ready": false,
                 "missing": ["strictness"]
             },
@@ -3434,20 +3572,63 @@ mod tests {
         .to_string()
     }
 
+    fn create_skill_mock_answer_response() -> String {
+        json!({
+            "schemaVersion": "create-skill.v1",
+            "command": "start",
+            "status": "intent_draft",
+            "skillSpec": {
+                "name": "release-risk-review",
+                "description": "当用户需要审查 Tauri 桌面发布风险并在不确定时阻断确认时使用。",
+                "language": "zh",
+                "intentFrame": {
+                    "whenToUse": "审查 Tauri 桌面发布风险，并在遇到不确定项时阻断确认。",
+                    "userInput": "用户提供发布说明、CI 结果、安装包路径或待发布变更。",
+                    "output": "一份发布风险 checklist，遇到不确定项时停下来请求用户确认。",
+                    "outputParts": ["阻断项与警告项分层", "需要用户确认的不确定项清单"],
+                    "workflow": ["核对发布范围和平台差异。", "检查 CI、签名、安装包和更新机制风险。", "遇到不确定项时阻断并请求确认，再输出验证清单。"],
+                    "boundaries": ["缺少安装包路径时先追问。", "遇到不确定项必须阻断并请求用户确认。", "不直接发布版本。"],
+                    "successCriteria": ["阻断项明确", "不确定项均已请求确认"],
+                    "safety": {
+                        "network": "no",
+                        "fileWrites": "none",
+                        "overwrite": "confirm_each_time",
+                        "privacy": "local_only",
+                        "artifactType": "checklist"
+                    }
+                },
+                "ready": false,
+                "missing": []
+            },
+            "questions": [
+                {
+                    "id": "strictness",
+                    "question": "发布前遇到不确定项时如何处理？",
+                    "options": [
+                        { "id": "confirm", "label": "阻断并确认", "effect": "strictness=confirm" },
+                        { "id": "advisory_only", "label": "只提示风险", "effect": "strictness=advisory_only" }
+                    ],
+                    "allowFreeform": true
+                }
+            ]
+        })
+        .to_string()
+    }
+
     fn create_skill_answer(
         state: State<'_, AppState>,
         draft_id: &str,
         question_id: &str,
         answer: &str,
     ) -> Value {
-        ai_create_skill_answer(
+        tauri::async_runtime::block_on(ai_create_skill_answer(
             Some(json!({
                 "draftId": draft_id,
                 "questionId": question_id,
                 "answer": answer
             })),
             state,
-        )
+        ))
         .expect("answer question")
     }
 
@@ -4596,7 +4777,7 @@ mod tests {
             let initial_spec = &start["draft"]["skillSpec"];
             assert_eq!(start["aiUsed"].as_bool(), Some(true));
             assert_eq!(
-                initial_spec["intentFrame"]["userJob"].as_str(),
+                initial_spec["intentFrame"]["whenToUse"].as_str(),
                 Some(prompt)
             );
             assert_eq!(
@@ -4607,18 +4788,21 @@ mod tests {
             let answered = create_skill_answer(state.clone(), draft_id, "strictness", "confirm");
             let spec = answered["draft"]["skillSpec"].clone();
             assert_eq!(
-                spec["intentFrame"]["outputContract"]["artifactType"].as_str(),
+                spec["intentFrame"]["safety"]["artifactType"].as_str(),
                 Some("checklist")
             );
-            assert_eq!(spec["overwritePolicy"].as_str(), Some("confirm_each_time"));
+            assert_eq!(
+                spec["intentFrame"]["safety"]["overwrite"].as_str(),
+                Some("confirm_each_time")
+            );
 
-            let generated = ai_create_skill_generate(
+            let generated = tauri::async_runtime::block_on(ai_create_skill_generate(
                 Some(json!({
                     "draftId": draft_id,
                     "skillSpec": spec
                 })),
                 state.clone(),
-            )
+            ))
             .expect("generate markdown");
             let markdown = generated["draft"]["draftMarkdown"]
                 .as_str()
@@ -4717,6 +4901,87 @@ mod tests {
         });
     }
 
+    fn create_skill_seed_draft(state: State<'_, AppState>, prompt: &str) -> String {
+        let start_response = create_skill_mock_start_response(prompt);
+        with_create_skill_mock_responses(Some(&start_response), None, || {
+            let start = ai_create_skill_start(
+                Some(json!({ "prompt": prompt, "language": "zh" })),
+                state.clone(),
+            )
+            .expect("start draft");
+            start["draft"]["id"]
+                .as_str()
+                .expect("draft id")
+                .to_string()
+        })
+    }
+
+    #[test]
+    fn create_skill_answer_uses_llm_resynthesis_when_available() {
+        // D：LLM mock 返回时，追问回灌走 LLM 路径并以重新归纳的 spec 更新草稿。
+        let (app, _root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        configure_create_skill_mock_llm(state.clone());
+        let prompt = "release risk review for Tauri desktop builds.";
+        let draft_id = create_skill_seed_draft(state.clone(), prompt);
+        let answer_response = create_skill_mock_answer_response();
+
+        let answered = with_create_skill_answer_mock(Some(&answer_response), || {
+            tauri::async_runtime::block_on(ai_create_skill_answer(
+                Some(json!({
+                    "draftId": draft_id,
+                    "questionId": "strictness",
+                    "answer": "confirm"
+                })),
+                state.clone(),
+            ))
+            .expect("answer via llm")
+        });
+
+        assert_eq!(answered["aiUsed"].as_bool(), Some(true));
+        let spec = &answered["draft"]["skillSpec"];
+        // 重新归纳后的 whenToUse 来自 LLM 回灌，而非原始 prompt 透传。
+        assert_eq!(
+            spec["intentFrame"]["whenToUse"].as_str(),
+            Some("审查 Tauri 桌面发布风险，并在遇到不确定项时阻断确认。")
+        );
+        assert!(spec["intentFrame"]["boundaries"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|v| v.as_str() == Some("遇到不确定项必须阻断并请求用户确认。"))));
+    }
+
+    #[test]
+    fn create_skill_answer_falls_back_to_keyword_mapping_when_llm_unavailable() {
+        // D：LLM 失败（未设 answer mock env）→ 回退确定性关键词映射，aiUsed=false。
+        let (app, _root) = create_skill_smoke_app();
+        let state = app.state::<AppState>();
+        configure_create_skill_mock_llm(state.clone());
+        let prompt = "release risk review for Tauri desktop builds.";
+        let draft_id = create_skill_seed_draft(state.clone(), prompt);
+
+        let answered = with_create_skill_answer_mock(None, || {
+            tauri::async_runtime::block_on(ai_create_skill_answer(
+                Some(json!({
+                    "draftId": draft_id,
+                    "questionId": "strictness",
+                    "answer": "confirm"
+                })),
+                state.clone(),
+            ))
+            .expect("answer via fallback")
+        });
+
+        assert_eq!(answered["aiUsed"].as_bool(), Some(false));
+        let spec = &answered["draft"]["skillSpec"];
+        // 确定性映射：strictness=confirm → overwrite=confirm_each_time。
+        assert_eq!(
+            spec["intentFrame"]["safety"]["overwrite"].as_str(),
+            Some("confirm_each_time")
+        );
+    }
+
     #[test]
     fn create_skill_start_rejects_empty_llm_response_without_draft() {
         let (app, _root) = create_skill_smoke_app();
@@ -4738,7 +5003,9 @@ mod tests {
     }
 
     #[test]
-    fn create_skill_start_rejects_name_only_llm_response_without_draft() {
+    fn create_skill_start_degrades_name_only_response_to_clarification() {
+        // 澄清在先模型：一份只有名字、没有契约内容的稀薄响应不再硬失败，而是优雅降级为
+        // needs_clarification —— 带追问、建草稿，让用户把输入/输出契约补清楚。
         let (app, _root) = create_skill_smoke_app();
         let state = app.state::<AppState>();
         configure_create_skill_mock_llm(state.clone());
@@ -4751,21 +5018,31 @@ mod tests {
         .to_string();
 
         with_create_skill_mock_responses(Some(&response), None, || {
-            let err = ai_create_skill_start(
+            let result = ai_create_skill_start(
                 Some(json!({
                     "prompt": "把长视频转成同目录 SRT 字幕，不合成视频。",
                     "language": "zh"
                 })),
                 state.clone(),
             )
-            .expect_err("name-only response should fail");
-            assert_eq!(err.code, "LLM_BAD_SPEC");
-            assert_create_skill_draft_count(state.clone(), 0);
+            .expect("thin name-only response should degrade to clarification, not error");
+            assert_eq!(
+                result.get("status").and_then(Value::as_str),
+                Some("needs_clarification")
+            );
+            assert!(
+                result
+                    .get("questions")
+                    .and_then(Value::as_array)
+                    .is_some_and(|q| !q.is_empty()),
+                "should ask clarifying questions"
+            );
+            assert_create_skill_draft_count(state.clone(), 1);
         });
     }
 
     #[test]
-    fn create_skill_start_rejects_schema_correct_empty_content_without_draft() {
+    fn create_skill_start_degrades_empty_content_envelope_to_clarification() {
         let (app, _root) = create_skill_smoke_app();
         let state = app.state::<AppState>();
         configure_create_skill_mock_llm(state.clone());
@@ -4794,16 +5071,19 @@ mod tests {
         .to_string();
 
         with_create_skill_mock_responses(Some(&response), None, || {
-            let err = ai_create_skill_start(
+            let result = ai_create_skill_start(
                 Some(json!({
                     "prompt": "把长视频转成同目录 SRT 字幕，不合成视频。",
                     "language": "zh"
                 })),
                 state.clone(),
             )
-            .expect_err("empty valid envelope should fail");
-            assert_eq!(err.code, "LLM_BAD_SPEC");
-            assert_create_skill_draft_count(state.clone(), 0);
+            .expect("schema-correct but empty-content envelope should degrade to clarification");
+            assert_eq!(
+                result.get("status").and_then(Value::as_str),
+                Some("needs_clarification")
+            );
+            assert_create_skill_draft_count(state.clone(), 1);
         });
     }
 
@@ -4878,13 +5158,13 @@ mod tests {
         assert_eq!(answered["draft"]["status"].as_str(), Some("spec_ready"));
         let spec = answered["draft"]["skillSpec"].clone();
 
-        let generated = ai_create_skill_generate(
+        let generated = tauri::async_runtime::block_on(ai_create_skill_generate(
             Some(json!({
                 "draftId": draft_id,
                 "skillSpec": spec
             })),
             state.clone(),
-        )
+        ))
         .expect("live generate markdown");
         assert_eq!(
             generated["aiUsed"].as_bool(),
@@ -5087,8 +5367,9 @@ mod tests {
 
     #[test]
     fn create_skill_review_blocks_silent_network_and_destructive_write() {
+        // 真实祈使命令行（curl / rm -rf）未 gate → 仍 blocking。
         let review = create_skill_review_markdown(
-            "---\nname: unsafe-network\ndescription: Use when testing unsafe automation defaults.\n---\n\n# unsafe-network\n\n## Workflow\n\n1. Fetch https://example.com/data.\n2. Delete old output.\n\n## Output\n\n- Updated data.\n",
+            "---\nname: unsafe-network\ndescription: Use when testing unsafe automation defaults.\n---\n\n# unsafe-network\n\n## Workflow\n\n1. Run `curl https://example.com/data` and save it.\n2. Run `rm -rf ./old-output`.\n\n## Output\n\n- Updated data.\n",
             Some("unsafe-network"),
         );
         let codes = review
@@ -5104,9 +5385,39 @@ mod tests {
     }
 
     #[test]
-    fn create_skill_review_does_not_let_unrelated_confirmation_gate_network() {
+    fn create_skill_review_warns_but_does_not_block_on_mere_mention() {
+        // 纯引用 URL + 说明性句子（"不要覆盖 frontmatter"）→ 不 blocking，最多 warning。
         let review = create_skill_review_markdown(
-            "---\nname: unsafe-network\ndescription: Use when testing unsafe automation defaults.\n---\n\n# unsafe-network\n\n## Boundaries\n\n- Confirm before deleting files.\n\n## Workflow\n\n1. Fetch https://example.com/data without asking.\n\n## Output\n\n- Updated data.\n\n## Quality Bar\n\n- Data source is cited.\n",
+            "---\nname: gentle-skill\ndescription: Use when documenting a workflow that references external docs.\n---\n\n# gentle-skill\n\n## Inputs\n\n- A draft document.\n\n## Workflow\n\n1. Read the spec at https://docs.example.com/guide for context.\n2. Do not overwrite the frontmatter when editing.\n\n## Output\n\n- An edited document.\n\n## Boundaries\n\n- Stay local.\n\n## Quality Bar\n\n- The frontmatter is preserved.\n",
+            Some("gentle-skill"),
+        );
+        let blocking = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        let warnings = review
+            .get("warnings")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(!blocking.iter().any(|code| code == "NETWORK_NEEDS_GATE"));
+        assert!(!blocking.iter().any(|code| code == "WRITE_NEEDS_GATE"));
+        assert!(warnings.iter().any(|code| code == "NETWORK_MENTION_UNGATED"));
+        assert!(warnings.iter().any(|code| code == "WRITE_MENTION_UNGATED"));
+    }
+
+    #[test]
+    fn create_skill_review_does_not_let_unrelated_confirmation_gate_network() {
+        // 真实命令 curl，且同行用 "without asking" 显式否定 gate → 仍 blocking。
+        let review = create_skill_review_markdown(
+            "---\nname: unsafe-network\ndescription: Use when testing unsafe automation defaults.\n---\n\n# unsafe-network\n\n## Boundaries\n\n- Confirm before deleting files.\n\n## Workflow\n\n1. Run `curl https://example.com/data` without asking.\n\n## Output\n\n- Updated data.\n\n## Quality Bar\n\n- Data source is cited.\n",
             Some("unsafe-network"),
         );
         let codes = review
@@ -5121,9 +5432,10 @@ mod tests {
     }
 
     #[test]
-    fn create_skill_review_blocks_chinese_destructive_write_without_gate() {
+    fn create_skill_review_blocks_chinese_destructive_command_without_gate() {
+        // 中文正文里嵌入真实 rm -rf 命令未 gate → 仍 blocking。
         let review = create_skill_review_markdown(
-            "---\nname: unsafe-write\ndescription: Use when testing unsafe file changes.\n---\n\n# unsafe-write\n\n## 输入\n\n- 本地文件路径\n\n## 工作流\n\n1. 删除旧文件并覆盖输出。\n\n## 输出\n\n- 新文件\n\n## 安全边界\n\n- 不联网。\n\n## 质量标准\n\n- 输出路径存在。\n",
+            "---\nname: unsafe-write\ndescription: Use when testing unsafe file changes.\n---\n\n# unsafe-write\n\n## 输入\n\n- 本地文件路径\n\n## 工作流\n\n1. 执行 `rm -rf ./output` 清理旧产物。\n\n## 输出\n\n- 新文件\n\n## 安全边界\n\n- 不联网。\n\n## 质量标准\n\n- 输出路径存在。\n",
             Some("unsafe-write"),
         );
         let codes = review
@@ -5135,6 +5447,33 @@ mod tests {
             .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
             .collect::<Vec<_>>();
         assert!(codes.iter().any(|code| code == "WRITE_NEEDS_GATE"));
+    }
+
+    #[test]
+    fn create_skill_review_downgrades_chinese_prose_destructive_to_warning() {
+        // 中文散文式"删除旧文件并覆盖输出"（非真实命令）→ 不 blocking，降级为 warning。
+        let review = create_skill_review_markdown(
+            "---\nname: prose-write\ndescription: Use when testing prose-level file changes.\n---\n\n# prose-write\n\n## 输入\n\n- 本地文件路径\n\n## 工作流\n\n1. 删除旧文件并覆盖输出。\n\n## 输出\n\n- 新文件\n\n## 安全边界\n\n- 不联网。\n\n## 质量标准\n\n- 输出路径存在。\n",
+            Some("prose-write"),
+        );
+        let blocking = review
+            .get("blocking")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        let warnings = review
+            .get("warnings")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.get("code").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(!blocking.iter().any(|code| code == "WRITE_NEEDS_GATE"));
+        assert!(warnings.iter().any(|code| code == "WRITE_MENTION_UNGATED"));
     }
 
     #[test]
@@ -5173,7 +5512,8 @@ mod tests {
     }
 
     #[test]
-    fn create_skill_installability_rejects_quality_warnings() {
+    fn create_skill_installability_allows_quality_warnings() {
+        // 只有质量类 warning（这里缺 Quality Bar 段）而无 blocking → 仍可安装。
         let review = create_skill_review_markdown(
             "---\nname: warning-only\ndescription: Use when reviewing pull requests for regressions and test gaps.\n---\n\n# warning-only\n\n## Inputs\n\n- PR diff\n\n## Workflow\n\n1. Inspect diff.\n\n## Output\n\n- Checklist.\n\n## Boundaries\n\n- Ask before writes.\n",
             Some("warning-only"),
@@ -5185,6 +5525,33 @@ mod tests {
                 .map(Vec::len),
             Some(0)
         );
+        assert!(
+            review
+                .get("warnings")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+                > 0,
+            "fixture should still surface quality warnings"
+        );
+        assert!(create_skill_review_is_installable(&review));
+    }
+
+    #[test]
+    fn create_skill_installability_rejects_blocking_only() {
+        // 有 blocking（这里 name 与 basename 不匹配）→ 不可安装。
+        let review = create_skill_review_markdown(
+            "---\nname: actual-skill\ndescription: Use when reviewing pull requests for regressions and test gaps.\n---\n\n# actual-skill\n\n## Inputs\n\n- PR diff\n\n## Workflow\n\n1. Inspect diff.\n2. Check tests.\n3. Report risks.\n\n## Output\n\n- Checklist.\n\n## Boundaries\n\n- Ask before writes.\n\n## Quality Bar\n\n- Risks are listed.\n",
+            Some("expected-skill"),
+        );
+        assert!(
+            review
+                .get("blocking")
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+                > 0
+        );
         assert!(!create_skill_review_is_installable(&review));
     }
 
@@ -5195,14 +5562,14 @@ mod tests {
                 "name": "Product Iteration Synthesizer",
                 "description": "当用户需要把零散想法收敛成产品迭代方案时使用。",
                 "intentFrame": {
-                    "userJob": "把零散想法收敛成产品迭代方案",
-                    "triggerContext": "产品迭代规划",
-                    "inputContract": { "acceptedInputs": ["会议记录", "零散想法"] },
-                    "outputContract": { "artifactType": "markdown", "destination": "reply_only" },
-                    "workflow": { "steps": ["识别真实问题"], "failClosedRules": ["文件写入前确认"] },
-                    "stylePreferences": ["直接"],
-                    "nonGoals": ["不替用户决定优先级"],
-                    "successCriteria": ["版本目标清晰"]
+                    "whenToUse": "把零散想法收敛成产品迭代方案",
+                    "userInput": "会议记录、零散想法",
+                    "output": "一份产品迭代方案，含版本目标、用户路径和风险。",
+                    "outputParts": ["版本目标", "风险与下一步验证"],
+                    "workflow": ["识别真实问题", "判断哪些想法是噪音", "输出版本目标和验证清单"],
+                    "boundaries": ["文件写入前确认", "不替用户决定优先级"],
+                    "successCriteria": ["版本目标清晰"],
+                    "safety": { "network": "no", "fileWrites": "none", "overwrite": "never", "privacy": "local_only", "artifactType": "markdown" }
                 },
                 "followupQuestions": [
                     { "id": "strictness", "question": "是否需要确认？", "options": [{ "id": "confirm", "label": "确认", "effect": "strictness=confirm" }] }
@@ -5219,7 +5586,7 @@ mod tests {
             Some("product-iteration-synthesizer")
         );
         assert_eq!(
-            spec["intentFrame"]["userJob"].as_str(),
+            spec["intentFrame"]["whenToUse"].as_str(),
             Some("把零散想法收敛成产品迭代方案")
         );
         assert_eq!(questions.as_array().map(Vec::len), Some(1));
@@ -5227,6 +5594,8 @@ mod tests {
 
     #[test]
     fn create_skill_start_repairs_common_llm_array_aliases() {
+        // 旧/别名形状（triggerContext、userJob、acceptedInputs、workflow.steps、acceptanceCriteria、nonGoals）
+        // 应被惰性迁移层映射到新 5 支柱并通过 quality gate。
         let mut spec = json!({
             "name": "Obsidian Polish",
             "description": "当用户需要把 Obsidian 中文稿件润色得更犀利且保留口语感时使用。",
@@ -5234,9 +5603,10 @@ mod tests {
             "intentFrame": {
                 "userJob": "把 Obsidian 中文稿件润色得更犀利，同时保留口语感",
                 "triggerContext": "用户提供一段中文草稿，希望调整表达力度和可读性。",
-                "inputContract": { "inputs": ["Obsidian 中文草稿", "用户对口语感、犀利程度和保留内容的要求"] },
-                "outputContract": { "artifactType": "markdown", "destination": "reply_only" },
-                "workflow": { "workflowSteps": ["识别原稿意图和语气", "压缩解释性表达", "输出保留口语感的改写版本"] },
+                "inputContract": { "acceptedInputs": ["Obsidian 中文草稿", "用户对口语感、犀利程度和保留内容的要求"] },
+                "output": "一段更犀利但保留口语感的中文改写。",
+                "outputParts": ["改写后的正文", "改动说明"],
+                "workflow": { "steps": ["识别原稿意图和语气", "压缩解释性表达", "输出保留口语感的改写版本"] },
                 "acceptanceCriteria": ["改写后更犀利但不丢失原始意思"]
             },
             "questions": []
@@ -5254,16 +5624,20 @@ mod tests {
             issues.is_empty(),
             "alias-shaped spec should pass quality gate: {issues:?}"
         );
+        // 旧 triggerContext 迁入 whenToUse，旧 userJob + acceptedInputs 折叠进 userInput。
         assert_eq!(
-            spec["intentFrame"]["inputContract"]["acceptedInputs"]
-                .as_array()
-                .map(Vec::len),
+            spec["intentFrame"]["whenToUse"].as_str(),
+            Some("用户提供一段中文草稿，希望调整表达力度和可读性。")
+        );
+        assert!(spec["intentFrame"]["userInput"]
+            .as_str()
+            .is_some_and(|s| s.contains("Obsidian 中文草稿")));
+        assert_eq!(
+            spec["intentFrame"]["outputParts"].as_array().map(Vec::len),
             Some(2)
         );
         assert_eq!(
-            spec["intentFrame"]["workflow"]["steps"]
-                .as_array()
-                .map(Vec::len),
+            spec["intentFrame"]["workflow"].as_array().map(Vec::len),
             Some(3)
         );
         assert_eq!(
@@ -5286,12 +5660,9 @@ mod tests {
         create_skill_normalize_spec(&mut spec);
         create_skill_apply_answer(&mut spec, "input_scope", "materials");
 
-        assert_eq!(
-            spec["intentFrame"]["inputContract"]["acceptedInputs"]
-                .as_array()
-                .map(Vec::len),
-            Some(1)
-        );
+        assert!(spec["intentFrame"]["userInput"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty()));
     }
 
     #[test]
@@ -5324,8 +5695,13 @@ const LLM_API_KEY_NAME: &str = "llm.apiKey";
 const LLM_API_KEY_STORED_SETTING: &str = "llm.apiKeyStored";
 const LLM_CONNECTION_OK_SETTING: &str = "llm.connectionOk";
 
+/// 自适应澄清循环的硬轮数上界。连续这么多个澄清轮仍未自评 ready 时，Rust 用
+/// 「必须结晶」prompt 强制最后一次 LLM 调用产出 spec —— 永不困在盘问里（用户也可随时
+/// 点「够了，直接生成」提前强制结晶）。
+const CREATE_SKILL_MAX_CLARIFY_ROUNDS: i64 = 3;
+
 #[tauri::command]
-pub fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
     require_network(&db)?;
     let q = required_str(&payload, "q")?.trim().to_string();
@@ -5389,7 +5765,7 @@ pub fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> App
 }
 
 #[tauri::command]
-pub fn catalog_preview(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn catalog_preview(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
     let source = required_str(&payload, "source")?;
     let skill_id = required_str(&payload, "skillId")?;
@@ -5410,7 +5786,7 @@ pub fn catalog_preview(payload: Option<Value>, state: State<'_, AppState>) -> Ap
 }
 
 #[tauri::command]
-pub fn catalog_enrich_descriptions(
+pub async fn catalog_enrich_descriptions(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
@@ -5485,7 +5861,7 @@ pub fn catalog_enrich_descriptions(
 }
 
 #[tauri::command]
-pub fn catalog_plan_install(
+pub async fn catalog_plan_install(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
@@ -6195,7 +6571,7 @@ pub fn llm_delete_api_key(payload: Option<Value>, state: State<'_, AppState>) ->
 }
 
 #[tauri::command]
-pub fn llm_chat(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn llm_chat(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let db = conn(&state)?;
     require_network(&db)?;
     let req = payload
@@ -6234,7 +6610,7 @@ pub fn llm_chat(payload: Option<Value>, state: State<'_, AppState>) -> AppResult
 }
 
 #[tauri::command]
-pub fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
     if get_setting(&db, "allow_external_network")?.as_deref() != Some("1") {
@@ -6709,13 +7085,14 @@ fn ai_create_skill_start_inner(
     let db = pool.get()?;
     let draft_id = Uuid::new_v4().to_string();
     let now = now_ms();
-    let (spec, questions, ai_used) = create_skill_start_spec(&db, paths, &prompt, &language)?;
-    let status = if spec.get("ready").and_then(Value::as_bool) == Some(true) {
-        "spec_ready"
-    } else {
-        "intent_draft"
-    };
-    let basename = spec
+    // 澄清循环第一轮：LLM 自评能否精准定义输入/输出契约。
+    let turn = create_skill_start_spec(&db, paths, &prompt, &language)?;
+    let ready = turn.status == "ready";
+    // 第一轮即结晶 → spec_ready（前端 outline 步）；否则进入 clarifying（前端 clarify 步）。
+    // 即便 ready，本次也是「第 1 轮」对话，clarify_round 记 1。
+    let status = if ready { "spec_ready" } else { "clarifying" };
+    let basename = turn
+        .spec
         .get("name")
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -6723,23 +7100,57 @@ fn ai_create_skill_start_inner(
     db.execute(
         "INSERT INTO skill_creation_drafts
          (id, status, raw_prompt, intent_frame_json, skill_spec_json, followup_questions_json,
-          answers_json, target_basename, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7, ?8, ?8)",
+          answers_json, target_basename, clarify_round, understanding, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', ?7, 1, ?8, ?9, ?9)",
         params![
             draft_id,
             status,
             prompt,
-            json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
-            json_string(&spec)?,
-            json_string(&questions)?,
+            json_string(turn.spec.get("intentFrame").unwrap_or(&Value::Null))?,
+            json_string(&turn.spec)?,
+            json_string(&turn.questions)?,
             basename,
+            (!turn.understanding.is_empty()).then_some(turn.understanding.as_str()),
             now
         ],
     )?;
-    Ok(json!({
-        "draft": create_skill_get_draft_row(&db, &draft_id)?,
+    Ok(create_skill_clarify_envelope(
+        &db,
+        &draft_id,
+        &turn,
+        turn.ai_used,
+    )?)
+}
+
+/// 把一轮澄清结果包成发给 renderer 的状态机 envelope：
+/// `{ status, understanding, questions?, skillSpec?, draft, round, aiUsed }`。
+/// ready 时附完整 skillSpec、questions 省略；needs_clarification 时附 understanding + questions。
+fn create_skill_clarify_envelope(
+    db: &Connection,
+    draft_id: &str,
+    turn: &CreateSkillClarifyTurn,
+    ai_used: bool,
+) -> AppResult<Value> {
+    let draft = create_skill_get_draft_row(db, draft_id)?;
+    let round = draft
+        .get("clarifyRound")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let ready = turn.status == "ready";
+    let mut envelope = json!({
+        "status": turn.status,
+        "understanding": turn.understanding,
+        "draft": draft,
+        "round": round,
+        "maxRounds": CREATE_SKILL_MAX_CLARIFY_ROUNDS,
         "aiUsed": ai_used
-    }))
+    });
+    if ready {
+        envelope["skillSpec"] = turn.spec.clone();
+    } else {
+        envelope["questions"] = turn.questions.clone();
+    }
+    Ok(envelope)
 }
 
 #[tauri::command]
@@ -6764,11 +7175,9 @@ pub fn ai_create_skill_refine(
         .cloned()
         .ok_or_else(|| AppError::new("INVALID_INPUT", "skillSpec required"))?;
     create_skill_normalize_spec(&mut spec);
-    let status = if spec.get("ready").and_then(Value::as_bool) == Some(true) {
-        "spec_ready"
-    } else {
-        "intent_draft"
-    };
+    // 决策3：结晶轮廓编辑后直接生效，不自动重入澄清循环。即便用户改空某字段使 ready=false，
+    // 也停留在 spec_ready（结晶确认面），不退回 clarifying。
+    let status = "spec_ready";
     let basename = p
         .get("targetBasename")
         .and_then(Value::as_str)
@@ -6796,7 +7205,7 @@ pub fn ai_create_skill_refine(
 }
 
 #[tauri::command]
-pub fn ai_create_skill_answer(
+pub async fn ai_create_skill_answer(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
@@ -6827,21 +7236,93 @@ pub fn ai_create_skill_answer(
         )
     });
     create_skill_normalize_spec(&mut spec);
-    create_skill_apply_answer(&mut spec, question_id, answer);
-    create_skill_normalize_spec(&mut spec);
-    let questions = create_skill_default_questions(&spec);
-    let next_question = questions.as_array().and_then(|items| {
-        items.iter().find(|q| {
-            q.get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| answers.get(id).is_none())
+    let language = spec
+        .get("language")
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "zh" | "en"))
+        .unwrap_or("zh")
+        .to_string();
+    // 性能：每答一题都回灌 LLM 会让 UI 逐题卡顿。改为——**中间答题即时本地应用**（零
+    // LLM、不卡），**只在最后一题答完 / 用户点「够了」/ 到轮数上界时，才调一次 LLM**
+    // 把「原始需求 + 全部回答」结晶成精准轮廓（前端配加载态）。问题集沿用 start 的
+    // （LLM 已一次性给出该问的关键项），逐题秒答。
+    let raw_prompt = draft
+        .get("rawPrompt")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let round = draft.get("clarifyRound").and_then(Value::as_i64).unwrap_or(1);
+    let force = p
+        .get("forceCrystallize")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let existing_questions = draft
+        .get("followupQuestions")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let remaining_unanswered = existing_questions
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|q| {
+                    q.get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| answers.get(id).is_none())
+                })
+                .count()
         })
-    });
-    let status = if next_question.is_some() {
-        "intent_draft"
+        .unwrap_or(0);
+    let crystallize = force || remaining_unanswered == 0 || (round + 1) >= CREATE_SKILL_MAX_CLARIFY_ROUNDS;
+    let mut understanding = draft
+        .get("understanding")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let (ai_used, questions) = if crystallize {
+        // 唯一一次 LLM 调用：把全部回答结晶成精准 spec。失败则确定性兜底。
+        match create_skill_clarify_spec(
+            &db,
+            &state.paths,
+            &raw_prompt,
+            &spec,
+            &answers,
+            &language,
+            true,
+        ) {
+            Ok(turn) => {
+                let mut updated = turn.spec;
+                create_skill_normalize_spec(&mut updated);
+                create_skill_remove_missing(&mut updated, question_id);
+                spec = updated;
+                understanding = turn.understanding;
+                (turn.ai_used, json!([]))
+            }
+            Err(_) => {
+                create_skill_apply_answer(&mut spec, question_id, answer);
+                create_skill_normalize_spec(&mut spec);
+                (false, json!([]))
+            }
+        }
     } else {
-        "spec_ready"
+        // 中间答题：确定性本地应用，瞬时、不卡；保留 start 的剩余问题继续逐题。
+        create_skill_apply_answer(&mut spec, question_id, answer);
+        create_skill_normalize_spec(&mut spec);
+        (false, existing_questions)
     };
+    let ready = crystallize;
+    let next_question = questions
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|q| {
+                q.get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| answers.get(id).is_none())
+            })
+        })
+        .cloned();
+    let status = if ready { "spec_ready" } else { "clarifying" };
+    let new_round = round + 1;
     db.execute(
         "UPDATE skill_creation_drafts
          SET status = ?1,
@@ -6849,27 +7330,33 @@ pub fn ai_create_skill_answer(
              intent_frame_json = ?3,
              followup_questions_json = ?4,
              answers_json = ?5,
-             updated_at = ?6
-         WHERE id = ?7 AND discarded_at IS NULL AND installed_at IS NULL",
+             clarify_round = ?6,
+             understanding = ?7,
+             updated_at = ?8
+         WHERE id = ?9 AND discarded_at IS NULL AND installed_at IS NULL",
         params![
             status,
             json_string(&spec)?,
             json_string(spec.get("intentFrame").unwrap_or(&Value::Null))?,
             json_string(&questions)?,
             json_string(&answers)?,
+            new_round,
+            (!understanding.is_empty()).then_some(understanding.as_str()),
             now_ms(),
             draft_id
         ],
     )?;
     Ok(json!({
         "draft": create_skill_get_draft_row(&db, draft_id)?,
-        "nextQuestion": next_question.cloned().unwrap_or(Value::Null),
-        "aiUsed": false
+        "status": if ready { "ready" } else { "needs_clarification" },
+        "understanding": understanding,
+        "nextQuestion": next_question.unwrap_or(Value::Null),
+        "aiUsed": ai_used
     }))
 }
 
 #[tauri::command]
-pub fn ai_create_skill_generate(
+pub async fn ai_create_skill_generate(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
@@ -7259,7 +7746,7 @@ fn create_skill_get_draft_row(db: &Connection, draft_id: &str) -> AppResult<Valu
                 followup_questions_json, answers_json, draft_markdown,
                 target_platform_ids_json, target_scenario_ids_json, target_basename,
                 validation_json, plan_token, installed_skill_id, created_at, updated_at,
-                installed_at, discarded_at
+                installed_at, discarded_at, clarify_round, understanding
          FROM skill_creation_drafts WHERE id = ?1",
         params![draft_id],
         |r| {
@@ -7289,18 +7776,62 @@ fn create_skill_get_draft_row(db: &Connection, draft_id: &str) -> AppResult<Valu
                 "updatedAt": r.get::<_, i64>(15)?,
                 "installedAt": r.get::<_, Option<i64>>(16)?,
                 "discardedAt": r.get::<_, Option<i64>>(17)?,
+                // 自适应澄清循环：累积轮次 + 当前 AI 理解复述。
+                "clarifyRound": r.get::<_, i64>(18)?,
+                "understanding": r.get::<_, Option<String>>(19)?,
             }))
         },
     )
     .map_err(Into::into)
 }
 
+/// 澄清循环单次调用的归一化结果（无论 start 还是 clarify）。
+/// ready 分支：spec 已通过 repair + 质量门，可结晶呈现；questions 为空。
+/// needs_clarification 分支：understanding 为一行复述，questions 为本轮 1~3 个选项题；spec 仅为草稿。
+struct CreateSkillClarifyTurn {
+    status: String,
+    understanding: String,
+    spec: Value,
+    questions: Value,
+    ai_used: bool,
+}
+
+/// 自适应澄清循环的第一轮：LLM 自评能否精准定义输入/输出契约。
+/// 简单需求 → ready + 完整 spec；复杂需求 → needs_clarification + understanding + 1~3 问。
 fn create_skill_start_spec(
     db: &Connection,
     paths: &AppPaths,
     prompt: &str,
     language: &str,
-) -> AppResult<(Value, Value, bool)> {
+) -> AppResult<CreateSkillClarifyTurn> {
+    create_skill_run_clarify_llm(
+        db,
+        paths,
+        prompt,
+        language,
+        "MYSKILLS_CREATE_SKILL_START_RESPONSE",
+        |attempt, previous_text, previous_issues| {
+            if attempt == 1 {
+                create_skill_start_prompt(prompt, language)
+            } else {
+                create_skill_start_repair_prompt(prompt, language, previous_text, previous_issues)
+            }
+        },
+    )
+}
+
+/// start / clarify 共用的 LLM 调用循环：发起请求 → coerce → status envelope → 按 status 分支。
+/// needs_clarification 时直接返回（不跑结晶质量门，spec 只是草稿）；ready 时跑
+/// repair_start_spec + 质量门，未过则用 repair prompt 重试一次（沿用现有 2 次重试 + repair）。
+/// `build_prompt(attempt, previous_text, previous_issues)` 决定每次尝试的 user content。
+fn create_skill_run_clarify_llm(
+    db: &Connection,
+    paths: &AppPaths,
+    prompt: &str,
+    language: &str,
+    test_env_key: &str,
+    build_prompt: impl Fn(u8, &str, &[Value]) -> String,
+) -> AppResult<CreateSkillClarifyTurn> {
     if !create_skill_llm_enabled(db, paths)? {
         return Err(AppError::new(
             "LLM_NOT_READY",
@@ -7320,44 +7851,51 @@ fn create_skill_start_spec(
     let mut previous_issues = Vec::new();
     let mut last_error = None;
     for attempt in 1..=2 {
-        let user_content = if attempt == 1 {
-            create_skill_start_prompt(prompt, language)
-        } else {
-            create_skill_start_repair_prompt(prompt, language, &previous_text, &previous_issues)
-        };
+        let user_content = build_prompt(attempt, &previous_text, &previous_issues);
         let req = json!({
             "messages": [
-                {
-                    "role": "system",
-                    "content": create_skill_system_prompt(language)
-                },
-                {
-                    "role": "user",
-                    "content": user_content
-                }
+                { "role": "system", "content": create_skill_system_prompt(language) },
+                { "role": "user", "content": user_content }
             ],
             "temperature": if attempt == 1 { 0.2 } else { 0.0 },
             "maxTokens": if attempt == 1 { 4096 } else { 8192 },
             "jsonMode": true
         });
-        let text = create_skill_llm_text(
-            "MYSKILLS_CREATE_SKILL_START_RESPONSE",
-            &config,
-            api_key.as_deref(),
-            &req,
-        )?;
+        let text = create_skill_llm_text(test_env_key, &config, api_key.as_deref(), &req)?;
         previous_text = text.clone();
         let parsed = ai_parse_json_object(&text);
         let parsed = create_skill_coerce_start_payload(parsed, prompt, language);
-        match create_skill_envelope_payload(parsed, "start") {
-            Ok((mut spec, mut questions)) => {
-                create_skill_repair_start_spec(&mut spec, prompt, language);
-                if !create_skill_questions_have_options(&questions) {
-                    questions = create_skill_default_questions(&spec);
+        match create_skill_status_envelope(parsed, "start") {
+            Ok(envelope) => {
+                // needs_clarification：LLM 仍在问。直接返回本轮问题 + 理解复述，不跑结晶质量门。
+                if envelope.status != "ready" {
+                    let mut questions = envelope.questions;
+                    if !create_skill_questions_have_options(&questions) {
+                        questions = create_skill_default_questions(&envelope.spec);
+                    }
+                    return Ok(CreateSkillClarifyTurn {
+                        status: "needs_clarification".to_string(),
+                        understanding: envelope.understanding,
+                        spec: envelope.spec,
+                        questions,
+                        ai_used: true,
+                    });
                 }
-                previous_issues = create_skill_start_quality_issues(&spec, &questions);
+                // ready：跑结晶质量门。过 → 结晶返回；未过 → repair 重试。
+                let mut spec = envelope.spec;
+                create_skill_repair_start_spec(&mut spec, prompt, language);
+                previous_issues = create_skill_start_quality_issues(
+                    &spec,
+                    &create_skill_default_questions(&spec),
+                );
                 if previous_issues.is_empty() {
-                    return Ok((spec, questions, true));
+                    return Ok(CreateSkillClarifyTurn {
+                        status: "ready".to_string(),
+                        understanding: envelope.understanding,
+                        spec,
+                        questions: json!([]),
+                        ai_used: true,
+                    });
                 }
                 last_error = Some(create_skill_start_quality_error(
                     &spec,
@@ -7377,6 +7915,97 @@ fn create_skill_start_spec(
             "The model returned an incomplete skill outline. Regenerate or revise the request.",
         )
     }))
+}
+
+/// 澄清循环回灌（演进自旧 create_skill_answer_spec）：把「原始需求 + 当前 spec 草稿 + 累积
+/// Q&A（含本轮答案）」交回 LLM，让它重做同一个自评 → 返回状态机 envelope（再问 or 结晶）。
+/// `force_crystallize`（轮数到顶或用户「够了直接生成」）时切「必须结晶」prompt 强制 ready。
+/// 复用 start 路径的 system prompt / JSON 契约 / coerce / status envelope / 质量门 / repair 重试。
+/// 失败/未配置返回 Err，由调用方回退到确定性关键词映射（create_skill_apply_answer）。
+fn create_skill_clarify_spec(
+    db: &Connection,
+    paths: &AppPaths,
+    raw_prompt: &str,
+    current_spec: &Value,
+    answers: &Value,
+    language: &str,
+    force_crystallize: bool,
+) -> AppResult<CreateSkillClarifyTurn> {
+    // whenToUse 仍是这条技能最贴近的原始意图，作为 repair / coerce 时的占位回退。
+    let fallback_prompt = current_spec
+        .get("intentFrame")
+        .and_then(|i| i.get("whenToUse"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| current_spec.get("description").and_then(Value::as_str))
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| raw_prompt.to_string());
+    create_skill_run_clarify_llm(
+        db,
+        paths,
+        &fallback_prompt,
+        language,
+        "MYSKILLS_CREATE_SKILL_ANSWER_RESPONSE",
+        |attempt, previous_text, previous_issues| {
+            if attempt == 1 {
+                create_skill_clarify_prompt(
+                    raw_prompt,
+                    current_spec,
+                    answers,
+                    language,
+                    force_crystallize,
+                )
+            } else {
+                create_skill_start_repair_prompt(
+                    &fallback_prompt,
+                    language,
+                    previous_text,
+                    previous_issues,
+                )
+            }
+        },
+    )
+}
+
+/// 澄清循环回灌 prompt：把「原始需求 + 当前 spec 草稿 + 累积 Q&A + 本轮答案」交回 LLM，
+/// 让它重做同一个自评（再问 or 结晶）。`force_crystallize=true`（轮数到顶或用户「够了直接生成」）
+/// 时切换为「必须结晶」措辞，强制 status=ready + 完整 spec、不再追问。
+fn create_skill_clarify_prompt(
+    raw_prompt: &str,
+    current_spec: &Value,
+    answers: &Value,
+    language: &str,
+    force_crystallize: bool,
+) -> String {
+    let language_rule = if language == "zh" {
+        "All human-facing strings (understanding, questions, and every skillSpec value) must be Chinese. Keep only identifiers such as name in English kebab-case."
+    } else {
+        "All human-facing strings must be English."
+    };
+    let spec_json = json_string(current_spec).unwrap_or_else(|_| "{}".to_string());
+    let answers_json = json_string(answers).unwrap_or_else(|_| "{}".to_string());
+    let directive = if force_crystallize {
+        "This is the FINAL turn. You MUST now crystallize: set status=\"ready\" and return a COMPLETE skillSpec, filling any remaining gaps with the most reasonable concrete defaults inferred from the need and the answers. Do NOT ask any more questions — return \"questions\": []."
+    } else {
+        create_skill_clarify_core_rules()
+    };
+    format!(
+        "You are continuing an adaptive clarification loop for a MySkills skill.\n\
+         The user has answered the previous round's questions. Re-run your self-assessment and either \
+         ask the next 1-3 questions or crystallize the precise outline.\n\
+         Return JSON only. Do not include markdown fences or explanatory text.\n\
+         Set schemaVersion exactly to \"create-skill.v1\" and command exactly to \"start\".\n\
+         {language_rule}\n\n\
+         {directive}\n\n\
+         Always preserve concrete details from the current draft that the new answers do not contradict.\n\n\
+         Original user need:\n{raw_prompt}\n\n\
+         Current skillSpec draft:\n{spec_json}\n\n\
+         All answers so far (questionId -> answer), including this round:\n{answers_json}\n\n\
+         JSON shape (status drives which fields matter):\n\
+{}",
+        create_skill_start_json_contract(language)
+    )
 }
 
 fn create_skill_generate_markdown(
@@ -7436,7 +8065,10 @@ fn create_skill_generate_markdown(
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| AppError::new("LLM_BAD_RESPONSE", "draftMarkdown missing"))?;
-    Ok((create_skill_repair_frontmatter(markdown, spec), true))
+    let repaired = create_skill_repair_frontmatter(markdown, spec);
+    let safety = spec.get("intentFrame").and_then(|i| i.get("safety"));
+    let gated = ensure_safety_gates(&repaired, safety, spec);
+    Ok((gated, true))
 }
 
 fn create_skill_llm_enabled(db: &Connection, paths: &AppPaths) -> AppResult<bool> {
@@ -7459,25 +8091,31 @@ fn create_skill_llm_text(
 ) -> AppResult<String> {
     #[cfg(not(test))]
     let _ = test_env_key;
+    // 测试环境下绝不发起真实网络调用：命中 mock env 返回桩文本，未命中则报错
+    // （对追问回灌路径而言等同于 LLM 失败，触发确定性 fallback），保持单测 hermetic。
     #[cfg(test)]
-    if let Ok(value) = std::env::var(test_env_key) {
-        if value.trim().is_empty() {
+    {
+        let _ = (config, api_key, req);
+        return match std::env::var(test_env_key) {
+            Ok(value) if !value.trim().is_empty() => Ok(value),
+            _ => Err(AppError::new(
+                "LLM_BAD_RESPONSE",
+                "The model returned an empty response.",
+            )),
+        };
+    }
+    #[cfg(not(test))]
+    {
+        let response = llm_chat_with_config(config, api_key, req)?;
+        let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+        if text.trim().is_empty() {
             return Err(AppError::new(
                 "LLM_BAD_RESPONSE",
                 "The model returned an empty response.",
             ));
         }
-        return Ok(value);
+        Ok(text.to_string())
     }
-    let response = llm_chat_with_config(config, api_key, req)?;
-    let text = response.get("text").and_then(Value::as_str).unwrap_or("");
-    if text.trim().is_empty() {
-        return Err(AppError::new(
-            "LLM_BAD_RESPONSE",
-            "The model returned an empty response.",
-        ));
-    }
-    Ok(text.to_string())
 }
 
 fn create_skill_start_quality_error(spec: &Value, issues: Vec<Value>) -> AppError {
@@ -7490,26 +8128,37 @@ fn create_skill_start_quality_error(spec: &Value, issues: Vec<Value>) -> AppErro
     AppError::detail("LLM_BAD_SPEC", message, json!({ "issues": issues }))
 }
 
+/// 自适应澄清循环共用的自评核心判据 + 两分支契约说明（中英按 language 取一份）。
+/// 北极星：先自问「我能否现在就精准写出输入契约 + 输出契约（+ 何时触发）？」——
+/// 能 → status=ready + 完整 skillSpec；不能 → status=needs_clarification + understanding +
+/// 1~3 个只针对卡住契约位的选项题。禁止问能从描述推断的东西；简单需求第一轮必须直接 ready。
+fn create_skill_clarify_core_rules() -> &'static str {
+    "Self-assessment (the single decision): \"Can I write a PRECISE input contract and output contract (plus when-to-trigger) RIGHT NOW from what I know?\"\n\
+     - If YES: set status=\"ready\" and return a COMPLETE skillSpec (every array filled with concrete strings). Leave questions empty.\n\
+     - If NO: set status=\"needs_clarification\", set understanding to ONE short sentence restating what skill you think the user wants (so they can catch a wrong direction), and return 1 to 3 option-based questions that target ONLY the input/output contract pieces you are still missing. You may return a partial skillSpec draft.\n\
+     Hard rules:\n\
+     - A SIMPLE need (e.g. \"turn my notes into a teleprompter script\") MUST be status=\"ready\" on the FIRST turn with ZERO questions.\n\
+     - NEVER ask about anything you can infer from the description. Only ask what genuinely blocks a precise input/output contract.\n\
+     - Each question must be self-contained (state the situation) and option-based.\n\
+     - When status=ready: whenToUse becomes the frontmatter description; userInput describes what the user provides; output describes in prose what the skill produces; outputParts has >=2 concrete parts; workflow has >=3 concrete steps; boundaries has >=1 limit; successCriteria has >=1 observable criterion. No placeholders, no generic \"structured agent workflow\", no empty arrays."
+}
+
 fn create_skill_start_prompt(prompt: &str, language: &str) -> String {
     let language_rule = if language == "zh" {
-        "All human-facing strings must be Chinese. Keep only identifiers such as name in English kebab-case."
+        "All human-facing strings (understanding, questions, and every skillSpec value) must be Chinese. Keep only identifiers such as name in English kebab-case."
     } else {
         "All human-facing strings must be English."
     };
     format!(
-        "Create a MySkills skill outline from the user need below.\n\
+        "You are running the FIRST turn of an adaptive clarification loop for a MySkills skill.\n\
          Return JSON only. Do not include markdown fences or explanatory text.\n\
          Set schemaVersion exactly to \"create-skill.v1\" and command exactly to \"start\".\n\
          {language_rule}\n\n\
-         Required JSON shape. Keep every key and fill every array with concrete strings:\n\
+         {}\n\n\
+         JSON shape (status drives which fields matter):\n\
 {}\n\n\
-         Requirements:\n\
-         - acceptedInputs must describe what the user will provide when invoking the skill.\n\
-         - workflow.steps must contain at least three concrete action steps.\n\
-         - successCriteria must contain at least one observable acceptance criterion.\n\
-         - questions must contain at least one option-based follow-up question.\n\
-         - Do not use placeholders, generic \"structured agent workflow\", or empty arrays.\n\n\
          User need:\n{prompt}",
+        create_skill_clarify_core_rules(),
         create_skill_start_json_contract(language)
     )
 }
@@ -7542,11 +8191,12 @@ fn create_skill_start_repair_prompt(
          The returned skillSpec MUST contain concrete, non-placeholder values for:\n\
          - name: lowercase kebab-case directory name\n\
          - description: concise trigger sentence\n\
-         - intentFrame.userJob\n\
-         - intentFrame.triggerContext\n\
-         - intentFrame.inputContract.acceptedInputs: at least one string\n\
-         - intentFrame.outputContract\n\
-         - intentFrame.workflow.steps: at least three concrete steps\n\
+         - intentFrame.whenToUse\n\
+         - intentFrame.userInput\n\
+         - intentFrame.output: a non-empty prose description of what the skill produces\n\
+         - intentFrame.outputParts: at least two concrete parts\n\
+         - intentFrame.workflow: at least three concrete steps\n\
+         - intentFrame.boundaries: at least one limit or non-goal\n\
          - intentFrame.successCriteria: at least one string\n\
          - questions: at least one option-based follow-up question\n\n\
          Use this exact JSON shape and fill all arrays with concrete strings:\n{}\n\n\
@@ -7562,33 +8212,28 @@ fn create_skill_start_json_contract(language: &str) -> &'static str {
         r#"{
   "schemaVersion": "create-skill.v1",
   "command": "start",
-  "status": "intent_draft",
+  "status": "ready | needs_clarification",
+  "understanding": "One sentence restating the skill you think the user wants (required when needs_clarification).",
   "skillSpec": {
     "name": "short-kebab-case-name",
     "description": "Use when the user needs ...",
     "language": "en",
     "intentFrame": {
-      "userJob": "The job the user needs this skill to perform.",
-      "triggerContext": "When the user should invoke this skill.",
-      "inputContract": {
-        "acceptedInputs": ["Concrete input type the user can provide"],
-        "privacyClass": "local_only"
-      },
-      "outputContract": {
-        "artifactType": "markdown",
-        "destination": "reply_only"
-      },
-      "workflow": {
-        "steps": ["Step 1", "Step 2", "Step 3"],
-        "failClosedRules": ["Ask before risky or irreversible work"]
-      },
-      "stylePreferences": ["Direct and actionable"],
-      "nonGoals": ["What this skill should not do"],
-      "successCriteria": ["Observable success criterion"]
+      "whenToUse": "When the user should invoke this skill and for what task.",
+      "userInput": "What the user provides when invoking the skill.",
+      "output": "What this skill produces for the user.",
+      "outputParts": ["First part of the output", "Second part of the output"],
+      "workflow": ["Step 1", "Step 2", "Step 3"],
+      "boundaries": ["Ask before risky or irreversible work", "What this skill should not do"],
+      "successCriteria": ["Observable success criterion"],
+      "safety": {
+        "network": "no",
+        "fileWrites": "none",
+        "overwrite": "never",
+        "privacy": "local_only",
+        "artifactType": "markdown"
+      }
     },
-    "needsNetwork": false,
-    "writesFiles": false,
-    "overwritePolicy": "never",
     "ready": false,
     "missing": ["target_context", "input_scope", "artifact", "strictness"]
   },
@@ -7603,38 +8248,36 @@ fn create_skill_start_json_contract(language: &str) -> &'static str {
       "allowFreeform": true
     }
   ]
-}"#
+}
+// When status="ready": set skillSpec.ready=true, fill every array, and return "questions": [].
+// When status="needs_clarification": fill "understanding" and return 1-3 questions that block the input/output contract.
+"#
     } else {
         r#"{
   "schemaVersion": "create-skill.v1",
   "command": "start",
-  "status": "intent_draft",
+  "status": "ready | needs_clarification",
+  "understanding": "用一句话复述你认为用户想要的技能（needs_clarification 时必填）。",
   "skillSpec": {
     "name": "short-kebab-case-name",
     "description": "当用户需要……时使用。",
     "language": "zh",
     "intentFrame": {
-      "userJob": "用户希望这个技能完成的具体工作。",
-      "triggerContext": "用户应该在什么情境下调用这个技能。",
-      "inputContract": {
-        "acceptedInputs": ["用户可以提供的具体输入类型"],
-        "privacyClass": "local_only"
-      },
-      "outputContract": {
-        "artifactType": "markdown",
-        "destination": "reply_only"
-      },
-      "workflow": {
-        "steps": ["步骤 1", "步骤 2", "步骤 3"],
-        "failClosedRules": ["涉及风险或不可逆操作前必须追问"]
-      },
-      "stylePreferences": ["直接、可执行"],
-      "nonGoals": ["这个技能不应该做的事"],
-      "successCriteria": ["可观察的验收标准"]
+      "whenToUse": "用户应该在什么情境下、为完成什么任务调用这个技能。",
+      "userInput": "用户调用时会提供什么。",
+      "output": "这个技能为用户产出什么。",
+      "outputParts": ["输出的第一部分", "输出的第二部分"],
+      "workflow": ["步骤 1", "步骤 2", "步骤 3"],
+      "boundaries": ["涉及风险或不可逆操作前必须追问", "这个技能不应该做的事"],
+      "successCriteria": ["可观察的验收标准"],
+      "safety": {
+        "network": "no",
+        "fileWrites": "none",
+        "overwrite": "never",
+        "privacy": "local_only",
+        "artifactType": "markdown"
+      }
     },
-    "needsNetwork": false,
-    "writesFiles": false,
-    "overwritePolicy": "never",
     "ready": false,
     "missing": ["target_context", "input_scope", "artifact", "strictness"]
   },
@@ -7649,7 +8292,10 @@ fn create_skill_start_json_contract(language: &str) -> &'static str {
       "allowFreeform": true
     }
   ]
-}"#
+}
+// status="ready" 时：skillSpec.ready=true，填满所有数组，并返回 "questions": []。
+// status="needs_clarification" 时：填 "understanding"，返回 1~3 个卡住输入/输出契约的选项题。
+"#
     }
 }
 
@@ -7663,27 +8309,20 @@ fn create_skill_start_quality_issues(spec: &Value, _questions: &Value) -> Vec<Va
         issues.push(json!({ "field": "description", "message": "Description is missing or placeholder-like." }));
     }
     let intent = spec.get("intentFrame").unwrap_or(&Value::Null);
-    if weak_create_skill_text(intent.get("userJob").and_then(Value::as_str), 12) {
-        issues.push(json!({ "field": "intentFrame.userJob", "message": "User job is missing." }));
+    if weak_create_skill_text(intent.get("whenToUse").and_then(Value::as_str), 12) {
+        issues.push(json!({ "field": "intentFrame.whenToUse", "message": "When-to-use is missing." }));
     }
-    if weak_create_skill_text(intent.get("triggerContext").and_then(Value::as_str), 12) {
-        issues.push(json!({ "field": "intentFrame.triggerContext", "message": "Trigger context is missing." }));
+    if weak_create_skill_text(intent.get("userInput").and_then(Value::as_str), 12) {
+        issues.push(json!({ "field": "intentFrame.userInput", "message": "User input is missing." }));
     }
-    if non_empty_array_len(
-        intent
-            .get("inputContract")
-            .and_then(|input| input.get("acceptedInputs")),
-    ) < 1
-    {
-        issues.push(json!({ "field": "intentFrame.inputContract.acceptedInputs", "message": "Accepted inputs are missing." }));
+    if weak_create_skill_text(intent.get("output").and_then(Value::as_str), 1) {
+        issues.push(json!({ "field": "intentFrame.output", "message": "Output description is missing." }));
     }
-    if non_empty_array_len(
-        intent
-            .get("workflow")
-            .and_then(|workflow| workflow.get("steps")),
-    ) < 3
-    {
-        issues.push(json!({ "field": "intentFrame.workflow.steps", "message": "Workflow needs at least three concrete steps." }));
+    if non_empty_array_len(intent.get("outputParts")) < 2 {
+        issues.push(json!({ "field": "intentFrame.outputParts", "message": "Output needs at least two concrete parts." }));
+    }
+    if non_empty_array_len(intent.get("workflow")) < 3 {
+        issues.push(json!({ "field": "intentFrame.workflow", "message": "Workflow needs at least three concrete steps." }));
     }
     if non_empty_array_len(intent.get("successCriteria")) < 1 {
         issues.push(json!({ "field": "intentFrame.successCriteria", "message": "Success criteria are missing." }));
@@ -7757,6 +8396,18 @@ fn create_skill_repair_start_spec(spec: &mut Value, prompt: &str, language: &str
     create_skill_copy_string_alias(
         spec,
         &[
+            "whenToUse",
+            "trigger",
+            "triggerContext",
+            "useWhen",
+            "activationContext",
+        ],
+        &["intentFrame", "whenToUse"],
+    );
+    create_skill_copy_string_alias(
+        spec,
+        &[
+            "userInput",
             "userJob",
             "userNeed",
             "jobToBeDone",
@@ -7765,32 +8416,17 @@ fn create_skill_repair_start_spec(spec: &mut Value, prompt: &str, language: &str
             "intent",
             "goal",
         ],
-        &["intentFrame", "userJob"],
+        &["intentFrame", "userInput"],
     );
     create_skill_copy_string_alias(
         spec,
-        &[
-            "triggerContext",
-            "trigger",
-            "whenToUse",
-            "useWhen",
-            "activationContext",
-        ],
-        &["intentFrame", "triggerContext"],
+        &["output", "result", "deliverable", "artifact"],
+        &["intentFrame", "output"],
     );
-    create_skill_copy_value_alias(spec, &["inputContract"], &["intentFrame", "inputContract"]);
-    create_skill_copy_value_alias(
-        spec,
-        &["outputContract"],
-        &["intentFrame", "outputContract"],
-    );
+    create_skill_copy_value_alias(spec, &["outputParts"], &["intentFrame", "outputParts"]);
     create_skill_copy_value_alias(spec, &["workflow"], &["intentFrame", "workflow"]);
-    create_skill_copy_value_alias(
-        spec,
-        &["stylePreferences"],
-        &["intentFrame", "stylePreferences"],
-    );
-    create_skill_copy_value_alias(spec, &["nonGoals"], &["intentFrame", "nonGoals"]);
+    create_skill_copy_value_alias(spec, &["boundaries"], &["intentFrame", "boundaries"]);
+    create_skill_copy_value_alias(spec, &["safety"], &["intentFrame", "safety"]);
     create_skill_copy_value_alias(
         spec,
         &["successCriteria"],
@@ -7799,91 +8435,112 @@ fn create_skill_repair_start_spec(spec: &mut Value, prompt: &str, language: &str
     create_skill_normalize_spec(spec);
     if let Some(value) = spec
         .get("acceptedInputs")
-        .cloned()
-        .filter(|value| value.is_array())
+        .and_then(create_skill_string_array_value)
+        .or_else(|| spec.get("inputs").and_then(create_skill_string_array_value))
     {
-        spec["intentFrame"]["inputContract"]["acceptedInputs"] = value;
+        // 旧 acceptedInputs 数组合并进 userInput 自由文本（防止旧形状丢失输入约束）。
+        create_skill_fold_inputs_into_user_input(spec, &value);
     }
     if let Some(value) = spec.get("steps").cloned().filter(|value| value.is_array()) {
-        spec["intentFrame"]["workflow"]["steps"] = value;
+        spec["intentFrame"]["workflow"] = value;
     }
     create_skill_repair_start_array_aliases(spec);
     if spec["intentFrame"]
-        .get("userJob")
+        .get("whenToUse")
         .and_then(Value::as_str)
         .is_none_or(|value| value.trim().is_empty())
     {
-        spec["intentFrame"]["userJob"] = json!(prompt.trim());
+        spec["intentFrame"]["whenToUse"] = json!(prompt.trim());
     }
     if spec["intentFrame"]
-        .get("triggerContext")
+        .get("userInput")
         .and_then(Value::as_str)
         .is_none_or(|value| value.trim().is_empty())
     {
-        spec["intentFrame"]["triggerContext"] = json!(prompt.trim());
+        spec["intentFrame"]["userInput"] = json!(prompt.trim());
     }
     create_skill_normalize_spec(spec);
     create_skill_repair_start_array_aliases(spec);
 }
 
+/// 把一组旧式 acceptedInputs 数组项折叠进 userInput 自由文本，避免迁移时丢失输入约束。
+fn create_skill_fold_inputs_into_user_input(spec: &mut Value, inputs: &Value) {
+    let Some(items) = inputs.as_array() else {
+        return;
+    };
+    let joined = items
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if joined.is_empty() {
+        return;
+    }
+    let current = spec["intentFrame"]
+        .get("userInput")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let next = if current.is_empty() {
+        joined
+    } else if current.contains(&joined) {
+        current
+    } else {
+        format!("{current}\n{joined}")
+    };
+    spec["intentFrame"]["userInput"] = json!(next);
+}
+
 fn create_skill_repair_start_array_aliases(spec: &mut Value) {
     if non_empty_array_len(
         spec.get("intentFrame")
-            .and_then(|intent| intent.get("inputContract"))
-            .and_then(|input| input.get("acceptedInputs")),
-    ) < 1
+            .and_then(|intent| intent.get("outputParts")),
+    ) < 2
     {
         if let Some(value) = create_skill_first_non_empty_string_array(
             spec,
             &[
-                &["intentFrame", "inputContract", "acceptedInputs"],
-                &["intentFrame", "inputContract", "accepted_inputs"],
-                &["intentFrame", "inputContract", "inputs"],
-                &["intentFrame", "acceptedInputs"],
-                &["intentFrame", "accepted_inputs"],
-                &["intentFrame", "inputs"],
-                &["inputContract", "acceptedInputs"],
-                &["inputContract", "accepted_inputs"],
-                &["inputContract", "inputs"],
-                &["acceptedInputs"],
-                &["accepted_inputs"],
-                &["inputs"],
-                &["materials"],
-                &["sourceMaterials"],
+                &["intentFrame", "outputParts"],
+                &["intentFrame", "output_parts"],
+                &["intentFrame", "outputComponents"],
+                &["intentFrame", "output_components"],
+                &["intentFrame", "deliverables"],
+                &["outputParts"],
+                &["output_parts"],
+                &["outputComponents"],
+                &["deliverables"],
             ],
         ) {
-            spec["intentFrame"]["inputContract"]["acceptedInputs"] = value;
+            spec["intentFrame"]["outputParts"] = value;
         }
     }
 
     if non_empty_array_len(
         spec.get("intentFrame")
-            .and_then(|intent| intent.get("workflow"))
-            .and_then(|workflow| workflow.get("steps")),
+            .and_then(|intent| intent.get("workflow")),
     ) < 3
     {
         if let Some(value) = create_skill_first_non_empty_string_array(
             spec,
             &[
-                &["intentFrame", "workflow", "steps"],
-                &["intentFrame", "workflow", "workflowSteps"],
-                &["intentFrame", "workflow", "workflow_steps"],
                 &["intentFrame", "workflow"],
-                &["intentFrame", "steps"],
+                &["intentFrame", "workflow", "steps"],
                 &["intentFrame", "workflowSteps"],
                 &["intentFrame", "workflow_steps"],
-                &["workflow", "steps"],
-                &["workflow", "workflowSteps"],
-                &["workflow", "workflow_steps"],
+                &["intentFrame", "steps"],
                 &["workflow"],
-                &["steps"],
+                &["workflow", "steps"],
                 &["workflowSteps"],
                 &["workflow_steps"],
+                &["steps"],
                 &["process"],
                 &["procedure"],
             ],
         ) {
-            spec["intentFrame"]["workflow"]["steps"] = value;
+            spec["intentFrame"]["workflow"] = value;
         }
     }
 
@@ -7916,27 +8573,29 @@ fn create_skill_repair_start_array_aliases(spec: &mut Value) {
 
     if non_empty_array_len(
         spec.get("intentFrame")
-            .and_then(|intent| intent.get("workflow"))
-            .and_then(|workflow| workflow.get("failClosedRules")),
+            .and_then(|intent| intent.get("boundaries")),
     ) < 1
     {
         if let Some(value) = create_skill_first_non_empty_string_array(
             spec,
             &[
-                &["intentFrame", "workflow", "failClosedRules"],
-                &["intentFrame", "workflow", "fail_closed_rules"],
+                &["intentFrame", "boundaries"],
                 &["intentFrame", "failClosedRules"],
                 &["intentFrame", "fail_closed_rules"],
-                &["intentFrame", "boundaries"],
+                &["intentFrame", "nonGoals"],
+                &["intentFrame", "non_goals"],
                 &["intentFrame", "guardrails"],
+                &["intentFrame", "workflow", "failClosedRules"],
+                &["intentFrame", "workflow", "fail_closed_rules"],
+                &["boundaries"],
                 &["failClosedRules"],
                 &["fail_closed_rules"],
-                &["boundaries"],
+                &["nonGoals"],
                 &["guardrails"],
                 &["safetyRules"],
             ],
         ) {
-            spec["intentFrame"]["workflow"]["failClosedRules"] = value;
+            spec["intentFrame"]["boundaries"] = value;
         }
     }
 }
@@ -8071,16 +8730,20 @@ fn create_skill_coerce_start_payload(parsed: Value, prompt: &str, language: &str
     if spec.get("intentFrame").is_none() {
         if let Some(intent) = source.get("intentFrame").or_else(|| source.get("intent")) {
             spec["intentFrame"] = intent.clone();
-        } else if source.contains_key("userJob") || source.contains_key("triggerContext") {
+        } else if source.contains_key("whenToUse")
+            || source.contains_key("userInput")
+            || source.contains_key("userJob")
+            || source.contains_key("triggerContext")
+        {
             spec["intentFrame"] = json!({
-                "userJob": source.get("userJob").and_then(Value::as_str).unwrap_or(""),
-                "triggerContext": source.get("triggerContext").and_then(Value::as_str).unwrap_or(""),
-                "inputContract": source.get("inputContract").cloned().unwrap_or_else(|| json!({ "acceptedInputs": [] })),
-                "outputContract": source.get("outputContract").cloned().unwrap_or_else(|| json!({ "artifactType": "markdown", "destination": "reply_only" })),
-                "workflow": source.get("workflow").cloned().unwrap_or_else(|| json!({ "steps": [], "failClosedRules": [] })),
-                "stylePreferences": source.get("stylePreferences").cloned().unwrap_or_else(|| json!([])),
-                "nonGoals": source.get("nonGoals").cloned().unwrap_or_else(|| json!([])),
-                "successCriteria": source.get("successCriteria").cloned().unwrap_or_else(|| json!([]))
+                "whenToUse": source.get("whenToUse").or_else(|| source.get("triggerContext")).and_then(Value::as_str).unwrap_or(""),
+                "userInput": source.get("userInput").or_else(|| source.get("userJob")).and_then(Value::as_str).unwrap_or(""),
+                "output": source.get("output").and_then(Value::as_str).unwrap_or(""),
+                "outputParts": source.get("outputParts").cloned().unwrap_or_else(|| json!([])),
+                "workflow": source.get("workflow").cloned().unwrap_or_else(|| json!([])),
+                "boundaries": source.get("boundaries").cloned().unwrap_or_else(|| json!([])),
+                "successCriteria": source.get("successCriteria").cloned().unwrap_or_else(|| json!([])),
+                "safety": source.get("safety").cloned().unwrap_or_else(|| json!({}))
             });
         }
     }
@@ -8088,24 +8751,26 @@ fn create_skill_coerce_start_payload(parsed: Value, prompt: &str, language: &str
         spec["intentFrame"] = json!({});
     }
     if spec["intentFrame"]
-        .get("userJob")
+        .get("whenToUse")
         .and_then(Value::as_str)
         .is_none_or(|value| value.trim().is_empty())
     {
-        spec["intentFrame"]["userJob"] = json!(prompt);
+        spec["intentFrame"]["whenToUse"] = json!(prompt);
     }
     if spec["intentFrame"]
-        .get("triggerContext")
+        .get("userInput")
         .and_then(Value::as_str)
         .is_none_or(|value| value.trim().is_empty())
     {
-        spec["intentFrame"]["triggerContext"] = json!(prompt);
+        spec["intentFrame"]["userInput"] = json!(prompt);
     }
     create_skill_normalize_spec(&mut spec);
     json!({
         "schemaVersion": "create-skill.v1",
         "command": "start",
         "status": source.get("status").and_then(Value::as_str).unwrap_or("intent_draft"),
+        // understanding：一行理解复述。coerce 阶段透传，下游 status envelope 会读它。
+        "understanding": source.get("understanding").cloned().unwrap_or(Value::Null),
         "intentFrame": spec.get("intentFrame").cloned().unwrap_or(Value::Null),
         "skillSpec": spec,
         "questions": source
@@ -8154,9 +8819,83 @@ fn create_skill_envelope_payload(parsed: Value, command: &str) -> AppResult<(Val
     Ok((spec, questions))
 }
 
+/// 自适应澄清循环的状态机 envelope（LLM 自评结果）。`status='ready'` 时 spec 必须完整可结晶；
+/// `status='needs_clarification'` 时 understanding 必须为一行理解复述，questions 为 1~3 个
+/// 只针对卡住的输入/输出契约的选项式问题（spec 可能只是部分草稿）。
+struct CreateSkillStatusEnvelope {
+    status: String,
+    understanding: String,
+    spec: Value,
+    questions: Value,
+}
+
+/// 读取并校验 start/clarify 的状态机 envelope。复用 schema/command 校验；按 status 分支：
+/// ready → 取完整 skillSpec；needs_clarification → spec 可缺，questions 必须有选项。
+/// 与旧 create_skill_envelope_payload 的差异是不再强制 skillSpec 存在，并多读 status/understanding。
+fn create_skill_status_envelope(
+    parsed: Value,
+    command: &str,
+) -> AppResult<CreateSkillStatusEnvelope> {
+    if parsed.get("schemaVersion").and_then(Value::as_str) != Some("create-skill.v1") {
+        return Err(AppError::new(
+            "LLM_SCHEMA_MISMATCH",
+            "Create Skill schema mismatch.",
+        ));
+    }
+    if parsed.get("command").and_then(Value::as_str) != Some(command) {
+        let actual = parsed
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        return Err(AppError::new(
+            "LLM_COMMAND_MISMATCH",
+            format!("Create Skill command mismatch: expected {command}, got {actual}."),
+        ));
+    }
+    // status：归一到两态。除了显式 'ready' / 'spec_ready'，spec.ready==true 也视为 ready。
+    let raw_status = parsed.get("status").and_then(Value::as_str).unwrap_or("");
+    let mut spec = parsed
+        .get("skillSpec")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if spec.get("intentFrame").is_none() {
+        if let Some(intent) = parsed.get("intentFrame") {
+            spec["intentFrame"] = intent.clone();
+        }
+    }
+    create_skill_normalize_spec(&mut spec);
+    let spec_self_ready = spec.get("ready").and_then(Value::as_bool) == Some(true);
+    let status = if matches!(raw_status, "ready" | "spec_ready") || spec_self_ready {
+        "ready"
+    } else {
+        "needs_clarification"
+    }
+    .to_string();
+    let understanding = parsed
+        .get("understanding")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let questions = parsed
+        .get("questions")
+        .or_else(|| parsed.get("followupQuestions"))
+        .cloned()
+        .or_else(|| parsed.get("question").map(|q| json!([q])))
+        .filter(|v| v.is_array())
+        .unwrap_or_else(|| json!([]));
+    Ok(CreateSkillStatusEnvelope {
+        status,
+        understanding,
+        spec,
+        questions,
+    })
+}
+
 fn create_skill_system_prompt(language: &str) -> String {
     format!(
-        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. If language=zh, all human-facing questions, headings, instructions, and SKILL.md body text must be Chinese; keep only identifiers and unavoidable technical terms in English. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. Final SKILL.md must begin with YAML frontmatter containing exactly name and description. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. Prefer a short procedural SKILL.md with accepted inputs, workflow, output, boundaries, and quality bar, but choose a different structure when it better fits the skill. Preserve useful creative framing as long as triggering, inputs, execution guidance, safety boundaries, and expected output are clear. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames."
+        "You are MySkills Create Skill compiler. Return JSON only with schemaVersion=create-skill.v1. Language: {language}. If language=zh, all human-facing questions, headings, instructions, and SKILL.md body text must be Chinese; keep only identifiers and unavoidable technical terms in English. Commands use this envelope: {{schemaVersion,command,status,intentFrame,skillSpec,questions,draftMarkdown,review,errors}}. Build local-first agent skills, not generic prompts. Final SKILL.md must begin with YAML frontmatter containing exactly name and description. The frontmatter description must be a concise trigger sentence that starts with or clearly means 'Use when ...'. Prefer a short procedural SKILL.md with accepted inputs, workflow, output, boundaries, and quality bar, but choose a different structure when it better fits the skill. Preserve useful creative framing as long as triggering, inputs, execution guidance, safety boundaries, and expected output are clear. Ask option-based follow-up questions only for decisions that materially change triggering, inputs, outputs, privacy, file writes, or network use. Never ask for secrets. Do not allow silent overwrite, deletion, external network, or irreversible work. Skill names must be lowercase kebab-case safe directory basenames. SAFETY GATES (hard rule): whenever the skill's safety declares network other than 'no', OR fileWrites other than 'none', OR overwrite='confirm_each_time', the generated SKILL.md '## 安全边界' / '## Boundaries' section MUST contain, for each such behavior, an explicit gate sentence using a word like 先确认/经用户授权/confirm — for example 'ask for confirmation before any file write' or '联网前先取得用户授权'. Never describe a risky behavior without its gate sentence in that section."
     )
 }
 
@@ -8177,8 +8916,8 @@ fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Val
     let destination = answers
         .get("destination")
         .and_then(Value::as_str)
-        .unwrap_or("reply_only");
-    let mut steps = vec![
+        .unwrap_or("none");
+    let mut workflow = vec![
         if language == "en" {
             "Restate the user's need as a concrete job-to-be-done and list missing constraints."
         } else {
@@ -8200,14 +8939,17 @@ fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Val
             "输出产物，并附上简短质量检查和仍未解决的问题。"
         },
     ];
-    if answers.get("strictness").and_then(Value::as_str) == Some("confirm") {
-        steps.push(if language == "en" {
+    let overwrite = if answers.get("strictness").and_then(Value::as_str) == Some("confirm") {
+        workflow.push(if language == "en" {
             "Ask for confirmation before any file write."
         } else {
             "任何文件写入前都先请求确认。"
         });
-    }
-    let accepted_input = match (language, input_scope) {
+        "confirm_each_time"
+    } else {
+        "never"
+    };
+    let user_input = match (language, input_scope) {
         ("en", "files_or_links") => "User-provided files, paths, links, and a short description of the desired result.",
         ("en", "codebase") => "Repository context, changed files, command output, and the user's review goal.",
         ("en", "materials") => "Source notes, drafts, transcripts, references, or other user-selected material.",
@@ -8230,6 +8972,25 @@ fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Val
             truncate(prompt, 96)
         )
     };
+    let output = if language == "en" {
+        format!(
+            "A reviewable {} the user can act on, plus the assumptions made along the way.",
+            artifact
+        )
+    } else {
+        format!("一份可复核的 {} 产物，附带过程中所做的关键假设。", artifact)
+    };
+    let output_parts = if language == "en" {
+        json!([
+            format!("The main {} body.", artifact),
+            "Assumptions, skipped work, and remaining decision points."
+        ])
+    } else {
+        json!([
+            format!("{} 产物主体。", artifact),
+            "关键假设、未执行的工作，以及仍需用户决定的问题。"
+        ])
+    };
     let missing = ["target_context", "input_scope", "artifact", "strictness"]
         .iter()
         .filter(|key| answers.get(**key).and_then(Value::as_str).is_none())
@@ -8240,30 +9001,25 @@ fn create_skill_local_spec(prompt: &str, language: &str, answers: &Value) -> Val
         "description": description,
         "language": language,
         "intentFrame": {
-            "userJob": prompt,
-            "triggerContext": prompt,
-            "inputContract": {
-                "acceptedInputs": [accepted_input],
-                "privacyClass": "local_only"
-            },
-            "outputContract": {
-                "artifactType": artifact,
-                "destination": destination
-            },
-            "workflow": {
-                "steps": steps,
-                "failClosedRules": [
-                    if language == "en" { "Do not invent missing constraints; ask when a decision affects files, privacy, or irreversible work." } else { "不要编造缺失约束；当决策影响文件、隐私或不可逆操作时必须追问。" },
-                    if language == "en" { "Never expose secrets or send local content externally without explicit permission." } else { "不得泄露密钥；未经明确许可不得把本地内容发送到外部服务。" }
-                ]
-            },
-            "stylePreferences": [if language == "en" { "Direct, actionable, concise." } else { "直接、可执行、简洁。" }],
-            "nonGoals": [if language == "en" { "Do not become a general-purpose editor or hidden automation runner." } else { "不做通用编辑器，也不做隐藏自动执行器。" }],
-            "successCriteria": [if language == "en" { "The user can run the skill on a similar need without re-explaining the whole workflow." } else { "用户下次遇到类似需求时，可以直接调用技能而无需重新解释整套流程。" }]
+            "whenToUse": prompt,
+            "userInput": user_input,
+            "output": output,
+            "outputParts": output_parts,
+            "workflow": workflow,
+            "boundaries": [
+                if language == "en" { "Do not invent missing constraints; ask when a decision affects files, privacy, or irreversible work." } else { "不要编造缺失约束；当决策影响文件、隐私或不可逆操作时必须追问。" },
+                if language == "en" { "Never expose secrets or send local content externally without explicit permission." } else { "不得泄露密钥；未经明确许可不得把本地内容发送到外部服务。" },
+                if language == "en" { "Do not become a general-purpose editor or hidden automation runner." } else { "不做通用编辑器，也不做隐藏自动执行器。" }
+            ],
+            "successCriteria": [if language == "en" { "The user can run the skill on a similar need without re-explaining the whole workflow." } else { "用户下次遇到类似需求时，可以直接调用技能而无需重新解释整套流程。" }],
+            "safety": {
+                "network": "no",
+                "fileWrites": if destination == "none" { "none" } else { destination },
+                "overwrite": overwrite,
+                "privacy": "local_only",
+                "artifactType": artifact
+            }
         },
-        "needsNetwork": false,
-        "writesFiles": destination != "reply_only",
-        "overwritePolicy": "never",
         "ready": missing.is_empty(),
         "missing": missing
     })
@@ -8317,6 +9073,7 @@ fn create_skill_default_questions(spec: &Value) -> Value {
 
 fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) {
     match question_id {
+        // target_context 调整 whenToUse 措辞（旧 description 派生逻辑迁到 description + whenToUse）。
         "target_context" => {
             let context = if answer.contains("code_review")
                 || answer.contains("代码")
@@ -8329,25 +9086,26 @@ fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) 
                 "general_agent_workflow"
             };
             let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
-            let user_job = spec
+            let user_input = spec
                 .get("intentFrame")
-                .and_then(|i| i.get("userJob"))
+                .and_then(|i| i.get("userInput"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
             spec["description"] = json!(if lang == "en" {
                 format!(
                     "Use when the user needs a repeatable workflow for {}: {}",
                     context_label(context, lang),
-                    truncate(user_job, 96)
+                    truncate(user_input, 96)
                 )
             } else {
                 format!(
                     "当用户需要一个可复用的{}技能时使用：{}",
                     context_label(context, lang),
-                    truncate(user_job, 96)
+                    truncate(user_input, 96)
                 )
             });
         }
+        // input_scope 直写 userInput 自由文本。
         "input_scope" => {
             let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
             let input = if answer.contains("codebase") || answer.contains("仓库") {
@@ -8370,8 +9128,9 @@ fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) 
             } else {
                 "用户对困境、反复需求或期望结果的粗略自然语言描述。"
             };
-            spec["intentFrame"]["inputContract"]["acceptedInputs"] = json!([input]);
+            spec["intentFrame"]["userInput"] = json!(input);
         }
+        // artifact → safety.artifactType。
         "artifact" => {
             let artifact = if answer.contains("code_patch") || answer.contains("代码") {
                 "code_patch"
@@ -8380,17 +9139,18 @@ fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) 
             } else {
                 "markdown"
             };
-            spec["intentFrame"]["outputContract"]["artifactType"] = json!(artifact);
+            spec["intentFrame"]["safety"]["artifactType"] = json!(artifact);
         }
+        // strictness → safety.overwrite（并补一条边界确认句）。
         "strictness" => {
             let policy = if answer.contains("confirm") || answer.contains("确认") {
                 "confirm_each_time"
             } else {
                 "never"
             };
-            spec["overwritePolicy"] = json!(policy);
+            spec["intentFrame"]["safety"]["overwrite"] = json!(policy);
             if policy == "confirm_each_time" {
-                let rules = spec["intentFrame"]["workflow"]["failClosedRules"]
+                let rules = spec["intentFrame"]["boundaries"]
                     .as_array()
                     .cloned()
                     .unwrap_or_default();
@@ -8403,7 +9163,7 @@ fn create_skill_apply_answer(spec: &mut Value, question_id: &str, answer: &str) 
                 if !next.iter().any(|v| v.as_str() == Some(confirm_rule)) {
                     next.push(json!(confirm_rule));
                 }
-                spec["intentFrame"]["workflow"]["failClosedRules"] = json!(next);
+                spec["intentFrame"]["boundaries"] = json!(next);
             }
         }
         _ => {}
@@ -8433,34 +9193,124 @@ fn context_label(context: &str, language: &str) -> &'static str {
     }
 }
 
+/// 旧→新惰性迁移读取层：把任何旧形状的 intentFrame 字段映射到新 5 支柱 + safety，
+/// 这样旧草稿 DB 行无需 SQL 迁移即可被新 schema 读取。
+/// 决策2：output 为空时保持空并把 "output" 加入 missing（强制用户/LLM 重填输出段）。
 fn create_skill_normalize_spec(spec: &mut Value) {
     if !spec.get("intentFrame").is_some_and(Value::is_object) {
         spec["intentFrame"] = json!({});
     }
-    for (key, fallback) in [
-        ("inputContract", json!({ "acceptedInputs": [] })),
-        (
+
+    // --- whenToUse：空 → 取旧 triggerContext，再退回旧 description。 ---
+    create_skill_intent_string_migrate(
+        spec,
+        "whenToUse",
+        &[&["intentFrame", "triggerContext"]],
+        spec.get("description").and_then(Value::as_str).map(String::from),
+    );
+
+    // --- userInput：空 → 旧 userJob，再把旧 acceptedInputs 折叠进来。 ---
+    create_skill_intent_string_migrate(
+        spec,
+        "userInput",
+        &[
+            &["intentFrame", "userJob"],
+            &["intentFrame", "userIntention"],
+        ],
+        None,
+    );
+    if let Some(legacy_inputs) = spec
+        .get("intentFrame")
+        .and_then(|i| i.get("inputContract"))
+        .and_then(|c| c.get("acceptedInputs"))
+        .and_then(create_skill_string_array_value)
+    {
+        create_skill_fold_inputs_into_user_input(spec, &legacy_inputs);
+    }
+
+    // --- output：自由正文。决策2：空就留空，并把 "output" 加进 missing。 ---
+    if !spec["intentFrame"]
+        .get("output")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        spec["intentFrame"]["output"] = json!("");
+    }
+
+    // --- outputParts：保持已有数组，否则空数组。 ---
+    if !spec["intentFrame"].get("outputParts").is_some_and(Value::is_array) {
+        spec["intentFrame"]["outputParts"] = json!([]);
+    }
+
+    // --- workflow：去掉 .steps 嵌套（旧 workflow.steps → 顶层 workflow 数组）。 ---
+    if !spec["intentFrame"].get("workflow").is_some_and(Value::is_array) {
+        let migrated = spec
+            .get("intentFrame")
+            .and_then(|i| i.get("workflow"))
+            .and_then(|w| w.get("steps"))
+            .and_then(create_skill_string_array_value)
+            .unwrap_or_else(|| json!([]));
+        spec["intentFrame"]["workflow"] = migrated;
+    }
+
+    // --- boundaries：合并旧 failClosedRules + nonGoals。 ---
+    if !spec["intentFrame"].get("boundaries").is_some_and(Value::is_array) {
+        let mut merged: Vec<Value> = Vec::new();
+        for path in [
+            ["intentFrame", "workflow", "failClosedRules"].as_slice(),
+            ["intentFrame", "failClosedRules"].as_slice(),
+            ["intentFrame", "nonGoals"].as_slice(),
+        ] {
+            if let Some(arr) = create_skill_get_path(spec, path).and_then(Value::as_array) {
+                for item in arr {
+                    if let Some(text) = item.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        if !merged.iter().any(|v| v.as_str() == Some(text)) {
+                            merged.push(json!(text));
+                        }
+                    }
+                }
+            }
+        }
+        spec["intentFrame"]["boundaries"] = json!(merged);
+    }
+
+    if !spec["intentFrame"].get("successCriteria").is_some_and(Value::is_array) {
+        spec["intentFrame"]["successCriteria"] = json!([]);
+    }
+
+    // --- safety：从旧顶层 needsNetwork / outputContract / overwritePolicy / privacyClass / artifactType 组装。 ---
+    create_skill_normalize_safety(spec);
+
+    // 清理旧结构，避免悬空的旧形状嵌套被下游误读。
+    if let Some(intent) = spec
+        .get_mut("intentFrame")
+        .and_then(Value::as_object_mut)
+    {
+        for legacy in [
+            "userJob",
+            "userIntention",
+            "triggerContext",
+            "inputContract",
             "outputContract",
-            json!({ "artifactType": "markdown", "destination": "reply_only" }),
-        ),
-        ("workflow", json!({ "steps": [], "failClosedRules": [] })),
-    ] {
-        if !spec["intentFrame"].get(key).is_some_and(Value::is_object) {
-            spec["intentFrame"][key] = fallback;
+            "stylePreferences",
+            "nonGoals",
+            "failClosedRules",
+        ] {
+            intent.remove(legacy);
         }
     }
-    for key in ["stylePreferences", "nonGoals", "successCriteria"] {
-        if !spec["intentFrame"].get(key).is_some_and(Value::is_array) {
-            spec["intentFrame"][key] = json!([]);
+    if let Some(obj) = spec.as_object_mut() {
+        for legacy in ["needsNetwork", "writesFiles", "overwritePolicy"] {
+            obj.remove(legacy);
         }
     }
+
     if let Some(name) = spec.get("name").and_then(Value::as_str) {
         spec["name"] = json!(slugify_skill_name(name));
     } else {
         let fallback_name = spec
             .get("intentFrame")
-            .and_then(|v| v.get("userJob"))
-            .or_else(|| spec.get("intentFrame").and_then(|v| v.get("userIntention")))
+            .and_then(|v| v.get("userInput"))
             .and_then(Value::as_str)
             .or_else(|| spec.get("description").and_then(Value::as_str))
             .map(slugify_skill_name)
@@ -8478,42 +9328,213 @@ fn create_skill_normalize_spec(spec: &mut Value) {
         .and_then(Value::as_str)
         .is_none_or(|description| create_skill_description_needs_repair(lang, description));
     if should_repair_description {
-        let user_job = spec
+        let when_to_use = spec
             .get("intentFrame")
-            .and_then(|v| v.get("userJob"))
-            .or_else(|| spec.get("intentFrame").and_then(|v| v.get("userIntention")))
+            .and_then(|v| v.get("whenToUse"))
             .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                spec.get("intentFrame")
+                    .and_then(|v| v.get("userInput"))
+                    .and_then(Value::as_str)
+            })
             .unwrap_or("structured agent workflow");
         spec["description"] = json!(if lang == "en" {
             format!(
                 "Use when the user needs a repeatable workflow: {}",
-                truncate(user_job, 120)
+                truncate(when_to_use, 120)
             )
         } else {
             format!(
                 "当用户需要一个可复用技能时使用：{}",
-                truncate(user_job, 120)
+                truncate(when_to_use, 120)
             )
         });
     }
+
+    // 决策2：output 仍为空 → 把 "output" 加进 missing，强制重填输出段。
+    let output_missing = spec["intentFrame"]
+        .get("output")
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty());
+    let mut missing: Vec<Value> = spec
+        .get("missing")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let has_output_key = missing.iter().any(|item| item.as_str() == Some("output"));
+    if output_missing && !has_output_key {
+        missing.push(json!("output"));
+    } else if !output_missing && has_output_key {
+        missing.retain(|item| item.as_str() != Some("output"));
+    }
+    spec["missing"] = json!(missing);
+
     let required_content_ready = spec
         .get("description")
         .and_then(Value::as_str)
         .is_some_and(|s| !s.trim().is_empty())
         && spec
             .get("intentFrame")
-            .and_then(|v| v.get("userJob"))
+            .and_then(|v| v.get("whenToUse"))
             .and_then(Value::as_str)
-            .is_some_and(|s| !s.trim().is_empty());
+            .is_some_and(|s| !s.trim().is_empty())
+        && !output_missing;
     let ready = required_content_ready
         && spec
             .get("missing")
             .and_then(Value::as_array)
             .is_none_or(|items| items.is_empty());
     spec["ready"] = json!(ready);
-    if ready && spec.get("missing").is_none_or(|v| !v.is_array()) {
-        spec["missing"] = json!([]);
+}
+
+/// 若 intentFrame.<key> 为空，依次尝试旧路径与额外 fallback 文本填入。
+fn create_skill_intent_string_migrate(
+    spec: &mut Value,
+    key: &str,
+    legacy_paths: &[&[&str]],
+    extra_fallback: Option<String>,
+) {
+    if spec["intentFrame"]
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return;
     }
+    let migrated = legacy_paths
+        .iter()
+        .filter_map(|path| create_skill_get_path(spec, path).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(String::from)
+        .or_else(|| extra_fallback.filter(|value| !value.trim().is_empty()));
+    spec["intentFrame"][key] = json!(migrated.unwrap_or_default());
+}
+
+/// 组装 safety 块：已有对象保留并补全缺省键；否则从旧顶层/旧 outputContract 字段迁移。
+fn create_skill_normalize_safety(spec: &mut Value) {
+    let legacy_needs_network = spec.get("needsNetwork").and_then(Value::as_bool);
+    let legacy_writes_files = spec.get("writesFiles").and_then(Value::as_bool);
+    let legacy_overwrite = spec
+        .get("overwritePolicy")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let legacy_destination = spec
+        .get("intentFrame")
+        .and_then(|i| i.get("outputContract"))
+        .and_then(|c| c.get("destination"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let legacy_artifact = spec
+        .get("intentFrame")
+        .and_then(|i| i.get("outputContract"))
+        .and_then(|c| c.get("artifactType"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let legacy_privacy = spec
+        .get("intentFrame")
+        .and_then(|i| i.get("inputContract"))
+        .and_then(|c| c.get("privacyClass"))
+        .and_then(Value::as_str)
+        .map(String::from);
+
+    let existing = spec
+        .get("intentFrame")
+        .and_then(|i| i.get("safety"))
+        .filter(|v| v.is_object())
+        .cloned();
+
+    let network = existing
+        .as_ref()
+        .and_then(|s| s.get("network"))
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "no" | "reads_only" | "reads_writes"))
+        .map(String::from)
+        .unwrap_or_else(|| match legacy_needs_network {
+            Some(true) => "reads_only".to_string(),
+            _ => "no".to_string(),
+        });
+
+    let file_writes = existing
+        .as_ref()
+        .and_then(|s| s.get("fileWrites"))
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "none" | "same_folder" | "user_selected"))
+        .map(String::from)
+        .unwrap_or_else(|| match legacy_destination.as_deref() {
+            Some("same_folder") => "same_folder".to_string(),
+            Some("user_selected") => "user_selected".to_string(),
+            _ => {
+                if legacy_writes_files == Some(true) {
+                    "user_selected".to_string()
+                } else {
+                    "none".to_string()
+                }
+            }
+        });
+
+    let overwrite = existing
+        .as_ref()
+        .and_then(|s| s.get("overwrite"))
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "never" | "confirm_each_time"))
+        .map(String::from)
+        .or_else(|| {
+            legacy_overwrite
+                .as_deref()
+                .filter(|v| matches!(*v, "never" | "confirm_each_time"))
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "never".to_string());
+
+    let privacy = existing
+        .as_ref()
+        .and_then(|s| s.get("privacy"))
+        .and_then(Value::as_str)
+        .filter(|v| matches!(*v, "local_only" | "may_send_summary" | "may_send_content"))
+        .map(String::from)
+        .or_else(|| {
+            legacy_privacy
+                .as_deref()
+                .filter(|v| {
+                    matches!(*v, "local_only" | "may_send_summary" | "may_send_content")
+                })
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "local_only".to_string());
+
+    let artifact_type = existing
+        .as_ref()
+        .and_then(|s| s.get("artifactType"))
+        .and_then(Value::as_str)
+        .filter(|v| {
+            matches!(
+                *v,
+                "markdown" | "report" | "checklist" | "code_patch" | "file" | "other"
+            )
+        })
+        .map(String::from)
+        .or_else(|| {
+            legacy_artifact
+                .as_deref()
+                .filter(|v| {
+                    matches!(
+                        *v,
+                        "markdown" | "report" | "checklist" | "code_patch" | "file" | "other"
+                    )
+                })
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "markdown".to_string());
+
+    spec["intentFrame"]["safety"] = json!({
+        "network": network,
+        "fileWrites": file_writes,
+        "overwrite": overwrite,
+        "privacy": privacy,
+        "artifactType": artifact_type
+    });
 }
 
 #[cfg(test)]
@@ -8528,24 +9549,40 @@ fn create_skill_local_markdown(spec: &Value) -> String {
         .unwrap_or("Use when the user needs a structured agent workflow.");
     let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
     let intent = spec.get("intentFrame").unwrap_or(&Value::Null);
-    let user_job = intent
-        .get("userJob")
+    let when_to_use = intent
+        .get("whenToUse")
         .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or(description);
-    let inputs = intent
-        .get("inputContract")
-        .and_then(|c| c.get("acceptedInputs"))
+    let user_input = intent
+        .get("userInput")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(if lang == "en" {
+            "A rough description of the need and desired result."
+        } else {
+            "用户对需求和期望结果的粗略描述。"
+        });
+    let output_body = intent
+        .get("output")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| {
+            if lang == "en" {
+                "A reviewable artifact the user can act on.".to_string()
+            } else {
+                "一份用户可直接采用的可复核产物。".to_string()
+            }
+        });
+    let output_parts = intent
+        .get("outputParts")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let output = intent
-        .get("outputContract")
-        .and_then(|c| c.get("artifactType"))
-        .and_then(Value::as_str)
-        .unwrap_or("markdown");
     let steps = intent
         .get("workflow")
-        .and_then(|w| w.get("steps"))
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
@@ -8554,14 +9591,8 @@ fn create_skill_local_markdown(spec: &Value) -> String {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let rules = intent
-        .get("workflow")
-        .and_then(|w| w.get("failClosedRules"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let non_goals = intent
-        .get("nonGoals")
+    let boundaries = intent
+        .get("boundaries")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
@@ -8597,14 +9628,7 @@ fn create_skill_local_markdown(spec: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let input_block = list_block(
-        &inputs,
-        if lang == "en" {
-            "A rough description of the need and desired result."
-        } else {
-            "用户对需求和期望结果的粗略描述。"
-        },
-    );
+    let input_block = format!("- {}", user_input.replace('\n', "\n- "));
     let criteria_block = if criteria.is_empty() {
         "- The result is actionable.\n- Ambiguities are surfaced before risky work.".to_string()
     } else {
@@ -8615,42 +9639,29 @@ fn create_skill_local_markdown(spec: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let boundary_block = [
-        list_block(
-            &rules,
-            if lang == "en" {
-                "Ask before file writes, deletion, external network, or irreversible work."
-            } else {
-                "文件写入、删除、外部联网或不可逆操作前必须追问。"
-            },
-        ),
-        list_block(
-            &non_goals,
-            if lang == "en" {
-                "Do not act as a hidden automation runner."
-            } else {
-                "不做隐藏自动执行器。"
-            },
-        ),
-    ]
-    .join("\n");
+    let parts_block = list_block(
+        &output_parts,
+        if lang == "en" {
+            "The main artifact body."
+        } else {
+            "产物主体。"
+        },
+    );
+    let boundary_block = list_block(
+        &boundaries,
+        if lang == "en" {
+            "Ask before file writes, deletion, external network, or irreversible work."
+        } else {
+            "文件写入、删除、外部联网或不可逆操作前必须追问。"
+        },
+    );
     let confirm_line = if lang == "en" {
         "Confirm the task framing"
     } else {
         "确认任务框架"
     };
-    let produce_line = if lang == "en" {
-        format!("- Produce `{output}` unless the user asks for a different concrete artifact.")
-    } else {
-        format!("- 默认产出 `{output}`，除非用户明确要求其他具体产物。")
-    };
-    let assumptions_line = if lang == "en" {
-        "- State assumptions, skipped work, and any remaining decision points."
-    } else {
-        "- 说明关键假设、未执行的工作，以及仍需用户决定的问题。"
-    };
     format!(
-        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n## {input_title}\n\n{input_block}\n\n## {section_title}\n\n1. {confirm_line}: {user_job}\n{step_block}\n\n## {output_title}\n\n{produce_line}\n{assumptions_line}\n\n## {safety_title}\n\n{boundary_block}\n\n## {quality_title}\n\n{criteria_block}\n",
+        "---\nname: {name}\ndescription: {}\n---\n\n# {name}\n\n## {input_title}\n\n{input_block}\n\n## {section_title}\n\n1. {confirm_line}: {when_to_use}\n{step_block}\n\n## {output_title}\n\n{output_body}\n\n{parts_block}\n\n## {safety_title}\n\n{boundary_block}\n\n## {quality_title}\n\n{criteria_block}\n",
         yaml_quote(description)
     )
 }
@@ -8718,6 +9729,192 @@ fn create_skill_repair_frontmatter(markdown: &str, spec: &Value) -> String {
         yaml_quote(final_description),
         body.trim_start()
     )
+}
+
+/// 承重数据真相：安全门 create_skill_review_markdown 只扫 markdown 正文里的 gate 词，
+/// 不读 safety 枚举。所以当 safety 声明了写文件/覆盖/联网时，必须确保正文 ## 安全边界 段
+/// 含有对应的 gate 句（确认/授权/confirm 等），否则确定性地往该段注入对应确认规则。
+fn ensure_safety_gates(markdown: &str, safety: Option<&Value>, spec: &Value) -> String {
+    let Some(safety) = safety else {
+        return markdown.to_string();
+    };
+    let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
+    let network = safety.get("network").and_then(Value::as_str).unwrap_or("no");
+    let file_writes = safety
+        .get("fileWrites")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    let overwrite = safety
+        .get("overwrite")
+        .and_then(Value::as_str)
+        .unwrap_or("never");
+
+    // 收集需要 gate 的规则句：每句同时含「行为触发词 + gate 词」，命中安全门的同行规则。
+    let mut required: Vec<&str> = Vec::new();
+    if network != "no" {
+        required.push(if lang == "en" {
+            "Before any external network request, ask for explicit user confirmation."
+        } else {
+            "联网请求前先取得用户确认授权。"
+        });
+    }
+    if file_writes != "none" {
+        required.push(if lang == "en" {
+            "Before writing any file, confirm with the user first."
+        } else {
+            "写入文件前先与用户确认。"
+        });
+    }
+    if overwrite == "confirm_each_time" {
+        required.push(if lang == "en" {
+            "Before overwriting or deleting anything, ask for explicit confirmation each time."
+        } else {
+            "覆盖或删除任何内容前，每次都先请求用户确认。"
+        });
+    }
+    if required.is_empty() {
+        return markdown.to_string();
+    }
+
+    let normalized = markdown.replace("\r\n", "\n");
+    let lower = normalized.to_lowercase();
+    // 已被安全门视为「已 gate / 已声明禁止」的行为不再注入，避免重复堆叠。
+    let gate_terms = [
+        "ask",
+        "confirm",
+        "permission",
+        "explicit user",
+        "user approval",
+        "用户确认",
+        "确认",
+        "许可",
+        "授权",
+        "明确同意",
+        "先询问",
+    ];
+    let network_triggers = [
+        "curl ",
+        "wget ",
+        "fetch(",
+        "http://",
+        "https://",
+        "network request",
+        "external source",
+        "external network",
+        "联网",
+        "外部网络",
+        "网络请求",
+    ];
+    let write_triggers = [
+        "overwrite",
+        "delete ",
+        "delete.",
+        "rm -r",
+        "cp -f",
+        "写入文件",
+        "修改文件",
+        "覆盖",
+        "删除",
+    ];
+    let mut missing: Vec<&str> = Vec::new();
+    for rule in &required {
+        let rule_lower = rule.to_lowercase();
+        let is_network = create_skill_line_has_any(&rule_lower, &network_triggers);
+        let is_write = create_skill_line_has_any(&rule_lower, &write_triggers);
+        // 若正文里相应风险已被 gate 或已声明禁止，则不再补这条。
+        let already_covered = if is_network {
+            !create_skill_has_ungated_line(&lower, &network_triggers, &gate_terms)
+                && create_skill_markdown_has_gated_trigger(&lower, &network_triggers, &gate_terms)
+        } else if is_write {
+            !create_skill_has_ungated_line(&lower, &write_triggers, &gate_terms)
+                && create_skill_markdown_has_gated_trigger(&lower, &write_triggers, &gate_terms)
+        } else {
+            false
+        };
+        if !already_covered {
+            missing.push(rule);
+        }
+    }
+    if missing.is_empty() {
+        return normalized;
+    }
+
+    let safety_headings = [
+        "## boundaries",
+        "## boundary",
+        "## safety",
+        "## guardrails",
+        "## constraints",
+        "## non-goals",
+        "## 安全边界",
+        "## 边界",
+        "## 约束",
+    ];
+    let bullet_block = missing
+        .iter()
+        .map(|rule| format!("- {rule}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let heading_idx = lines.iter().position(|line| {
+        let trimmed = line.trim().to_lowercase();
+        safety_headings.iter().any(|h| trimmed.starts_with(h))
+    });
+
+    match heading_idx {
+        Some(idx) => {
+            // 找到该段末尾（下一个 ## 标题前），在那里追加 gate bullet。
+            let mut insert_at = lines.len();
+            for (offset, line) in lines.iter().enumerate().skip(idx + 1) {
+                if line.trim_start().starts_with("## ") {
+                    insert_at = offset;
+                    break;
+                }
+            }
+            let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+            out.insert(insert_at, bullet_block);
+            // 保证 bullet 与后续 section 之间有空行。
+            if insert_at + 1 < out.len() && !out[insert_at + 1].trim().is_empty() {
+                out.insert(insert_at + 1, String::new());
+            }
+            let mut joined = out.join("\n");
+            if normalized.ends_with('\n') && !joined.ends_with('\n') {
+                joined.push('\n');
+            }
+            joined
+        }
+        None => {
+            // 没有边界段则新建一个。
+            let heading = if lang == "en" {
+                "## Boundaries"
+            } else {
+                "## 安全边界"
+            };
+            let mut joined = normalized.trim_end().to_string();
+            joined.push_str(&format!("\n\n{heading}\n\n{bullet_block}\n"));
+            joined
+        }
+    }
+}
+
+/// 正文里是否存在「触发词 + gate 词」同/邻行的已 gate 描述（与安全门检测同语义，正向版）。
+fn create_skill_markdown_has_gated_trigger(
+    markdown_lower: &str,
+    triggers: &[&str],
+    gates: &[&str],
+) -> bool {
+    let lines = markdown_lower.lines().collect::<Vec<_>>();
+    for (idx, line) in lines.iter().enumerate() {
+        if !create_skill_line_has_any(line, triggers) {
+            continue;
+        }
+        if create_skill_line_has_gate(line, gates)
+            || (idx > 0 && create_skill_line_has_gate(lines[idx - 1], gates))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn frontmatter_scalar(frontmatter: &str, key: &str) -> Option<String> {
@@ -9053,43 +10250,61 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
         "明确同意",
         "先询问",
     ];
-    let no_silent_network = !create_skill_has_ungated_line(
+    // 网络触发词：泛指任何提到网络/URL 的句子（用于 warning 级提示与 ensure_safety_gates）。
+    let network_triggers = [
+        "curl ",
+        "wget ",
+        "fetch(",
+        "http://",
+        "https://",
+        "network request",
+        "external source",
+        "external network",
+        "联网",
+        "外部网络",
+        "网络请求",
+    ];
+    // 只有「未 gate 且像真实祈使命令」的联网行才 blocking；纯引用 URL/说明句最多 warning。
+    let has_ungated_network_command = create_skill_has_ungated_command_line(
         &lower,
-        &[
-            "curl ",
-            "wget ",
-            "fetch(",
-            "http://",
-            "https://",
-            "network request",
-            "external source",
-            "external network",
-            "联网",
-            "外部网络",
-            "网络请求",
-        ],
+        &network_triggers,
         &gate_terms,
+        CREATE_SKILL_NETWORK_COMMAND_TOKENS,
     );
-    if !no_silent_network {
+    let has_ungated_network_mention =
+        create_skill_has_ungated_line(&lower, &network_triggers, &gate_terms);
+    let no_silent_network = !has_ungated_network_command;
+    if has_ungated_network_command {
         blocking.push(json!({"code": "NETWORK_NEEDS_GATE", "message": "Network use must require explicit user permission."}));
+    } else if has_ungated_network_mention {
+        warnings.push(json!({"code": "NETWORK_MENTION_UNGATED", "message": "This skill mentions network/URLs without a confirmation gate. If it actually makes requests, add an explicit confirmation step."}));
     }
-    let no_silent_overwrite = !create_skill_has_ungated_line(
+    // 写入/删除触发词：泛指任何提到写入/覆盖/删除的句子。
+    let write_triggers = [
+        "overwrite",
+        "delete ",
+        "delete.",
+        "rm -r",
+        "cp -f",
+        "写入文件",
+        "修改文件",
+        "覆盖",
+        "删除",
+    ];
+    // 只有「未 gate 且像真实破坏性命令」的写入行才 blocking；讲"不要覆盖"之类说明句最多 warning。
+    let has_ungated_write_command = create_skill_has_ungated_command_line(
         &lower,
-        &[
-            "overwrite",
-            "delete ",
-            "delete.",
-            "rm -r",
-            "cp -f",
-            "写入文件",
-            "修改文件",
-            "覆盖",
-            "删除",
-        ],
+        &write_triggers,
         &gate_terms,
+        CREATE_SKILL_WRITE_COMMAND_TOKENS,
     );
-    if !no_silent_overwrite {
+    let has_ungated_write_mention =
+        create_skill_has_ungated_line(&lower, &write_triggers, &gate_terms);
+    let no_silent_overwrite = !has_ungated_write_command;
+    if has_ungated_write_command {
         blocking.push(json!({"code": "WRITE_NEEDS_GATE", "message": "Destructive writes must require confirmation."}));
+    } else if has_ungated_write_mention {
+        warnings.push(json!({"code": "WRITE_MENTION_UNGATED", "message": "This skill mentions writes/overwrite/delete without a confirmation gate. If it actually modifies files, add an explicit confirmation step."}));
     }
     let no_dangerous_shell = !["rm -rf", "sudo ", "chmod 777"]
         .iter()
@@ -9125,15 +10340,13 @@ fn create_skill_review_markdown(markdown: &str, expected_basename: Option<&str>)
     })
 }
 
+/// 可安装性只看 blocking：质量类 warning（缺 Inputs/Output 段等）仍可安装，
+/// 仅作非阻塞提示展示。前端 plan/安装按钮的 disabled 条件需与此保持一致。
 fn create_skill_review_is_installable(review: &Value) -> bool {
     review
         .get("blocking")
         .and_then(Value::as_array)
         .is_some_and(|items| items.is_empty())
-        && review
-            .get("warnings")
-            .and_then(Value::as_array)
-            .is_some_and(|items| items.is_empty())
 }
 
 fn create_skill_line_has_any(line: &str, needles: &[&str]) -> bool {
@@ -9194,6 +10407,71 @@ fn create_skill_has_ungated_line(markdown_lower: &str, triggers: &[&str], gates:
     let lines = markdown_lower.lines().collect::<Vec<_>>();
     for (idx, line) in lines.iter().enumerate() {
         if !create_skill_line_has_any(line, triggers) {
+            continue;
+        }
+        if create_skill_line_denies_risky_action(line) {
+            continue;
+        }
+        let gated_here = create_skill_line_has_gate(line, gates);
+        let gated_before = idx > 0 && create_skill_line_has_gate(lines[idx - 1], gates);
+        if !gated_here && !gated_before {
+            return true;
+        }
+    }
+    false
+}
+
+/// 真实可执行祈使命令标记：一行只有同时命中触发词「且」含这些可执行动作 token 时，
+/// 才算「真的会跑」的命令——纯引用 URL、讲"不要覆盖"之类的说明句不在此列。
+/// 联网类：curl/wget/fetch( 等会发起请求的调用。
+const CREATE_SKILL_NETWORK_COMMAND_TOKENS: &[&str] = &[
+    "curl ",
+    "wget ",
+    "fetch(",
+    "http.get",
+    "http.post",
+    "requests.get",
+    "requests.post",
+    "urllib",
+    "axios",
+];
+/// 写入/破坏类：会真正删/覆盖文件的命令调用。
+const CREATE_SKILL_WRITE_COMMAND_TOKENS: &[&str] = &[
+    "rm -r",
+    "rm -f",
+    "cp -f",
+    "mv -f",
+    "truncate ",
+    "unlink",
+    "shutil.rmtree",
+    "os.remove",
+    "fs.rm",
+    "fs.unlink",
+];
+/// 通用危险 shell 动作：无论网络还是写入，出现即视为可执行命令。
+const CREATE_SKILL_DANGEROUS_COMMAND_TOKENS: &[&str] = &["rm -rf", "sudo ", "chmod ", "chown "];
+
+/// 该行是否像一条会真正执行的命令（含可执行动作 token）。
+fn create_skill_line_is_command(line: &str, command_tokens: &[&str]) -> bool {
+    create_skill_line_has_any(line, command_tokens)
+        || create_skill_line_has_any(line, CREATE_SKILL_DANGEROUS_COMMAND_TOKENS)
+}
+
+/// 是否存在「未 gate 且像真实命令」的触发行——只有这种才升级为 blocking。
+/// 与 create_skill_has_ungated_line 同样保留 gate 词豁免（同行/上一行）和否定句豁免，
+/// 只是额外要求该行确实是可执行命令，把"仅仅提及"降级出 blocking 范围。
+fn create_skill_has_ungated_command_line(
+    markdown_lower: &str,
+    triggers: &[&str],
+    gates: &[&str],
+    command_tokens: &[&str],
+) -> bool {
+    let lines = markdown_lower.lines().collect::<Vec<_>>();
+    for (idx, line) in lines.iter().enumerate() {
+        if !create_skill_line_has_any(line, triggers) {
+            continue;
+        }
+        if !create_skill_line_is_command(line, command_tokens) {
             continue;
         }
         if create_skill_line_denies_risky_action(line) {
@@ -9821,7 +11099,7 @@ fn ai_parse_json_object(text: &str) -> Value {
 }
 
 #[tauri::command]
-pub fn ai_bulk_categorize(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn ai_bulk_categorize(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let raw_ids = payload
         .as_ref()
         .and_then(|p| p.get("skillIds"))
@@ -10322,7 +11600,7 @@ pub fn ai_library_overview_get(
     Ok(json!({ "overview": overview, "stale": stale, "currentSetHash": set_hash }))
 }
 #[tauri::command]
-pub fn ai_library_overview_generate(
+pub async fn ai_library_overview_generate(
     payload: Option<Value>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
