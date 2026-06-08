@@ -3,6 +3,21 @@
 
 # Changelog
 
+## 0.2.3 — 2026-06-09
+
+### 新功能
+- feat: SKILL.md panel — one-click copy button in skill detail (#40)
+- feat: Settings → About — author credit + clickable GitHub repo link, via a
+  new `app_open_url` command (https-only) (#40)
+
+### 改进
+- improve: the launch "update available" toast now has a "前往更新 / Update now"
+  action that jumps to Settings → Updates (#40)
+
+### 移除
+- chore: remove the Electron migration feature end to end — UI, backend
+  commands, IPC, i18n, and the migration smoke scaffolding (#39)
+
 ## 0.2.2 — 2026-06-08
 
 ### 新功能
