@@ -141,6 +141,11 @@ fn ensure_schema_compatibility(conn: &Connection) -> AppResult<()> {
     )?;
     ensure_column(conn, "skill_creation_drafts", "understanding", "TEXT")?;
 
+    // Filesystem creation time per location, for the "recently added" sort.
+    // Existing rows are backfilled on the next scan (update_location writes
+    // birthtime); until then "recently added" falls back to skills.created_at.
+    ensure_column(conn, "skill_locations", "birthtime", "INTEGER")?;
+
     conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('canonical_platform', 'shared')",
         [],

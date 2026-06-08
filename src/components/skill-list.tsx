@@ -141,9 +141,8 @@ function SortSelect({
         className="h-8 appearance-none rounded border border-input bg-background py-0.5 pl-3 pr-8 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
       >
         <option value="name">{t('list.sort.name')}</option>
-        <option value="updated">{t('list.sort.updated')}</option>
         <option value="created">{t('list.sort.created')}</option>
-        <option value="mtime">{t('list.sort.mtime')}</option>
+        <option value="updated">{t('list.sort.updated')}</option>
       </select>
       <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-muted-foreground" />
     </div>

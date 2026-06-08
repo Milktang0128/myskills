@@ -181,7 +181,7 @@ export const zh: Dict = {
   // ── 技能列表 / 卡片 ─────────────────────────────────────────────────────
   'list.subtitle.count': '{{count}} 项技能',
   'list.sort.label': '排序方式',
-  'list.sort.tooltip': '新增 = 第一次进入 MySkills 的时间。修改 = SKILL.md 内容被改动的时间。mtime = 文件系统时间戳。',
+  'list.sort.tooltip': '新增 = 技能文件的创建时间(最新创建在前)。修改 = 技能文件的最近改动时间。均按真实文件时间排序。',
   'list.sort.name': '名字 A→Z',
   'list.sort.updated': '最近修改',
   'list.sort.created': '最近新增',

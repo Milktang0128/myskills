@@ -250,8 +250,8 @@ fn reconcile(
         )?;
         let mut insert_location = tx.prepare(
             "INSERT INTO skill_locations
-             (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             (skill_id, platform_id, install_path, real_path, is_symlink, is_broken_link, is_disabled, content_hash, mtime, birthtime, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         let mut update_location = tx.prepare(
             "UPDATE skill_locations SET
@@ -262,8 +262,9 @@ fn reconcile(
                is_disabled = ?5,
                content_hash = ?6,
                mtime = ?7,
-               last_seen_at = ?8
-             WHERE id = ?9",
+               birthtime = ?8,
+               last_seen_at = ?9
+             WHERE id = ?10",
         )?;
 
         for d in discovered {
@@ -323,6 +324,7 @@ fn reconcile(
                     d.is_disabled as i64,
                     d.parsed.content_hash,
                     d.parsed.mtime,
+                    d.parsed.birthtime,
                     scanned_at,
                     location_id
                 ])?;
@@ -338,6 +340,7 @@ fn reconcile(
                     d.is_disabled as i64,
                     d.parsed.content_hash,
                     d.parsed.mtime,
+                    d.parsed.birthtime,
                     scanned_at
                 ])?;
                 seen_location_ids.insert(tx.last_insert_rowid());
@@ -435,6 +438,7 @@ mod tests {
               is_disabled INTEGER NOT NULL DEFAULT 0,
               content_hash TEXT,
               mtime INTEGER,
+              birthtime INTEGER,
               last_seen_at INTEGER NOT NULL,
               UNIQUE(platform_id, install_path)
             );
@@ -505,6 +509,7 @@ mod tests {
                 size_bytes: 10,
                 file_count: 1,
                 mtime: 1,
+                birthtime: 1,
             },
         }
     }

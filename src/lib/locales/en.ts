@@ -179,7 +179,7 @@ export const en = {
   // ── Skill list / card ───────────────────────────────────────────────────
   'list.subtitle.count': '{{count}} skills',
   'list.sort.label': 'Sort by',
-  'list.sort.tooltip': 'Added = first time MySkills saw this skill. Updated = SKILL.md content changed. mtime = filesystem timestamp.',
+  'list.sort.tooltip': 'Added = the skill files’ creation time (newest first). Updated = the skill files’ last-modified time. Both sort by real filesystem times.',
   'list.sort.name': 'Name A→Z',
   'list.sort.updated': 'Recently updated',
   'list.sort.created': 'Recently added',

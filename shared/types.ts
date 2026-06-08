@@ -78,11 +78,13 @@ export interface SkillFilter {
 }
 
 /**
- * Sort options for the skill list.
- *   name    — alphabetical by skill name (default; stable, predictable)
- *   updated — most-recently-changed first (SKILL.md content hash bumped)
- *   created — most-recently-added first (first time MySkills saw this skill)
- *   mtime   — most-recent filesystem mtime (closest to "user edited it")
+ * Sort options for the skill list. created/updated sort by REAL filesystem
+ * times (birthtime / mtime), not DB scan times — a fresh bulk import stamps
+ * every row with one scan moment, so DB times would degenerate to ties.
+ *   name    — alphabetical by skill name (stable, predictable)
+ *   created — most-recently-added first (max location birthtime; the default)
+ *   updated — most-recently-modified first (max location mtime)
+ *   mtime   — retained alias of updated for back-compat; not shown in the UI
  */
 export type SkillSort = 'name' | 'updated' | 'created' | 'mtime';
 
