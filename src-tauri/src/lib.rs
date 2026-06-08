@@ -2,7 +2,6 @@ mod commands;
 mod db;
 mod error;
 #[allow(dead_code)]
-mod migration;
 mod paths;
 mod scanner;
 mod secret_vault;
@@ -54,8 +53,6 @@ pub fn run() {
             commands::scenarios_export,
             commands::scenarios_import,
             commands::scenarios_create_from_cluster,
-            commands::migration_discover,
-            commands::migration_confirm,
             commands::scan_run,
             commands::scan_last_result,
             commands::coverage_matrix,
@@ -116,7 +113,6 @@ fn init_state(app: &tauri::AppHandle) -> AppResult<AppState> {
     };
     let preview = is_preview_runtime(app);
     let paths = AppPaths::new(AppPaths::runtime_data_dir(default_app_data, preview))?;
-    maybe_prepare_stable_migration(&paths, preview)?;
     let db = db::init_pool(&paths.db_path)?;
     let mut last_scan = None;
     if let Ok(mut conn) = db.get() {
@@ -199,57 +195,6 @@ fn is_preview_runtime(app: &tauri::AppHandle) -> bool {
         return false;
     }
     app.config().identifier == TAURI_PREVIEW_IDENTIFIER
-}
-
-fn maybe_prepare_stable_migration(paths: &AppPaths, preview: bool) -> AppResult<()> {
-    let env_confirmation_file = std::env::var("MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE")
-        .ok()
-        .filter(|path| !path.trim().is_empty())
-        .map(std::path::PathBuf::from);
-    let confirmation_from_env = env_confirmation_file.is_some();
-    let default_confirmation_file = migration::confirmation_file_path(&paths.user_data_dir);
-    let confirmation_file = env_confirmation_file.or_else(|| {
-        default_confirmation_file
-            .exists()
-            .then_some(default_confirmation_file)
-    });
-    let legacy_source_db = std::env::var("MYSKILLS_STABLE_MIGRATE_FROM_ELECTRON_DB")
-        .ok()
-        .filter(|path| !path.trim().is_empty());
-    let Some(confirmation_file) = confirmation_file else {
-        if legacy_source_db.is_some() {
-            return Err(crate::error::AppError::new(
-                "MIGRATION_CONFIRMATION_REQUIRED",
-                "Stable migration requires MYSKILLS_STABLE_MIGRATE_CONFIRMATION_FILE with a confirmed source hash",
-            ));
-        }
-        return Ok(());
-    };
-    if preview {
-        return Err(crate::error::AppError::new(
-            "MIGRATION_PREVIEW_DISABLED",
-            "Electron DB migration is disabled for Tauri preview builds",
-        ));
-    }
-    let timestamp = db::now_ms();
-    if paths.db_path.exists() {
-        if migration::stable_target_already_migrated(&paths.user_data_dir)? {
-            if !confirmation_from_env {
-                let _ = std::fs::remove_file(&confirmation_file);
-            }
-            return Ok(());
-        }
-        migration::preserve_replaceable_target_db(&paths.user_data_dir, timestamp)?;
-    }
-    migration::prepare_confirmed_stable_import(
-        &confirmation_file,
-        &paths.user_data_dir,
-        timestamp,
-    )?;
-    if !confirmation_from_env {
-        let _ = std::fs::remove_file(&confirmation_file);
-    }
-    Ok(())
 }
 
 fn apply_internal_smoke_fixture(
