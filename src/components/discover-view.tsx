@@ -1282,9 +1282,9 @@ function formatInstalls(n: number): string {
 }
 
 /**
- * Electron's ipcMain.handle serializes thrown plain-object errors into the
- * renderer's Error.message via a JSON-ish stringification. We extract the
- * `code` field heuristically and map known catalog codes to friendly text.
+ * Desktop command bridges can surface backend errors as stringified messages.
+ * We extract the `code` field heuristically and map known catalog codes to
+ * friendly text.
  *
  * @param phase Which user-facing operation failed — used only to disambiguate
  *              CONTENT_NOT_FOUND messaging (preview vs install).
@@ -1311,7 +1311,7 @@ function friendlyCatalogError(err: unknown, phase: 'search' | 'preview' | 'insta
 function extractCode(message: string): string | null {
   const m = message.match(/"code"\s*:\s*"([A-Z_]+)"/);
   if (m) return m[1] ?? null;
-  // Some Electron versions surface the code as a bare token in the message.
+  // Some bridge versions surface the code as a bare token in the message.
   const known = [
     'CATALOG_UNAVAILABLE',
     'CATALOG_RATE_LIMITED',

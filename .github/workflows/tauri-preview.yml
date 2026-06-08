@@ -1,0 +1,196 @@
+name: Tauri Preview
+
+on:
+  push:
+    branches:
+      - tauri/refactor-v0.2
+  pull_request:
+    branches:
+      - tauri/refactor-v0.2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity-check:
+    name: Parity check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04, windows-latest]
+    env:
+      # Windows packaged launches can spend a while initializing WebView/runtime
+      # state on cold GitHub runners before the fixture DB is observable.
+      MYSKILLS_SMOKE_TIMEOUT_MS: 90000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            sqlite3 \
+            xvfb
+
+      - name: Install Windows SQLite CLI
+        if: runner.os == 'Windows'
+        run: choco install sqlite --no-progress
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Audit command bridge parity
+        run: npm run check:commands
+
+      - name: Rust format
+        run: npm run check:rust:fmt
+
+      - name: Rust clippy
+        run: npm run check:rust:clippy
+
+      - name: Rust tests
+        run: npm run test:rust
+
+      - name: Workbench UI smoke
+        run: npm run smoke:ui:workbench
+
+      - name: Onboarding UI smoke
+        run: npm run smoke:ui:onboarding
+
+      - name: Tauri build
+        if: runner.os != 'Windows'
+        run: npm run build:tauri
+
+      - name: Tauri build (Windows NSIS)
+        if: runner.os == 'Windows'
+        run: npm run build:tauri -- --bundles nsis
+
+      - name: Packaged fixture smoke
+        if: runner.os != 'Linux'
+        run: npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
+
+      - name: Packaged fixture smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run smoke:tauri:launch -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
+
+      - name: Stable migration packaged smoke
+        if: runner.os != 'Linux'
+        run: npm run smoke:tauri:launch -- --stable-migration-smoke
+
+      - name: Stable migration packaged smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run smoke:tauri:launch -- --stable-migration-smoke
+
+      - name: Mounted DMG fixture smoke
+        if: runner.os == 'macOS'
+        run: npm run smoke:tauri:dmg -- --history-smoke --workflow-smoke --coverage-smoke --frontend-smoke
+
+      - name: Build signed updater artifacts (macOS app archive)
+        if: github.event_name != 'pull_request' && runner.os == 'macOS'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build:tauri:updater -- --bundles app
+
+      - name: Build signed updater artifacts (Windows NSIS)
+        if: github.event_name != 'pull_request' && runner.os == 'Windows'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build:tauri:updater -- --bundles nsis
+
+      - name: Build signed updater artifacts (Linux AppImage)
+        if: github.event_name != 'pull_request' && runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run build:tauri:updater -- --bundles appimage
+
+      - name: Upload updater artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-updater-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.app.tar.gz.sig
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.AppImage.sig
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.deb.sig
+            src-tauri/target/release/bundle/**/*.rpm
+            src-tauri/target/release/bundle/**/*.rpm.sig
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/**/*.msi.sig
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.exe.sig
+          if-no-files-found: error
+
+  publish-preview-updater:
+    name: Publish preview updater release
+    needs: parity-check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Download updater artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tauri-updater-*
+          path: dist/tauri-updater-artifacts
+
+      - name: Generate latest.json
+        run: npm run updater:manifest -- --artifacts-dir dist/tauri-updater-artifacts --tag tauri-preview --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view tauri-preview >/dev/null 2>&1; then
+            gh release create tauri-preview \
+              --prerelease \
+              --title "Tauri Preview" \
+              --notes "Automated MySkills Tauri preview updater channel."
+          fi
+          mapfile -t assets < <(find dist/tauri-updater-artifacts -type f | sort)
+          gh release upload tauri-preview "${assets[@]}" --clobber

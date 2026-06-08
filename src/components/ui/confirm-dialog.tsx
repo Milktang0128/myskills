@@ -11,7 +11,7 @@
  *      focuses Cancel by default for `tone="destructive"`.
  *
  *   2. Style: native dialogs ignore our theme + i18n styling and look
- *      out-of-place inside an Electron renderer.
+ *      out-of-place inside the desktop WebView.
  *
  * Usage:
  *

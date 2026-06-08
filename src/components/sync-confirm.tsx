@@ -40,6 +40,7 @@ interface Props {
   canonicalPlatform: PlatformId;
   onOpenChange: (open: boolean) => void;
   onApplied: (result: SyncExecuteResult) => void;
+  onExecute?: (token: string) => Promise<SyncExecuteResult>;
 }
 
 export function SyncConfirm({
@@ -48,6 +49,7 @@ export function SyncConfirm({
   canonicalPlatform,
   onOpenChange,
   onApplied,
+  onExecute,
 }: Props) {
   const t = useT();
   const [submitting, setSubmitting] = useState(false);
@@ -77,6 +79,8 @@ export function SyncConfirm({
   const title =
     plan.operation === 'promote_to_canonical'
       ? t('syncConfirm.title.promote')
+      : plan.operation === 'create_skill'
+      ? t('syncConfirm.title.createSkill')
       : plan.operation === 'disable'
       ? t('syncConfirm.title.disable')
       : plan.operation === 'enable'
@@ -85,6 +89,8 @@ export function SyncConfirm({
   const subtitle =
     plan.operation === 'promote_to_canonical'
       ? t('syncConfirm.subtitle.promoteFull', { platform: canonicalPlatform })
+      : plan.operation === 'create_skill'
+      ? t('syncConfirm.subtitle.createSkill', { platform: canonicalPlatform })
       : plan.operation === 'disable'
       ? t('syncConfirm.subtitle.disable')
       : plan.operation === 'enable'
@@ -97,7 +103,7 @@ export function SyncConfirm({
     setError(null);
     try {
       const result = await Promise.race([
-        api.sync.execute(plan.token),
+        onExecute ? onExecute(plan.token) : api.sync.execute(plan.token),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(t('syncConfirm.timedOut'))), EXECUTE_TIMEOUT_MS),
         ),

@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 
 // Note on fonts: we cannot use `next/font` here because it rejects the
 // relative `assetPrefix: './'` set in next.config.mjs (which is required for
-// Electron's file:// loading). Falling back to system fonts — SF Pro Text on
+// Desktop static bundle loading). Falling back to system fonts — SF Pro Text on
 // macOS gives us a close-to-Inter look without bundling font files. If we
 // later need exact-Inter rendering, the next step is to download .woff2 files
 // into public/fonts/ and declare @font-face rules in globals.css (sidestepping

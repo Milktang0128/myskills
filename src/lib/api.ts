@@ -1,10 +1,23 @@
 /**
- * Typed wrapper around window.myskills (defined by preload.ts).
- * Renderer code never touches IPC primitives — only this module.
+ * Typed wrapper around the desktop bridge.
+ * Renderer code never touches transport primitives — only this module.
+ *
+ * Tauri is the primary runtime on the v0.2 branch. We still expose a
+ * `window.myskills` compatibility object so the existing components'
+ * bridge-ready checks can stay unchanged while the backend moves from
+ * Electron IPC to Tauri commands.
  */
-import { IPC } from '@shared/ipc-channels';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
+import { check, type Update } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { IPC, type IpcChannel, type IpcEventChannel } from '@shared/ipc-channels';
 import type {
   AiScenarioSuggestion,
+  AiJob,
+  AppUpdateInfo,
+  AppUpdateInstallProgress,
   AppStats,
   BulkCategorizeApplyResult,
   BulkCategorizePlan,
@@ -13,6 +26,16 @@ import type {
   CoverageMatrix,
   CreateFromClusterRequest,
   CreateFromClusterResult,
+  CreateSkillDraft,
+  CreateSkillExecuteResult,
+  CreateSkillGenerateResult,
+  CreateSkillPlanResult,
+  CreateSkillQuestion,
+  CreateSkillReviewReport,
+  CreateSkillSpec,
+  CreateSkillStartResult,
+  ElectronMigrationCandidate,
+  ElectronMigrationConfirmationResult,
   LibraryOverview,
   LibraryOverviewSnapshot,
   LlmChatRequest,
@@ -74,14 +97,211 @@ declare global {
   }
 }
 
+const COMMANDS: Record<IpcChannel, string> = {
+  [IPC.platforms.list]: 'platforms_list',
+  [IPC.platforms.update]: 'platforms_update',
+  [IPC.platforms.create]: 'platforms_create',
+  [IPC.platforms.delete]: 'platforms_delete',
+  [IPC.platforms.probe]: 'platforms_probe',
+  [IPC.platforms.pickDir]: 'platforms_pick_dir',
+  [IPC.platforms.knownCandidates]: 'platforms_known_candidates',
+  [IPC.platforms.openDir]: 'platforms_open_dir',
+
+  [IPC.skills.list]: 'skills_list',
+  [IPC.skills.get]: 'skills_get',
+  [IPC.skills.openLocation]: 'skills_open_location',
+  [IPC.skills.copyLocationPath]: 'skills_copy_location_path',
+  [IPC.skills.readLocation]: 'skills_read_location',
+
+  [IPC.scenarios.list]: 'scenarios_list',
+  [IPC.scenarios.create]: 'scenarios_create',
+  [IPC.scenarios.update]: 'scenarios_update',
+  [IPC.scenarios.delete]: 'scenarios_delete',
+  [IPC.scenarios.addSkill]: 'scenarios_add_skill',
+  [IPC.scenarios.removeSkill]: 'scenarios_remove_skill',
+  [IPC.scenarios.export]: 'scenarios_export',
+  [IPC.scenarios.import]: 'scenarios_import',
+  [IPC.scenarios.createFromCluster]: 'scenarios_create_from_cluster',
+
+  [IPC.migration.discover]: 'migration_discover',
+  [IPC.migration.confirm]: 'migration_confirm',
+
+  [IPC.scan.run]: 'scan_run',
+  [IPC.scan.lastResult]: 'scan_last_result',
+  [IPC.coverage.matrix]: 'coverage_matrix',
+
+  [IPC.sync.plan]: 'sync_plan',
+  [IPC.sync.planToggleDisabled]: 'sync_plan_toggle_disabled',
+  [IPC.sync.execute]: 'sync_execute',
+  [IPC.sync.history]: 'sync_history',
+  [IPC.sync.rollback]: 'sync_rollback',
+
+  [IPC.catalog.search]: 'catalog_search',
+  [IPC.catalog.preview]: 'catalog_preview',
+  [IPC.catalog.planInstall]: 'catalog_plan_install',
+  [IPC.catalog.enrichDescriptions]: 'catalog_enrich_descriptions',
+
+  [IPC.settings.get]: 'settings_get',
+  [IPC.settings.set]: 'settings_set',
+  [IPC.settings.stats]: 'settings_stats',
+  [IPC.settings.cleanupBackups]: 'settings_cleanup_backups',
+
+  [IPC.llm.getConfig]: 'llm_get_config',
+  [IPC.llm.setConfig]: 'llm_set_config',
+  [IPC.llm.setApiKey]: 'llm_set_api_key',
+  [IPC.llm.deleteApiKey]: 'llm_delete_api_key',
+  [IPC.llm.chat]: 'llm_chat',
+  [IPC.llm.testConnection]: 'llm_test_connection',
+  [IPC.llm.getFeatures]: 'llm_get_features',
+  [IPC.llm.setFeatures]: 'llm_set_features',
+
+  [IPC.ai.jobGet]: 'ai_job_get',
+  [IPC.ai.jobLatest]: 'ai_job_latest',
+  [IPC.ai.getSuggestionsForSkill]: 'ai_get_suggestions_for_skill',
+  [IPC.ai.acceptSuggestion]: 'ai_accept_suggestion',
+  [IPC.ai.dismissSuggestion]: 'ai_dismiss_suggestion',
+  [IPC.ai.queueStatus]: 'ai_queue_status',
+  [IPC.ai.createSkillStart]: 'ai_create_skill_start',
+  [IPC.ai.createSkillStartJob]: 'ai_create_skill_start_job',
+  [IPC.ai.createSkillGet]: 'ai_create_skill_get',
+  [IPC.ai.createSkillRefine]: 'ai_create_skill_refine',
+  [IPC.ai.createSkillAnswer]: 'ai_create_skill_answer',
+  [IPC.ai.createSkillGenerate]: 'ai_create_skill_generate',
+  [IPC.ai.createSkillReview]: 'ai_create_skill_review',
+  [IPC.ai.createSkillPlan]: 'ai_create_skill_plan',
+  [IPC.ai.createSkillExecute]: 'ai_create_skill_execute',
+  [IPC.ai.createSkillDiscard]: 'ai_create_skill_discard',
+  [IPC.ai.bulkCategorize]: 'ai_bulk_categorize',
+  [IPC.ai.applyBulkCategorization]: 'ai_apply_bulk_categorization',
+  [IPC.ai.libraryOverviewGet]: 'ai_library_overview_get',
+  [IPC.ai.libraryOverviewGenerate]: 'ai_library_overview_generate',
+  [IPC.ai.libraryOverviewGenerateJob]: 'ai_library_overview_generate_job',
+};
+
+function normalizeApiError(err: unknown): Error & { code?: string; detail?: unknown } {
+  if (err instanceof Error) return err as Error & { code?: string; detail?: unknown };
+  if (typeof err === 'object' && err !== null) {
+    const e = err as { code?: unknown; message?: unknown; detail?: unknown };
+    const wrapped = new Error(typeof e.message === 'string' ? e.message : JSON.stringify(err)) as Error & {
+      code?: string;
+      detail?: unknown;
+    };
+    if (typeof e.code === 'string') wrapped.code = e.code;
+    if ('detail' in e) wrapped.detail = e.detail;
+    return wrapped;
+  }
+  return new Error(String(err));
+}
+
+async function call(channel: string, payload?: unknown): Promise<unknown> {
+  const command = COMMANDS[channel as IpcChannel];
+  if (!command) throw new Error(`Channel "${channel}" is not allowed`);
+  try {
+    return await invoke(command, { payload });
+  } catch (err) {
+    throw normalizeApiError(err);
+  }
+}
+
+function onEvent(channel: string, cb: (data: unknown) => void): () => void {
+  const allowed = Object.values(IPC.events).includes(channel as IpcEventChannel);
+  if (!allowed) throw new Error(`Event channel "${channel}" is not allowed`);
+
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  void listen(channel, (event) => cb(event.payload))
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    })
+    .catch((err) => {
+      console.error(`Failed to subscribe to ${channel}`, err);
+    });
+
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
+}
+
+function installTauriBridge(): void {
+  if (typeof window === 'undefined') return;
+  if (window.myskills) return;
+  window.myskills = { invoke: call, on: onEvent };
+}
+
+installTauriBridge();
+
+export function useApiReady(): boolean {
+  return typeof window !== 'undefined' && !!window.myskills;
+}
+
 function bridge(): BridgeApi {
   if (typeof window === 'undefined' || !window.myskills) {
-    throw new Error('IPC bridge unavailable — running outside Electron?');
+    throw new Error('Desktop bridge unavailable — running outside Tauri?');
   }
   return window.myskills;
 }
 
+let pendingUpdate: Update | null = null;
+
+function updateToInfo(update: Update | null, currentVersion?: string): AppUpdateInfo {
+  if (!update) {
+    return {
+      available: false,
+      currentVersion: currentVersion ?? '',
+      version: null,
+    };
+  }
+  return {
+    available: true,
+    currentVersion: update.currentVersion,
+    version: update.version,
+    date: update.date,
+    body: update.body,
+  };
+}
+
 export const api = {
+  app: {
+    version: async () => getVersion(),
+  },
+  updates: {
+    check: async () => {
+      const update = await check();
+      pendingUpdate = update;
+      if (update) return updateToInfo(update);
+      const currentVersion = await getVersion().catch(() => '');
+      return updateToInfo(null, currentVersion);
+    },
+    downloadAndInstall: async (onProgress?: (progress: AppUpdateInstallProgress) => void) => {
+      if (!pendingUpdate) throw new Error('No pending update. Check for updates first.');
+      let downloadedBytes = 0;
+      await pendingUpdate.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          downloadedBytes = 0;
+          onProgress?.({
+            event: 'Started',
+            downloadedBytes,
+            contentLength: event.data.contentLength,
+          });
+        } else if (event.event === 'Progress') {
+          downloadedBytes += event.data.chunkLength;
+          onProgress?.({
+            event: 'Progress',
+            downloadedBytes,
+          });
+        } else {
+          onProgress?.({
+            event: 'Finished',
+            downloadedBytes,
+          });
+        }
+      });
+      pendingUpdate = null;
+    },
+    relaunch: async () => relaunch(),
+  },
   platforms: {
     list: () => bridge().invoke(IPC.platforms.list) as Promise<Platform[]>,
     update: (id: string, skillsDir: string) =>
@@ -99,6 +319,8 @@ export const api = {
         alreadyRegistered: boolean;
         registeredAs?: string;
       }>,
+    pickDir: (startDir?: string) =>
+      bridge().invoke(IPC.platforms.pickDir, { startDir }) as Promise<{ path: string | null }>,
     knownCandidates: () =>
       bridge().invoke(IPC.platforms.knownCandidates) as Promise<
         Array<{ id: string; label: string; defaultDir: string; description: string }>
@@ -113,6 +335,8 @@ export const api = {
       bridge().invoke(IPC.skills.openLocation, { locationId, kind }) as Promise<{ ok: true; path: string }>,
     copyLocationPath: (locationId: number, kind: 'install' | 'target' = 'install') =>
       bridge().invoke(IPC.skills.copyLocationPath, { locationId, kind }) as Promise<{ ok: true; path: string }>,
+    readLocation: (locationId: number) =>
+      bridge().invoke(IPC.skills.readLocation, { locationId }) as Promise<{ content: string; path: string }>,
   },
   scenarios: {
     list: () => bridge().invoke(IPC.scenarios.list) as Promise<Scenario[]>,
@@ -136,11 +360,23 @@ export const api = {
     createFromCluster: (req: CreateFromClusterRequest) =>
       bridge().invoke(IPC.scenarios.createFromCluster, req) as Promise<CreateFromClusterResult>,
   },
+  migration: {
+    discover: (extraDirs?: string[]) =>
+      bridge().invoke(
+        IPC.migration.discover,
+        extraDirs?.length ? { extraDirs } : undefined,
+      ) as Promise<ElectronMigrationCandidate[]>,
+    confirm: (candidate: ElectronMigrationCandidate) =>
+      bridge().invoke(IPC.migration.confirm, {
+        sourceDb: candidate.dbPath,
+        backupRoot: candidate.backupRoot,
+        sourceSha256: candidate.sourceSha256,
+      }) as Promise<ElectronMigrationConfirmationResult>,
+  },
   scan: {
     run: () => bridge().invoke(IPC.scan.run) as Promise<ScanResult>,
     lastResult: () => bridge().invoke(IPC.scan.lastResult) as Promise<ScanResult | null>,
   },
-  // Result shape mirrors electron/sync/backup-cleanup.ts BackupCleanupResult.
   // Inlined here so the renderer doesn't have to import a backend module type.
   settings: {
     get: (key: string) => bridge().invoke(IPC.settings.get, { key }) as Promise<string | null>,
@@ -159,8 +395,10 @@ export const api = {
     matrix: () => bridge().invoke(IPC.coverage.matrix) as Promise<CoverageMatrix>,
   },
   sync: {
-    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[] }>) =>
+    planFromCanonical: (requests: Array<{ skillId: string; targetPlatformIds?: PlatformId[]; sourcePlatformId?: PlatformId; forceReplace?: boolean }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'sync_from_canonical', requests }) as Promise<SyncPlan>,
+    planCopyToPlatform: (requests: Array<{ skillId: string; targetPlatformId: PlatformId }>) =>
+      bridge().invoke(IPC.sync.plan, { kind: 'copy_to_platform', requests }) as Promise<SyncPlan>,
     planPromote: (requests: Array<{ skillId: string; sourceLocationId?: number }>) =>
       bridge().invoke(IPC.sync.plan, { kind: 'promote_to_canonical', requests }) as Promise<SyncPlan>,
     planToggleDisabled: (
@@ -219,6 +457,10 @@ export const api = {
       bridge().invoke(IPC.llm.setFeatures, toggles) as Promise<LlmFeatureToggles>,
   },
   ai: {
+    jobGet: <T = unknown>(jobId: string) =>
+      bridge().invoke(IPC.ai.jobGet, { jobId }) as Promise<AiJob<T>>,
+    jobLatest: <T = unknown>(kind: string, key?: string) =>
+      bridge().invoke(IPC.ai.jobLatest, { kind, key }) as Promise<AiJob<T> | null>,
     getSuggestionsForSkill: (skillId: string) =>
       bridge().invoke(IPC.ai.getSuggestionsForSkill, { skillId }) as Promise<AiScenarioSuggestion[]>,
     acceptSuggestion: (suggestionId: number) =>
@@ -227,6 +469,40 @@ export const api = {
       bridge().invoke(IPC.ai.dismissSuggestion, { suggestionId }) as Promise<{ ok: true }>,
     queueStatus: () =>
       bridge().invoke(IPC.ai.queueStatus) as Promise<{ pending: number; schedulerRunning: boolean }>,
+    createSkill: {
+      start: (input: { prompt: string; language?: 'zh' | 'en' }) =>
+        bridge().invoke(IPC.ai.createSkillStart, input) as Promise<CreateSkillStartResult>,
+      startJob: (input: { prompt: string; language?: 'zh' | 'en' }) =>
+        bridge().invoke(IPC.ai.createSkillStartJob, input) as Promise<AiJob<CreateSkillStartResult>>,
+      get: (draftId: string) =>
+        bridge().invoke(IPC.ai.createSkillGet, { draftId }) as Promise<CreateSkillDraft>,
+      refine: (input: { draftId: string; skillSpec: CreateSkillSpec; targetBasename?: string }) =>
+        bridge().invoke(IPC.ai.createSkillRefine, input) as Promise<CreateSkillDraft>,
+      answer: (input: { draftId: string; questionId: string; answer: string }) =>
+        bridge().invoke(IPC.ai.createSkillAnswer, input) as Promise<{
+          draft: CreateSkillDraft;
+          nextQuestion: CreateSkillQuestion | null;
+          aiUsed: boolean;
+        }>,
+      generate: (input: { draftId: string; skillSpec?: CreateSkillSpec }) =>
+        bridge().invoke(IPC.ai.createSkillGenerate, input) as Promise<CreateSkillGenerateResult>,
+      review: (input: { draftId: string; markdown?: string; targetBasename?: string }) =>
+        bridge().invoke(IPC.ai.createSkillReview, input) as Promise<{
+          draft: CreateSkillDraft;
+          review: CreateSkillReviewReport;
+        }>,
+      plan: (input: {
+        draftId: string;
+        markdown?: string;
+        targetBasename: string;
+        targetPlatformIds: PlatformId[];
+        targetScenarioIds?: number[];
+      }) => bridge().invoke(IPC.ai.createSkillPlan, input) as Promise<CreateSkillPlanResult>,
+      execute: (input: { draftId: string; token: string; targetScenarioIds?: number[] }) =>
+        bridge().invoke(IPC.ai.createSkillExecute, input) as Promise<CreateSkillExecuteResult>,
+      discard: (draftId: string) =>
+        bridge().invoke(IPC.ai.createSkillDiscard, { draftId }) as Promise<{ ok: true }>,
+    },
     /**
      * Build a categorization plan for a set of skills. ONE LLM call (or a
      * few batches for large sets). Returns a plan the user previews + edits
@@ -246,6 +522,8 @@ export const api = {
     /** Run the LLM, replace the cache, return the fresh overview. */
     libraryOverviewGenerate: (language: 'zh' | 'en') =>
       bridge().invoke(IPC.ai.libraryOverviewGenerate, { language }) as Promise<LibraryOverview>,
+    libraryOverviewGenerateJob: (language: 'zh' | 'en') =>
+      bridge().invoke(IPC.ai.libraryOverviewGenerateJob, { language }) as Promise<AiJob<LibraryOverview>>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

@@ -1,9 +1,9 @@
 /**
- * Shared types between Electron main process and Next.js renderer.
- * Keep this file dependency-free — it is imported by both processes.
+ * Shared types between the desktop backend and Next.js renderer.
+ * Keep this file dependency-free — it is imported by both sides.
  *
- * Mirrors SPEC §6.2 (v0.2). The renderer never sees raw DB rows; main
- * assembles these shapes from joined queries and ships them via IPC.
+ * Mirrors SPEC §6.2 (v0.2). The renderer never sees raw DB rows; the backend
+ * assembles these shapes from joined queries and ships them via commands.
  */
 
 export type BuiltInPlatformId = 'claude' | 'codex' | 'shared';
@@ -150,6 +150,22 @@ export interface ScenarioImportResult {
   skillsNotFound: { scenarioKey: string; skillName: string; sourceKey: string }[];
 }
 
+export interface ElectronMigrationCandidate {
+  dbPath: string;
+  backupRoot: string | null;
+  sizeBytes: number;
+  modifiedAt: number | null;
+  sourceSha256: string | null;
+  valid: boolean;
+  reason: string | null;
+}
+
+export interface ElectronMigrationConfirmationResult {
+  ok: true;
+  confirmationPath: string;
+  restartRequired: true;
+}
+
 /**
  * Request body for scenarios:createFromCluster — the AI Lens's sole write
  * entry. The renderer derives `name` and `skillIds` from a
@@ -247,9 +263,7 @@ export interface CoverageMatrix {
 
 export type CoverageFilter =
   | 'all'
-  | 'gaps'              // any non-canonical platform missing the skill
-  | 'orphans'           // canonical doesn't have it but somewhere does
-  | 'drift'             // present on canonical and elsewhere but hashes differ
+  | 'attention'         // anything actionable: gap, orphan, drift, or broken
   | 'broken';           // has at least one broken-link cell
 
 /* ---------------------------------------------------------------------------
@@ -274,6 +288,9 @@ export type SyncAction =
   | 'symlink_create'           // create a symlink at target (target is absent or broken)
   | 'symlink_replace'          // backup existing target dir, then symlink_create
   | 'copy_to_canonical'        // copy source dir into canonical (promote step 1)
+  | 'copy_real'                // copy source dir into a NON-source platform as an
+                               // independent real directory (deliberate 2nd real
+                               // copy; backs up an existing entry first)
   // Enable/disable a single location by moving its folder between the
   // platform's live dir and its `.disabled/` subdir. The agent tool reads
   // only the live dir, so this is how a skill is hidden from / restored to
@@ -283,6 +300,37 @@ export type SyncAction =
   | 'enable'                   // move <platform>/.disabled/<name>/ → <platform>/<name>/
   | 'skip'                     // already in sync — no FS change
   | 'conflict';                // user must resolve manually before execute
+
+/**
+ * Actions that can be executed WITHOUT a confirm dialog — "safe instant"
+ * (SPEC §9, post-v0.2): they never touch real bytes, so they are fully
+ * reversible with no data loss, and we apply them immediately + offer an
+ * undo toast instead of a pre-confirmation.
+ *
+ *   symlink_create — target was absent or a broken link; undo = unlink
+ *   disable        — move <name>/ → .disabled/<name>/; undo = move back
+ *   enable         — move .disabled/<name>/ → <name>/; undo = move back
+ *   skip           — no FS change at all
+ *
+ * Everything else (symlink_replace, copy_to_canonical, conflict) overwrites
+ * or moves real content and MUST be confirmed. `symlink_create` is only ever
+ * emitted when the target is absent/broken (see classifyTarget), so it can
+ * never silently clobber a real directory.
+ */
+export const SAFE_SYNC_ACTIONS: readonly SyncAction[] = [
+  'symlink_create',
+  'disable',
+  'enable',
+  'skip',
+];
+
+/** True iff every non-skip item in a plan can be applied without confirmation. */
+export function isPlanSafeToAutoApply(items: { action: SyncAction }[]): boolean {
+  if (items.length === 0) return false;
+  // At least one real change, and every item is in the safe set.
+  const hasRealChange = items.some((i) => i.action !== 'skip');
+  return hasRealChange && items.every((i) => SAFE_SYNC_ACTIONS.includes(i.action));
+}
 
 export type SyncConflictReason =
   | 'target_exists_dir'
@@ -367,7 +415,7 @@ export interface SyncPlan {
   /** Used to drop expired plans. */
   expiresAt: number;
   /** The intended high-level user operation, for telemetry/UI. */
-  operation: 'sync_from_canonical' | 'promote_to_canonical' | 'disable' | 'enable';
+  operation: 'sync_from_canonical' | 'promote_to_canonical' | 'disable' | 'enable' | 'create_skill';
   items: SyncPlanItem[];
 }
 
@@ -375,6 +423,164 @@ export interface SyncExecuteResult {
   applied: SyncPlanItem[];
   skipped: SyncPlanItem[];
   failed: Array<{ item: SyncPlanItem; message: string }>;
+  /**
+   * One representative history id per applied op-group (the newest row in the
+   * group). Passing any one of these to sync:rollback undoes that whole
+   * user-level action. Drives the "undo" affordance on safe-instant toggles.
+   * Empty when nothing was applied.
+   */
+  undoableHistoryIds: number[];
+}
+
+/* ---------------------------------------------------------------------------
+ * Create Skill types
+ *
+ * Create Skill is an AI-assisted compiler from user intent into a reviewed
+ * SKILL.md artifact. The renderer may edit every intermediate artifact, but
+ * filesystem writes still go through SyncPlan -> confirm -> execute.
+ * ------------------------------------------------------------------------- */
+
+export type CreateSkillDraftStatus =
+  | 'intent_draft'
+  | 'spec_ready'
+  | 'artifact_draft'
+  | 'review_failed'
+  | 'reviewed'
+  | 'planned'
+  | 'installed'
+  | 'discarded';
+
+export interface CreateSkillIntentFrame {
+  /** 何时触发（合并旧 description + triggerContext）= frontmatter description */
+  whenToUse: string;
+  /** 用户带来什么（合并旧 userJob + inputContract.acceptedInputs） */
+  userInput: string;
+  /** 技能产出什么（自由正文，## 输出 主体） */
+  output: string;
+  /** 输出由哪几部分组成（≥2，防 mush） */
+  outputParts: string[];
+  /** 工作流步骤（旧 workflow.steps 提升一层） */
+  workflow: string[];
+  /** 边界（合并旧 workflow.failClosedRules + nonGoals） */
+  boundaries: string[];
+  /** 验收标准（折叠区） */
+  successCriteria: string[];
+  /** 安全/分类支柱（完全折叠、靠 LLM 推断） */
+  safety: CreateSkillSafety;
+}
+
+export interface CreateSkillSafety {
+  /** 旧 needsNetwork 升三态 */
+  network: 'no' | 'reads_only' | 'reads_writes';
+  /** 合并旧 writesFiles + outputContract.destination */
+  fileWrites: 'none' | 'same_folder' | 'user_selected';
+  /** = 旧 overwritePolicy */
+  overwrite: 'never' | 'confirm_each_time';
+  /** = 旧 inputContract.privacyClass */
+  privacy: 'local_only' | 'may_send_summary' | 'may_send_content';
+  /** 旧 outputContract.artifactType 降级保留 */
+  artifactType: 'markdown' | 'report' | 'checklist' | 'code_patch' | 'file' | 'other';
+}
+
+export interface CreateSkillSpec {
+  name: string;
+  description: string;
+  language: 'zh' | 'en';
+  intentFrame: CreateSkillIntentFrame;
+  ready: boolean;
+  missing: string[];
+}
+
+export interface CreateSkillQuestion {
+  id: string;
+  question: string;
+  options: Array<{ id: string; label: string; effect: string }>;
+  allowFreeform: boolean;
+}
+
+export interface CreateSkillReviewReport {
+  blocking: Array<{ code: string; message: string; path?: string }>;
+  warnings: Array<{ code: string; message: string }>;
+  checks: {
+    safeName: boolean;
+    parseableFrontmatter: boolean;
+    sizeUnderLimit: boolean;
+    triggerDescription: boolean;
+    hasInputs: boolean;
+    hasWorkflow: boolean;
+    hasOutput: boolean;
+    hasBoundaries: boolean;
+    hasQualityBar: boolean;
+    conciseBody: boolean;
+    frontmatterOnlyNameDescription: boolean;
+    nameMatchesBasename: boolean;
+    nameIsKebabCase: boolean;
+    noPrivateFields: boolean;
+    noSilentNetwork: boolean;
+    noSilentOverwrite: boolean;
+    noSecretExfiltration: boolean;
+    noDangerousShellDefault: boolean;
+  };
+}
+
+export interface CreateSkillDraft {
+  id: string;
+  status: CreateSkillDraftStatus;
+  rawPrompt: string;
+  intentFrame: CreateSkillIntentFrame | null;
+  skillSpec: CreateSkillSpec | null;
+  followupQuestions: CreateSkillQuestion[];
+  answers: Record<string, string>;
+  /** 自适应澄清循环：Agent 当前一行「理解复述」（早抓大偏差用）。 */
+  understanding: string | null;
+  draftMarkdown: string | null;
+  targetPlatformIds: PlatformId[];
+  targetScenarioIds: number[];
+  targetBasename: string | null;
+  validation: CreateSkillReviewReport | null;
+  planToken: string | null;
+  installedSkillId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  installedAt: number | null;
+  discardedAt: number | null;
+}
+
+export interface CreateSkillStartResult {
+  draft: CreateSkillDraft;
+  aiUsed: boolean;
+}
+
+export interface CreateSkillGenerateResult {
+  draft: CreateSkillDraft;
+  aiUsed: boolean;
+}
+
+export interface CreateSkillPlanResult {
+  draft: CreateSkillDraft;
+  plan: SyncPlan;
+}
+
+export interface CreateSkillExecuteResult {
+  draft: CreateSkillDraft;
+  sync: SyncExecuteResult;
+  scan: ScanResult;
+  skillId: string | null;
+  warnings: Array<{ code: string; message: string }>;
+}
+
+export interface AppUpdateInfo {
+  available: boolean;
+  currentVersion: string;
+  version: string | null;
+  date?: string;
+  body?: string;
+}
+
+export interface AppUpdateInstallProgress {
+  event: 'Started' | 'Progress' | 'Finished';
+  downloadedBytes: number;
+  contentLength?: number;
 }
 
 /**
@@ -430,7 +636,7 @@ export interface CatalogPreview {
  *
  * The renderer never sees the API key — it only knows whether one is stored
  * (LlmConfig.hasApiKey). Keys are written via llm.setApiKey({ key }) and
- * stored in macOS Keychain via Electron's safeStorage.
+ * stored in the host OS credential store.
  *
  * All outbound network calls (including LLM requests) must check
  * isExternalNetworkAllowed() first; when the master toggle is off, providers
@@ -442,12 +648,9 @@ export type LlmProvider = 'openai' | 'anthropic' | 'deepseek' | 'openrouter' | '
 /**
  * Single source of truth for "what providers does MySkills accept".
  *
- * Two main-process files validate provider strings before using them: the IPC
- * handler in `electron/ipc/llm.ts` and the auto-categorize service in
- * `electron/ai/categorize.ts`. Previously each kept its own private Set, and
- * a copy fell out of sync when DeepSeek was added — auto-categorize silently
- * downgraded the user's DeepSeek selection to OpenAI. Centralizing here means
- * any drift becomes a TypeScript error instead of a silent wrong-provider call.
+ * Both the renderer and backend validate provider strings before using them.
+ * Centralizing the accepted provider set here keeps UI config, DTOs, and
+ * command payloads from drifting when a provider is added.
  */
 export const VALID_LLM_PROVIDERS: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
   'openai',
@@ -463,8 +666,10 @@ export interface LlmConfig {
   model: string;
   /** For custom / ollama (or override). Optional for the four built-in providers. */
   baseUrl?: string;
-  /** Whether a key is stored in safeStorage. The key itself is never returned. */
+  /** Whether a key is stored in the encrypted local vault. The key itself is never returned. */
   hasApiKey: boolean;
+  /** True only after the current saved provider/model/key combination has passed a connection test. */
+  connectionOk?: boolean;
 }
 
 export interface LlmChatMessage {
@@ -491,6 +696,7 @@ export interface LlmFeatureToggles {
   search: boolean;
   autoCategorize: boolean;
   recommend: boolean;
+  createSkill: boolean;
 }
 
 /**
@@ -646,4 +852,17 @@ export interface LibraryOverviewSnapshot {
   stale: boolean;
   /** Current set hash; UI uses this to decide whether to show "Refresh". */
   currentSetHash: string;
+}
+
+export type AiJobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface AiJob<T = unknown> {
+  jobId: string;
+  kind: string;
+  key: string;
+  status: AiJobStatus;
+  createdAt: number;
+  updatedAt: number;
+  result: T | null;
+  error: { code?: string; message: string; detail?: unknown } | null;
 }

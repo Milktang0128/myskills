@@ -1,14 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   RefreshCw,
   AlertTriangle,
   FileWarning,
   FolderSearch,
-  Crown,
+  FolderOpen,
+  Target,
   CloudOff,
   FileX2,
+  Database,
+  Download,
   Plus,
   Trash2,
   Check,
@@ -16,11 +19,15 @@ import {
   Wifi,
   Sparkles,
   KeyRound,
+  Power,
   ShieldCheck,
   Boxes,
 } from 'lucide-react';
 import type {
+  AppUpdateInfo,
+  AppUpdateInstallProgress,
   AppStats,
+  ElectronMigrationCandidate,
   LlmConfig,
   LlmFeatureToggles,
   LlmProvider,
@@ -43,10 +50,13 @@ interface Props {
   /** Called when the user does something that might change sidebar counts
    * (registering a platform, rescanning, switching canonical). */
   onChanged?: () => void;
+  onAiChanged?: () => void;
+  focusSection?: 'ai' | null;
 }
 
-export function SettingsView({ onChanged }: Props) {
+export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   const t = useT();
+  const aiSectionRef = useRef<HTMLElement | null>(null);
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [stats, setStats] = useState<AppStats | null>(null);
   const [lastScan, setLastScan] = useState<ScanResult | null>(null);
@@ -82,18 +92,37 @@ export function SettingsView({ onChanged }: Props) {
     search: false,
     autoCategorize: false,
     recommend: false,
+    createSkill: false,
   });
   const [llmDraft, setLlmDraft] = useState<{ provider: LlmProvider; model: string; baseUrl: string }>(
     { provider: 'openai', model: '', baseUrl: '' },
   );
   const [llmApiKeyDraft, setLlmApiKeyDraft] = useState('');
   const [savingLlm, setSavingLlm] = useState(false);
-  const [savingLlmKey, setSavingLlmKey] = useState(false);
   const [testingLlm, setTestingLlm] = useState(false);
   const [llmTestResult, setLlmTestResult] = useState<{ ok: boolean; message?: string } | null>(null);
 
+  useEffect(() => {
+    if (focusSection !== 'ai') return;
+    window.requestAnimationFrame(() => {
+      aiSectionRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      window.setTimeout(() => document.getElementById('llm-key')?.focus(), 250);
+    });
+  }, [focusSection]);
+  const [migrationCandidates, setMigrationCandidates] = useState<ElectronMigrationCandidate[]>([]);
+  const [discoveringMigration, setDiscoveringMigration] = useState(false);
+  const [confirmingMigrationPath, setConfirmingMigrationPath] = useState<string | null>(null);
+  const [migrationConfirmation, setMigrationConfirmation] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState('');
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateInstalled, setUpdateInstalled] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<AppUpdateInstallProgress | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
   const refresh = useCallback(async () => {
-    const [pls, st, ls, c, cands, netRaw, cfg, feats] = await Promise.all([
+    const [pls, st, ls, c, cands, netRaw, cfg, feats, migration] = await Promise.all([
       api.platforms.list(),
       api.settings.stats(),
       api.scan.lastResult(),
@@ -102,6 +131,7 @@ export function SettingsView({ onChanged }: Props) {
       api.settings.get('allow_external_network'),
       api.llm.getConfig(),
       api.llm.getFeatures(),
+      api.migration.discover().catch(() => [] as ElectronMigrationCandidate[]),
     ]);
     setPlatforms(pls);
     setStats(st);
@@ -117,6 +147,7 @@ export function SettingsView({ onChanged }: Props) {
       baseUrl: cfg.baseUrl ?? '',
     });
     setLlmFeatures(feats);
+    setMigrationCandidates(migration);
     // Probe each known candidate's default dir in parallel.
     const probes = await Promise.all(
       cands.map((cand) => api.platforms.probe(cand.defaultDir).then((r) => [cand.id, r] as const)),
@@ -167,6 +198,14 @@ export function SettingsView({ onChanged }: Props) {
     };
   }, [bridgeReady, refresh]);
 
+  useEffect(() => {
+    if (!bridgeReady) return;
+    api.app
+      .version()
+      .then(setAppVersion)
+      .catch(() => {});
+  }, [bridgeReady]);
+
   const errorsByKind = useMemo(() => {
     const map = new Map<string, ScanResult['errors']>();
     if (!lastScan) return map;
@@ -192,6 +231,21 @@ export function SettingsView({ onChanged }: Props) {
       await refresh();
     } finally {
       setSavingId(null);
+    }
+  }
+
+  async function pickPlatformDir(currentDir?: string): Promise<string | null> {
+    try {
+      const result = await api.platforms.pickDir(currentDir);
+      return result.path;
+    } catch (err) {
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
+      return null;
     }
   }
 
@@ -277,40 +331,46 @@ export function SettingsView({ onChanged }: Props) {
     }
   }
 
-  async function saveLlmConfig() {
+  async function saveAiSettings(showError = true, testAfterSave = true) {
     setSavingLlm(true);
     setLlmTestResult(null);
     try {
-      const updated = await api.llm.setConfig({
+      await api.llm.setConfig({
         provider: llmDraft.provider,
         model: llmDraft.model.trim(),
         baseUrl: llmDraft.baseUrl.trim(),
       });
-      setLlmConfig(updated);
-    } finally {
-      setSavingLlm(false);
-    }
-  }
-
-  async function saveLlmKey() {
-    const key = llmApiKeyDraft.trim();
-    if (!key) return;
-    setSavingLlmKey(true);
-    setLlmTestResult(null);
-    try {
-      await api.llm.setApiKey({ key });
-      setLlmApiKeyDraft('');
+      if (llmDraft.provider !== 'ollama') {
+        const key = llmApiKeyDraft.trim();
+        if (key) {
+          await api.llm.setApiKey({ key });
+          setLlmApiKeyDraft('');
+        }
+      }
       const cfg = await api.llm.getConfig();
       setLlmConfig(cfg);
+      onAiChanged?.();
+      if (testAfterSave && llmDraft.model.trim()) {
+        setTestingLlm(true);
+        const result = await api.llm.testConnection();
+        setLlmTestResult(result);
+        if (result.ok) onAiChanged?.();
+      }
+      return cfg;
     } catch (err) {
-      await alertAction({
-        title: t('common.error'),
-        description: err instanceof Error ? err.message : String(err),
-        tone: 'destructive',
-        okLabel: t('common.ok'),
-      });
+      if (showError) {
+        await alertAction({
+          title: t('common.error'),
+          description: err instanceof Error ? err.message : String(err),
+          tone: 'destructive',
+          okLabel: t('common.ok'),
+        });
+        return null;
+      }
+      throw err;
     } finally {
-      setSavingLlmKey(false);
+      setTestingLlm(false);
+      setSavingLlm(false);
     }
   }
 
@@ -326,16 +386,18 @@ export function SettingsView({ onChanged }: Props) {
     const cfg = await api.llm.getConfig();
     setLlmConfig(cfg);
     setLlmTestResult(null);
+    onAiChanged?.();
   }
 
   async function testLlm() {
     setTestingLlm(true);
-    setLlmTestResult(null);
+      setLlmTestResult(null);
     try {
       // Persist current draft first so the test uses what the user sees.
-      await saveLlmConfig();
+      await saveAiSettings(false, false);
       const result = await api.llm.testConnection();
       setLlmTestResult(result);
+      if (result.ok) onAiChanged?.();
     } catch (err) {
       setLlmTestResult({
         ok: false,
@@ -349,6 +411,82 @@ export function SettingsView({ onChanged }: Props) {
   async function toggleFeature(key: keyof LlmFeatureToggles, next: boolean) {
     const updated = await api.llm.setFeatures({ [key]: next });
     setLlmFeatures(updated);
+    onAiChanged?.();
+  }
+
+  async function checkForUpdate() {
+    setCheckingUpdate(true);
+    setUpdateError(null);
+    setUpdateInstalled(false);
+    setUpdateProgress(null);
+    try {
+      const result = await api.updates.check();
+      setUpdateInfo(result);
+      if (result.currentVersion) setAppVersion(result.currentVersion);
+    } catch (err) {
+      setUpdateInfo(null);
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
+  async function installUpdate() {
+    setInstallingUpdate(true);
+    setUpdateError(null);
+    try {
+      await api.updates.downloadAndInstall(setUpdateProgress);
+      setUpdateInstalled(true);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingUpdate(false);
+    }
+  }
+
+  async function relaunchApp() {
+    await api.updates.relaunch();
+  }
+
+  async function refreshMigrationCandidates() {
+    setDiscoveringMigration(true);
+    try {
+      setMigrationCandidates(await api.migration.discover());
+    } catch (err) {
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
+    } finally {
+      setDiscoveringMigration(false);
+    }
+  }
+
+  async function confirmMigrationCandidate(candidate: ElectronMigrationCandidate) {
+    if (!candidate.valid || !candidate.sourceSha256) return;
+    const ok = await confirmAction({
+      title: t('settings.migration.confirmTitle'),
+      description: t('settings.migration.confirmDescription', { path: candidate.dbPath }),
+      confirmLabel: t('settings.migration.confirm'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
+    setConfirmingMigrationPath(candidate.dbPath);
+    try {
+      const result = await api.migration.confirm(candidate);
+      setMigrationConfirmation(result.confirmationPath);
+    } catch (err) {
+      await alertAction({
+        title: t('common.error'),
+        description: err instanceof Error ? err.message : String(err),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
+    } finally {
+      setConfirmingMigrationPath(null);
+    }
   }
 
   return (
@@ -410,8 +548,8 @@ export function SettingsView({ onChanged }: Props) {
                           </span>
                         </div>
                         {isCanonical ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/30 dark:text-amber-400">
-                            <Crown className="h-3 w-3" />
+                          <span className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                            <Target className="h-3 w-3" />
                             {t('settings.platforms.canonical.badge')}
                           </span>
                         ) : (
@@ -419,9 +557,9 @@ export function SettingsView({ onChanged }: Props) {
                             type="button"
                             onClick={() => saveCanonical(p.id)}
                             disabled={savingCanonical}
-                            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:opacity-50 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
+                            className="inline-flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-border hover:bg-accent disabled:opacity-50"
                           >
-                            <Crown className="h-3 w-3" />
+                            <Target className="h-3 w-3" />
                             {t('settings.platforms.canonical.setAs')}
                           </button>
                         )}
@@ -435,6 +573,19 @@ export function SettingsView({ onChanged }: Props) {
                           }
                           className="font-mono text-xs"
                         />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={async () => {
+                            const picked = await pickPlatformDir(editVal);
+                            if (picked) {
+                              setEdits((prev) => ({ ...prev, [p.id]: picked }));
+                            }
+                          }}
+                          title={t('settings.platforms.pickDir')}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                        </Button>
                         <Button
                           size="sm"
                           variant="outline"
@@ -595,15 +746,28 @@ export function SettingsView({ onChanged }: Props) {
                         }
                       />
                       <Label htmlFor="cp-dir">{t('settings.custom.dir')}</Label>
-                      <Input
-                        id="cp-dir"
-                        placeholder={t('settings.custom.dirPlaceholder')}
-                        value={customForm.skillsDir}
-                        onChange={(e) =>
-                          setCustomForm({ ...customForm, skillsDir: e.target.value })
-                        }
-                        className="font-mono text-xs"
-                      />
+                      <div className="flex gap-2">
+                        <Input
+                          id="cp-dir"
+                          placeholder={t('settings.custom.dirPlaceholder')}
+                          value={customForm.skillsDir}
+                          onChange={(e) =>
+                            setCustomForm({ ...customForm, skillsDir: e.target.value })
+                          }
+                          className="font-mono text-xs"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={async () => {
+                            const picked = await pickPlatformDir(customForm.skillsDir);
+                            if (picked) setCustomForm({ ...customForm, skillsDir: picked });
+                          }}
+                        >
+                          <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
+                          {t('settings.custom.pickDir')}
+                        </Button>
+                      </div>
                     </div>
                     {customError && (
                       <p className="text-xs text-destructive">{customError}</p>
@@ -635,6 +799,32 @@ export function SettingsView({ onChanged }: Props) {
 
           <Separator />
 
+          <MigrationDiscoverySection
+            candidates={migrationCandidates}
+            discovering={discoveringMigration}
+            confirmingPath={confirmingMigrationPath}
+            confirmationPath={migrationConfirmation}
+            onRefresh={refreshMigrationCandidates}
+            onConfirm={confirmMigrationCandidate}
+          />
+
+          <Separator />
+
+          <UpdateSection
+            currentVersion={appVersion}
+            update={updateInfo}
+            checking={checkingUpdate}
+            installing={installingUpdate}
+            installed={updateInstalled}
+            progress={updateProgress}
+            error={updateError}
+            onCheck={checkForUpdate}
+            onInstall={installUpdate}
+            onRelaunch={relaunchApp}
+          />
+
+          <Separator />
+
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Wifi className="h-4 w-4" />
@@ -658,7 +848,7 @@ export function SettingsView({ onChanged }: Props) {
             </div>
           </section>
 
-          <section className="space-y-3">
+          <section ref={aiSectionRef} className="scroll-mt-4 space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Sparkles className="h-4 w-4 text-violet-500" />
               {t('settings.ai.header')}
@@ -747,6 +937,7 @@ export function SettingsView({ onChanged }: Props) {
                       title={t('settings.ai.key.removeTitle')}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
+                      <span className="sr-only">{t('settings.ai.removeKey')}</span>
                     </Button>
                   )}
                 </div>
@@ -756,26 +947,16 @@ export function SettingsView({ onChanged }: Props) {
                 <div className="flex gap-2">
                   <Button
                     size="sm"
-                    onClick={saveLlmConfig}
-                    disabled={!networkAllowed || savingLlm}
+                    onClick={() => saveAiSettings()}
+                    disabled={!networkAllowed || savingLlm || testingLlm}
                   >
                     {savingLlm ? t('settings.ai.saving') : t('settings.ai.save')}
                   </Button>
-                  {llmApiKeyDraft.trim() && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={saveLlmKey}
-                      disabled={!networkAllowed || savingLlmKey}
-                    >
-                      {savingLlmKey ? t('settings.ai.storing') : t('settings.ai.saveKey')}
-                    </Button>
-                  )}
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={testLlm}
-                    disabled={!networkAllowed || testingLlm || !llmDraft.model.trim()}
+                    disabled={!networkAllowed || testingLlm || savingLlm || !llmDraft.model.trim()}
                   >
                     {testingLlm ? t('settings.ai.test.testing') : t('settings.ai.test.label')}
                   </Button>
@@ -801,16 +982,16 @@ export function SettingsView({ onChanged }: Props) {
                   label={t('settings.ai.feature.searchLong')}
                 />
                 <FeatureToggleRow
-                  checked={llmFeatures.autoCategorize}
-                  onChange={(v) => toggleFeature('autoCategorize', v)}
-                  disabled={!networkAllowed}
-                  label={t('settings.ai.feature.autoCategorizeLong')}
-                />
-                <FeatureToggleRow
                   checked={llmFeatures.recommend}
                   onChange={(v) => toggleFeature('recommend', v)}
                   disabled={!networkAllowed}
                   label={t('settings.ai.feature.recommendLong')}
+                />
+                <FeatureToggleRow
+                  checked={llmFeatures.createSkill}
+                  onChange={(v) => toggleFeature('createSkill', v)}
+                  disabled={!networkAllowed}
+                  label={t('settings.ai.feature.createSkillLong')}
                 />
               </div>
 
@@ -921,6 +1102,252 @@ export function SettingsView({ onChanged }: Props) {
   );
 }
 
+function MigrationDiscoverySection({
+  candidates,
+  discovering,
+  confirmingPath,
+  confirmationPath,
+  onRefresh,
+  onConfirm,
+}: {
+  candidates: ElectronMigrationCandidate[];
+  discovering: boolean;
+  confirmingPath: string | null;
+  confirmationPath: string | null;
+  onRefresh: () => void;
+  onConfirm: (candidate: ElectronMigrationCandidate) => void;
+}) {
+  const t = useT();
+  const validCount = candidates.filter((candidate) => candidate.valid).length;
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Database className="h-4 w-4" />
+            {t('settings.migration.header')}
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('settings.migration.help')}
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={onRefresh} disabled={discovering}>
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${discovering ? 'animate-spin' : ''}`} />
+          {discovering ? t('settings.migration.scanning') : t('settings.migration.refresh')}
+        </Button>
+      </div>
+
+      <div className="rounded-md border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-medium">
+            {t('settings.migration.summary', {
+              count: candidates.length,
+              valid: validCount,
+            })}
+          </div>
+          <span className="rounded bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+            {t('settings.migration.readOnlyBadge')}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t('settings.migration.readOnlyHelp')}
+        </p>
+        {confirmationPath && (
+          <p className="mt-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-950 dark:bg-emerald-950/20 dark:text-emerald-300">
+            {t('settings.migration.confirmed', { path: confirmationPath })}
+          </p>
+        )}
+
+        {candidates.length === 0 ? (
+          <p className="mt-3 rounded border border-dashed px-3 py-2 text-xs text-muted-foreground">
+            {t('settings.migration.empty')}
+          </p>
+        ) : (
+          <div className="mt-3 space-y-2">
+            {candidates.map((candidate) => (
+              <div
+                key={candidate.dbPath}
+                className={`rounded-md border p-3 ${
+                  candidate.valid
+                    ? 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-950 dark:bg-emerald-950/20'
+                    : 'border-amber-200 bg-amber-50/50 dark:border-amber-950 dark:bg-amber-950/20'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm font-medium">
+                    {candidate.valid
+                      ? t('settings.migration.valid')
+                      : t('settings.migration.invalid')}
+                  </span>
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {formatBytes(candidate.sizeBytes)}
+                  </span>
+                </div>
+                <div className="mt-2 space-y-1 font-mono text-[11px] text-muted-foreground">
+                  <div className="break-all">
+                    {t('settings.migration.dbPath', { path: candidate.dbPath })}
+                  </div>
+                  {candidate.backupRoot && (
+                    <div className="break-all">
+                      {t('settings.migration.backupRoot', { path: candidate.backupRoot })}
+                    </div>
+                  )}
+                  {candidate.sourceSha256 && (
+                    <div className="break-all">
+                      {t('settings.migration.sha', {
+                        hash: shortHash(candidate.sourceSha256),
+                      })}
+                    </div>
+                  )}
+                  {candidate.modifiedAt && (
+                    <div>
+                      {t('settings.migration.modified', {
+                        time: formatRelative(candidate.modifiedAt),
+                      })}
+                    </div>
+                  )}
+                  {candidate.reason && (
+                    <div className="break-all text-amber-700 dark:text-amber-300">
+                      {candidate.reason}
+                    </div>
+                  )}
+                </div>
+                {candidate.valid && candidate.sourceSha256 && (
+                  <div className="mt-3 flex justify-end">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onConfirm(candidate)}
+                      disabled={confirmingPath === candidate.dbPath}
+                    >
+                      {confirmingPath === candidate.dbPath
+                        ? t('settings.migration.confirming')
+                        : t('settings.migration.confirm')}
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function UpdateSection({
+  currentVersion,
+  update,
+  checking,
+  installing,
+  installed,
+  progress,
+  error,
+  onCheck,
+  onInstall,
+  onRelaunch,
+}: {
+  currentVersion: string;
+  update: AppUpdateInfo | null;
+  checking: boolean;
+  installing: boolean;
+  installed: boolean;
+  progress: AppUpdateInstallProgress | null;
+  error: string | null;
+  onCheck: () => void;
+  onInstall: () => void;
+  onRelaunch: () => void;
+}) {
+  const t = useT();
+  const progressLabel = progress
+    ? progress.contentLength && progress.contentLength > 0
+      ? `${formatBytes(progress.downloadedBytes)} / ${formatBytes(progress.contentLength)}`
+      : formatBytes(progress.downloadedBytes)
+    : null;
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="flex items-center gap-2 text-base font-semibold">
+            <Download className="h-4 w-4" />
+            {t('settings.updates.header')}
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t('settings.updates.help')}
+          </p>
+        </div>
+        <Button size="sm" variant="outline" onClick={onCheck} disabled={checking || installing}>
+          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${checking ? 'animate-spin' : ''}`} />
+          {checking ? t('settings.updates.checking') : t('settings.updates.check')}
+        </Button>
+      </div>
+
+      <div className="rounded-md border bg-card p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm font-medium">
+            {t('settings.updates.currentVersion', {
+              version: currentVersion || 'unknown',
+            })}
+          </div>
+          {update?.available ? (
+            <span className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] uppercase tracking-wider text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300">
+              {t('settings.updates.availableBadge')}
+            </span>
+          ) : update ? (
+            <span className="rounded bg-secondary px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+              {t('settings.updates.currentBadge')}
+            </span>
+          ) : null}
+        </div>
+
+        {update?.available && (
+          <div className="mt-3 space-y-2">
+            <div className="text-sm">
+              {t('settings.updates.available', { version: update.version ?? '' })}
+            </div>
+            {update.body && (
+              <pre className="max-h-32 overflow-auto rounded border bg-background p-2 whitespace-pre-wrap text-xs text-muted-foreground">
+                {update.body}
+              </pre>
+            )}
+            {progress && progressLabel && (
+              <div className="text-xs text-muted-foreground">
+                {progress.event === 'Finished'
+                  ? t('settings.updates.downloadFinished')
+                  : t('settings.updates.downloadProgress', { progress: progressLabel })}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={onInstall} disabled={installing || installed}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {installing ? t('settings.updates.installing') : t('settings.updates.install')}
+              </Button>
+              {installed && (
+                <Button size="sm" variant="outline" onClick={onRelaunch}>
+                  <Power className="mr-1.5 h-3.5 w-3.5" />
+                  {t('settings.updates.relaunch')}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {update && !update.available && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t('settings.updates.none')}
+          </p>
+        )}
+
+        {error && (
+          <p className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-950 dark:bg-amber-950/20 dark:text-amber-300">
+            {t('settings.updates.error', { message: error })}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Stat({
   label,
   value,
@@ -1027,6 +1454,11 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function shortHash(hash: string): string {
+  if (hash.length <= 16) return hash;
+  return `${hash.slice(0, 12)}…${hash.slice(-8)}`;
 }
 
 function ErrorIcon({ kind }: { kind: string }) {

@@ -5,10 +5,18 @@ import { X } from 'lucide-react';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
+/** Optional inline action on a toast (e.g. "Undo" after a safe-instant write). */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface Props {
   message: string;
   /** Default 4000ms. */
   durationMs?: number;
+  /** Optional action button shown before the close affordance. */
+  action?: ToastAction;
   onDismiss: () => void;
 }
 
@@ -29,7 +37,7 @@ interface Props {
  *     read it.
  *   - A new `message` prop resets the timer (useful for back-to-back toasts).
  */
-export function Toast({ message, durationMs = 4000, onDismiss }: Props) {
+export function Toast({ message, durationMs = 4000, action, onDismiss }: Props) {
   const t = useT();
   const [paused, setPaused] = useState(false);
   // Track elapsed time so hover-pause preserves how long we've been visible.
@@ -67,6 +75,18 @@ export function Toast({ message, durationMs = 4000, onDismiss }: Props) {
         onMouseLeave={() => setPaused(false)}
       >
         <span className="max-w-md">{message}</span>
+        {action && (
+          <button
+            type="button"
+            onClick={() => {
+              action.onClick();
+              onDismiss();
+            }}
+            className="shrink-0 rounded px-1.5 py-0.5 text-sm font-medium text-primary hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {action.label}
+          </button>
+        )}
         <button
           type="button"
           onClick={onDismiss}

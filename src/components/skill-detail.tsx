@@ -471,114 +471,133 @@ function LocationRow({
 
   return (
     <div className="rounded-md border bg-background p-3 text-xs">
-      <div className="flex items-center gap-2">
-        <PlatformBadge platformId={loc.platformId} />
-        <span className={cn('inline-flex items-center gap-1', statusTone)}>
-          {statusIcon}
-          {statusLabel}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="shrink-0">
+          <PlatformBadge platformId={loc.platformId} />
+        </div>
+        <span className={cn('inline-flex min-w-0 items-center gap-1', statusTone)}>
+          <span className="shrink-0">{statusIcon}</span>
+          <span>{statusLabel}</span>
         </span>
-        <div className="ml-auto flex items-center gap-1.5">
-          {loc.mtime && (
-            <span className="text-[10px] text-muted-foreground" title={new Date(loc.mtime).toLocaleString()}>
-              {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
-            </span>
-          )}
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            onClick={() => handleOpenLocation('install')}
-            disabled={actionBusy !== null}
-            title={t('detail.loc.openInstallTitle')}
-          >
-            <FolderOpen className="mr-1 h-3 w-3" />
-            {t('detail.loc.openInstall')}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-6 px-2 text-[11px]"
-            onClick={() => handleCopyPath('install')}
-            disabled={actionBusy !== null}
-            title={t('detail.loc.copyInstallTitle')}
-          >
-            <CopyIcon className="mr-1 h-3 w-3" />
+        {loc.mtime && (
+          <span className="text-[10px] text-muted-foreground" title={new Date(loc.mtime).toLocaleString()}>
+            {t('detail.loc.modified', { when: formatRelative(loc.mtime) })}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-1.5">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+          onClick={() => handleOpenLocation('install')}
+          disabled={actionBusy !== null}
+          title={t('detail.loc.openInstallTitle')}
+        >
+          <FolderOpen className="h-3 w-3 shrink-0" />
+          <span className="min-w-0 truncate">{t('detail.loc.openInstall')}</span>
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+          onClick={() => handleCopyPath('install')}
+          disabled={actionBusy !== null}
+          title={t('detail.loc.copyInstallTitle')}
+        >
+          <CopyIcon className="h-3 w-3 shrink-0" />
+          <span className="min-w-0 truncate">
             {copied === 'install' ? t('detail.loc.copiedPath') : t('detail.loc.copyInstall')}
-          </Button>
-          {hasTarget && (
-            <>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-[11px]"
-                onClick={() => handleOpenLocation('target')}
-                disabled={actionBusy !== null}
-                title={t('detail.loc.openTargetTitle')}
-              >
-                <FolderOpen className="mr-1 h-3 w-3" />
-                {t('detail.loc.openTarget')}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-6 px-2 text-[11px]"
-                onClick={() => handleCopyPath('target')}
-                disabled={actionBusy !== null}
-                title={t('detail.loc.copyTargetTitle')}
-              >
-                <CopyIcon className="mr-1 h-3 w-3" />
+          </span>
+        </Button>
+        {hasTarget && (
+          <>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+              onClick={() => handleOpenLocation('target')}
+              disabled={actionBusy !== null}
+              title={t('detail.loc.openTargetTitle')}
+            >
+              <FolderOpen className="h-3 w-3 shrink-0" />
+              <span className="min-w-0 truncate">{t('detail.loc.openTarget')}</span>
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+              onClick={() => handleCopyPath('target')}
+              disabled={actionBusy !== null}
+              title={t('detail.loc.copyTargetTitle')}
+            >
+              <CopyIcon className="h-3 w-3 shrink-0" />
+              <span className="min-w-0 truncate">
                 {copied === 'target' ? t('detail.loc.copiedPath') : t('detail.loc.copyTarget')}
-              </Button>
-            </>
-          )}
-          {canAdopt && (
+              </span>
+            </Button>
+          </>
+        )}
+        {canAdopt && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+            onClick={onAdopt}
+            disabled={busy}
+            title={t('detail.loc.adoptTitle')}
+          >
+            <Upload className="h-3 w-3 shrink-0" />
+            <span className="min-w-0 truncate">{t('detail.loc.adoptBtn')}</span>
+          </Button>
+        )}
+        {/* Enable/disable toggle. Broken-symlink rows are skipped — there's
+            nothing meaningful to hide/restore. */}
+        {!loc.isBrokenSymlink &&
+          (loc.isDisabled ? (
             <Button
               size="sm"
               variant="outline"
-              className="h-6 px-2 text-[11px]"
-              onClick={onAdopt}
+              className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+              onClick={() => onToggleDisabled(false)}
               disabled={busy}
-              title={t('detail.loc.adoptTitle')}
+              title={t('detail.loc.enableTitle')}
             >
-              <Upload className="mr-1 h-3 w-3" />
-              {t('detail.loc.adoptBtn')}
+              <Eye className="h-3 w-3 shrink-0" />
+              <span className="min-w-0 truncate">{t('detail.loc.enableBtn')}</span>
             </Button>
-          )}
-          {/* Enable/disable toggle. Broken-symlink rows are skipped — there's
-              nothing meaningful to hide/restore. */}
-          {!loc.isBrokenSymlink &&
-            (loc.isDisabled ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-6 px-2 text-[11px]"
-                onClick={() => onToggleDisabled(false)}
-                disabled={busy}
-                title={t('detail.loc.enableTitle')}
-              >
-                <Eye className="mr-1 h-3 w-3" />
-                {t('detail.loc.enableBtn')}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-6 px-2 text-[11px]"
-                onClick={() => onToggleDisabled(true)}
-                disabled={busy || hasDependents}
-                title={hasDependents ? t('detail.loc.disableBlockedTitle') : t('detail.loc.disableTitle')}
-              >
-                <EyeOff className="mr-1 h-3 w-3" />
-                {t('detail.loc.disableBtn')}
-              </Button>
-            ))}
-        </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 justify-start gap-1.5 px-2 text-[11px]"
+              onClick={() => onToggleDisabled(true)}
+              disabled={busy || hasDependents}
+              title={hasDependents ? t('detail.loc.disableBlockedTitle') : t('detail.loc.disableTitle')}
+            >
+              <EyeOff className="h-3 w-3 shrink-0" />
+              <span className="min-w-0 truncate">{t('detail.loc.disableBtn')}</span>
+            </Button>
+          ))}
       </div>
-      <div className="mt-2 space-y-0.5 font-mono text-[10px] text-muted-foreground">
-        <div className="break-all">{t('detail.loc.installPrefix')} {loc.installPath}</div>
-        {loc.isSymlink && <div className="break-all">{t('detail.loc.targetPrefix')} {loc.realPath}</div>}
-        {loc.contentHash && <div>{t('detail.loc.hashPrefix')} {loc.contentHash.slice(0, 12)}…</div>}
-        {actionError && <div className="text-destructive">{actionError}</div>}
+
+      <div className="mt-3 grid grid-cols-[64px_minmax(0,1fr)] gap-x-2 gap-y-1 font-mono text-[10px] leading-relaxed text-muted-foreground">
+        <span className="whitespace-nowrap">{t('detail.loc.installPrefix')}</span>
+        <span className="min-w-0 break-all">{loc.installPath}</span>
+        {loc.isSymlink && (
+          <>
+            <span className="whitespace-nowrap">{t('detail.loc.targetPrefix')}</span>
+            <span className="min-w-0 break-all">{loc.realPath}</span>
+          </>
+        )}
+        {loc.contentHash && (
+          <>
+            <span className="whitespace-nowrap">{t('detail.loc.hashPrefix')}</span>
+            <span className="min-w-0 break-all">{loc.contentHash.slice(0, 12)}...</span>
+          </>
+        )}
+        {actionError && <div className="col-span-2 text-destructive">{actionError}</div>}
       </div>
     </div>
   );

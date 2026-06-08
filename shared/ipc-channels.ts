@@ -11,6 +11,7 @@ export const IPC = {
     create: 'platforms:create',
     delete: 'platforms:delete',
     probe: 'platforms:probe',
+    pickDir: 'platforms:pickDir',
     knownCandidates: 'platforms:knownCandidates',
     openDir: 'platforms:openDir',
   },
@@ -19,6 +20,7 @@ export const IPC = {
     get: 'skills:get',
     openLocation: 'skills:openLocation',
     copyLocationPath: 'skills:copyLocationPath',
+    readLocation: 'skills:readLocation',
   },
   scenarios: {
     list: 'scenarios:list',
@@ -37,6 +39,20 @@ export const IPC = {
      * with an empty named scenario, which is the worst outcome.
      */
     createFromCluster: 'scenarios:createFromCluster',
+  },
+  migration: {
+    /**
+     * Read-only discovery of Electron v0.1.x userData DB candidates. This
+     * never imports or writes source data; stable migration still needs an
+     * explicit user confirmation flow.
+     */
+    discover: 'migration:discover',
+    /**
+     * Persist the user's selected Electron DB candidate as a restart-time
+     * migration confirmation manifest. The import still runs only before DB
+     * initialization on next stable launch.
+     */
+    confirm: 'migration:confirm',
   },
   scan: {
     run: 'scan:run',
@@ -87,10 +103,22 @@ export const IPC = {
     setFeatures: 'llm:setFeatures',
   },
   ai: {
+    jobGet: 'ai:job:get',
+    jobLatest: 'ai:job:latest',
     getSuggestionsForSkill: 'ai:getSuggestionsForSkill',
     acceptSuggestion: 'ai:acceptSuggestion',
     dismissSuggestion: 'ai:dismissSuggestion',
     queueStatus: 'ai:queueStatus',
+    createSkillStart: 'ai:createSkill:start',
+    createSkillStartJob: 'ai:createSkill:startJob',
+    createSkillGet: 'ai:createSkill:get',
+    createSkillRefine: 'ai:createSkill:refine',
+    createSkillAnswer: 'ai:createSkill:answer',
+    createSkillGenerate: 'ai:createSkill:generate',
+    createSkillReview: 'ai:createSkill:review',
+    createSkillPlan: 'ai:createSkill:plan',
+    createSkillExecute: 'ai:createSkill:execute',
+    createSkillDiscard: 'ai:createSkill:discard',
     /** Build a bulk-categorization plan for the given skills. One LLM call. */
     bulkCategorize: 'ai:bulkCategorize',
     /** Apply a (possibly user-edited) bulk plan in a single DB transaction. */
@@ -105,6 +133,7 @@ export const IPC = {
      * writes the single-row cache, returns the fresh overview.
      */
     libraryOverviewGenerate: 'ai:libraryOverview:generate',
+    libraryOverviewGenerateJob: 'ai:libraryOverview:generateJob',
   },
   events: {
     scanStarted: 'event:scanStarted',
@@ -117,6 +146,7 @@ export type IpcChannel =
   | typeof IPC.platforms[keyof typeof IPC.platforms]
   | typeof IPC.skills[keyof typeof IPC.skills]
   | typeof IPC.scenarios[keyof typeof IPC.scenarios]
+  | typeof IPC.migration[keyof typeof IPC.migration]
   | typeof IPC.scan[keyof typeof IPC.scan]
   | typeof IPC.settings[keyof typeof IPC.settings]
   | typeof IPC.coverage[keyof typeof IPC.coverage]
@@ -131,6 +161,7 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.platforms),
   ...Object.values(IPC.skills),
   ...Object.values(IPC.scenarios),
+  ...Object.values(IPC.migration),
   ...Object.values(IPC.scan),
   ...Object.values(IPC.settings),
   ...Object.values(IPC.coverage),

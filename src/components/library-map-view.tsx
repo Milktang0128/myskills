@@ -26,8 +26,10 @@ import {
   Loader2,
   Map as MapIcon,
   Plus,
+  Layers,
 } from 'lucide-react';
 import type {
+  AiJob,
   LibraryOverview,
   LibraryOverviewCluster,
   LibraryOverviewSnapshot,
@@ -71,12 +73,15 @@ export function LibraryMapView({
   const [snapshot, setSnapshot] = useState<LibraryOverviewSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [generateJob, setGenerateJob] = useState<AiJob<LibraryOverview> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bridgeReady, setBridgeReady] = useState(false);
   // Per-cluster in-flight state. Keyed by cluster.key (slug). Don't track
   // "already converted" — regenerating the Map invalidates that boolean,
   // and merging into an existing scenario is idempotent anyway.
   const [converting, setConverting] = useState<Set<string>>(() => new Set());
+  // Batch "turn every cluster into a scenario" in-flight flag.
+  const [convertingAll, setConvertingAll] = useState(false);
 
   const convertCluster = useCallback(
     async (cluster: LibraryOverviewCluster) => {
@@ -117,6 +122,49 @@ export function LibraryMapView({
     [onScenariosChanged, onToast, t],
   );
 
+  // One-click: turn EVERY non-empty cluster into a scenario. Sequential (not
+  // parallel) — createFromCluster merges by name, and scenario rows are cheap
+  // DB writes, so a serial loop avoids write races and keeps a clean aggregate
+  // count. Failures per cluster are tolerated and summarised, not fatal.
+  const convertAllClusters = useCallback(
+    async (clusters: LibraryOverviewCluster[]) => {
+      const targets = clusters.filter((c) => c.skills.length > 0);
+      if (targets.length === 0) {
+        onToast(t('map.convertAll.empty'));
+        return;
+      }
+      setConvertingAll(true);
+      let created = 0;
+      let merged = 0;
+      let linked = 0;
+      let failed = 0;
+      for (const cluster of targets) {
+        try {
+          const result = await api.scenarios.createFromCluster({
+            name: cluster.name,
+            skillIds: cluster.skills.map((s) => s.skillId),
+          });
+          if (result.created) created += 1;
+          else merged += 1;
+          linked += result.skillsLinked;
+        } catch {
+          failed += 1;
+        }
+      }
+      setConvertingAll(false);
+      onScenariosChanged();
+      onToast(
+        t(failed > 0 ? 'map.convertAll.donePartial' : 'map.convertAll.done', {
+          created,
+          merged,
+          linked,
+          failed,
+        }),
+      );
+    },
+    [onScenariosChanged, onToast, t],
+  );
+
   // Bridge readiness — same pattern as other views.
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -153,17 +201,65 @@ export function LibraryMapView({
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (!bridgeReady || !llmConfigured) return;
+    let cancelled = false;
+    void api.ai
+      .jobLatest<LibraryOverview>('library_overview_generate', lang)
+      .then((job) => {
+        if (cancelled || !job || !['queued', 'running'].includes(job.status)) return;
+        setGenerateJob(job);
+        setGenerating(true);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [bridgeReady, lang, llmConfigured]);
+
+  useEffect(() => {
+    if (!generateJob || !['queued', 'running'].includes(generateJob.status)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const job = await api.ai.jobGet<LibraryOverview>(generateJob.jobId);
+        if (cancelled) return;
+        setGenerateJob(job);
+        if (job.status === 'succeeded') {
+          const snap = await api.ai.libraryOverviewGet(lang);
+          if (cancelled) return;
+          setSnapshot({ ...snap, overview: job.result ?? snap.overview });
+          setGenerating(false);
+          setGenerateJob(null);
+        } else if (job.status === 'failed') {
+          setError(messageOf(job.error));
+          setGenerating(false);
+          setGenerateJob(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(messageOf(err));
+          setGenerating(false);
+          setGenerateJob(null);
+        }
+      }
+    };
+    void poll();
+    const id = window.setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [generateJob, lang]);
+
   async function generate(): Promise<void> {
     setGenerating(true);
     setError(null);
     try {
-      const fresh = await api.ai.libraryOverviewGenerate(lang);
-      // Re-pull the snapshot so the stale flag + currentSetHash refresh.
-      const snap = await api.ai.libraryOverviewGet(lang);
-      setSnapshot({ ...snap, overview: fresh });
+      const job = await api.ai.libraryOverviewGenerateJob(lang);
+      setGenerateJob(job);
     } catch (err) {
       setError(messageOf(err));
-    } finally {
       setGenerating(false);
     }
   }
@@ -224,28 +320,49 @@ export function LibraryMapView({
                   {t('map.heading', { count: overview.totalSkills })}
                 </h1>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={generate}
-                disabled={generating}
-                title={t('map.regenerate.title', {
-                  when: formatRelative(overview.generatedAt),
-                  model: overview.model,
-                })}
-              >
-                {generating ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                    {t('map.regenerating')}
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                    {t('map.regenerate')}
-                  </>
-                )}
-              </Button>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => convertAllClusters(overview.clusters)}
+                  disabled={generating || convertingAll || overview.clusters.length === 0}
+                  title={t('map.convertAll.title')}
+                  className="bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
+                >
+                  {convertingAll ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      {t('map.convertAll.converting')}
+                    </>
+                  ) : (
+                    <>
+                      <Layers className="mr-1.5 h-3.5 w-3.5" />
+                      {t('map.convertAll')}
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={generate}
+                  disabled={generating || convertingAll}
+                  title={t('map.regenerate.title', {
+                    when: formatRelative(overview.generatedAt),
+                    model: overview.model,
+                  })}
+                >
+                  {generating ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                      {t('map.regenerating')}
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                      {t('map.regenerate')}
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
             {overview.intro && (
               <p className="text-sm text-muted-foreground">{overview.intro}</p>

@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Zhi Tang (LB8ZBRDP63)",
+      "hardenedRuntime": true
+    }
+  }
+}

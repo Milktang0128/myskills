@@ -1,6 +1,6 @@
 'use client';
 
-import { Search, ArrowUpDown, FolderOpen } from 'lucide-react';
+import { Search, ChevronDown, FolderOpen } from 'lucide-react';
 import type { Skill, SkillSort } from '@shared/types';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -23,7 +23,7 @@ interface Props {
   /** When true, omit the title bar + search input — assumes the parent owns them. */
   hideOwnHeader?: boolean;
   /** Optional: when the title represents an openable directory (e.g. a single
-   * platform filter), render an Open-in-Finder button next to it. */
+   * platform filter), render a reveal-in-file-manager button next to it. */
   onOpenDir?: () => void;
 }
 
@@ -133,19 +133,19 @@ function SortSelect({
   const t = useT();
   return (
     <div className="relative inline-flex items-center">
-      <ArrowUpDown className="pointer-events-none absolute left-1.5 h-3 w-3 text-muted-foreground" />
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as SkillSort)}
         aria-label={t('list.sort.label')}
         title={t('list.sort.tooltip')}
-        className="rounded border border-input bg-background pl-6 pr-1.5 py-0.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        className="h-8 appearance-none rounded border border-input bg-background py-0.5 pl-3 pr-8 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
       >
         <option value="name">{t('list.sort.name')}</option>
         <option value="updated">{t('list.sort.updated')}</option>
         <option value="created">{t('list.sort.created')}</option>
         <option value="mtime">{t('list.sort.mtime')}</option>
       </select>
+      <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-muted-foreground" />
     </div>
   );
 }
