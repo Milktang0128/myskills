@@ -92,7 +92,18 @@ jobs:
           workspaces: src-tauri -> target
 
       - name: Install npm dependencies
-        run: npm ci
+        # Retry: package postinstalls fetch binaries from GitHub releases, which
+        # intermittently return HTTP 504 on cold runners. Bash works on all three
+        # runners (Git Bash on Windows).
+        shell: bash
+        run: |
+          n=0
+          until npm ci; do
+            n=$((n+1))
+            if [ "$n" -ge 4 ]; then echo "npm ci failed after $n attempts"; exit 1; fi
+            echo "npm ci failed (transient?) — retry $n/3 in 20s…"
+            sleep 20
+          done
 
       - name: Build, sign, notarize & draft release
         uses: tauri-apps/tauri-action@v0
