@@ -5,6 +5,7 @@
   "description": "AI Skill Hub — unified management of AI agent skills across Claude, Codex and other platforms",
   "author": "tangmilk1205@gmail.com",
   "scripts": {
+    "tauri": "tauri",
     "dev": "tauri dev",
     "dev:tauri": "tauri dev",
     "dev:next": "next dev --port 4477",
