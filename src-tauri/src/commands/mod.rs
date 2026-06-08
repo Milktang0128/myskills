@@ -5940,14 +5940,14 @@ pub async fn catalog_plan_install(
     }
 }
 
-fn catalog_client() -> AppResult<reqwest::blocking::Client> {
+fn build_catalog_client() -> AppResult<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|err| AppError::new("CATALOG_HTTP_CLIENT_FAILED", err.to_string()))
 }
 
-fn llm_client() -> AppResult<reqwest::blocking::Client> {
+fn build_llm_client() -> AppResult<reqwest::blocking::Client> {
     let builder = reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(300));
@@ -5964,6 +5964,33 @@ fn llm_client() -> AppResult<reqwest::blocking::Client> {
     builder
         .build()
         .map_err(|err| AppError::new("LLM_HTTP_CLIENT_FAILED", err.to_string()))
+}
+
+// reqwest::blocking::Client owns an internal Tokio runtime. The LLM/catalog
+// commands are `async` (so they never block the UI thread), which Tauri runs on
+// an async worker; dropping that runtime there panics with "cannot drop a
+// runtime in a context where blocking is not allowed". Cache each client
+// process-wide (OnceLock — never dropped) and hand out cheap clones that share
+// the runtime via Arc, so a per-call clone drop only decrements the refcount
+// and never drops the runtime on an async worker (nor on shutdown).
+fn catalog_client() -> AppResult<reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let client = build_catalog_client()?;
+    let _ = CLIENT.set(client.clone());
+    Ok(client)
+}
+
+fn llm_client() -> AppResult<reqwest::blocking::Client> {
+    static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c.clone());
+    }
+    let client = build_llm_client()?;
+    let _ = CLIENT.set(client.clone());
+    Ok(client)
 }
 
 fn llm_request_error(provider: &str, err: reqwest::Error) -> AppError {
