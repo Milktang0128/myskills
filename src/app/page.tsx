@@ -741,6 +741,10 @@ export default function Workspace() {
             setOnboardingDone(true);
             refreshSkills();
             refreshMeta();
+            // Onboarding may have saved the LLM config + key; re-check AI
+            // availability now so the AI Lens / Create Skill views unlock
+            // immediately instead of staying gated until the next app launch.
+            refreshAiAvailability();
           }}
         />
       )}
