@@ -1,0 +1,115 @@
+name: Release
+
+# Builds signed, notarized stable installers for all three platforms and
+# attaches them to a GitHub Release (created as a DRAFT for you to review and
+# publish). Triggered by pushing a version tag, e.g.:
+#
+#     git tag v0.2.0 && git push origin v0.2.0
+#
+# or manually via the Actions tab (workflow_dispatch, provide the tag).
+#
+# ── Required repository secrets (Settings → Secrets and variables → Actions) ──
+#   macOS code signing + notarization:
+#     APPLE_CERTIFICATE            base64 of the exported "Developer ID
+#                                  Application" certificate (.p12).
+#                                  Keychain Access → export the cert as .p12 →
+#                                  `base64 -i cert.p12 | pbcopy`.
+#     APPLE_CERTIFICATE_PASSWORD   the password you set on that .p12 export.
+#     APPLE_ID                     your Apple ID email.
+#     APPLE_PASSWORD               an app-specific password (appleid.apple.com →
+#                                  Sign-In and Security → App-Specific Passwords),
+#                                  NOT your login password.
+#     APPLE_TEAM_ID                LB8ZBRDP63
+#   Tauri updater signing (reuse the ones the preview workflow already uses):
+#     TAURI_SIGNING_PRIVATE_KEY
+#     TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#
+# tauri-action imports the cert into a temporary keychain and notarizes the app
+# automatically once APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID are present.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS (universal)
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.macos.signing.conf.json
+          - os: ubuntu-24.04
+            label: Linux
+            rust-targets: ''
+            args: --config src-tauri/tauri.stable.conf.json
+          - os: windows-latest
+            label: Windows
+            rust-targets: ''
+            args: --config src-tauri/tauri.stable.conf.json --bundles nsis
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build, sign, notarize & draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri updater signing
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS code signing + notarization (consumed only on the macOS runner)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          releaseName: MySkills ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
