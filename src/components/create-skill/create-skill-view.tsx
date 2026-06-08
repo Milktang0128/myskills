@@ -1155,24 +1155,6 @@ function normalizeSpec(spec: CreateSkillSpec): CreateSkillSpec {
   };
 }
 
-function isUsableOutline(spec: CreateSkillSpec, questions: CreateSkillQuestion[]): boolean {
-  const safeSpec = normalizeSpec(spec);
-  const intent = safeSpec.intentFrame;
-  const safeQuestions = normalizeQuestions(questions);
-  return Boolean(
-    slugInput(safeSpec.name) &&
-      safeSpec.description.trim().length >= 20 &&
-      !safeSpec.description.toLowerCase().includes('structured agent workflow') &&
-      intent.whenToUse.trim().length >= 12 &&
-      intent.userInput.trim().length >= 12 &&
-      intent.output.trim().length > 0 &&
-      intent.outputParts.filter((item) => item.trim()).length >= 2 &&
-      intent.workflow.filter((item) => item.trim()).length >= 3 &&
-      intent.successCriteria.some((item) => item.trim()) &&
-      safeQuestions.some((question) => question.options.length > 0),
-  );
-}
-
 // 镜像 Rust create_skill_normalize_spec 的旧→新惰性迁移：旧字段缺失时填默认/迁移。
 function normalizeIntentFrame(value: unknown): CreateSkillSpec['intentFrame'] {
   const source: Record<string, unknown> = isRecord(value) ? value : {};
