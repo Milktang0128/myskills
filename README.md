@@ -33,33 +33,23 @@ A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Cod
 
 ## Install
 
-The released `v0.1.x` line remains the frozen Electron/macOS line. The active
-`tauri/refactor-v0.2` branch is a Tauri 2 rewrite that uses a separate preview
-app id (`com.kanbenzhi.myskills.tauri-preview`) and a separate app data
-directory until DB migration and rollback parity are verified.
-
-For the frozen Electron release, download the signed, notarized macOS DMG:
+Download the latest signed build for your platform:
 
 **[→ Releases page](https://github.com/Milktang0128/myskills/releases/latest)**
 
-- **Apple Silicon Macs only** (M1, M2, M3, M4) — Intel build is on the roadmap for the Electron maintenance line
-- **macOS 13 (Ventura) or later**
-- DMG is ~116 MB; the installed app is ~280 MB
-- Signed with a Developer ID certificate and stapled with Apple's notary ticket — open with a normal double-click, no Terminal workaround
+- **macOS** — universal `.dmg` (Apple Silicon **and** Intel). Signed with a Developer ID certificate and stapled with Apple's notary ticket, so it opens with a normal double-click — no Terminal workaround. Requires macOS 13 (Ventura) or later. ~19 MB.
+- **Windows** — `.exe` installer (NSIS).
+- **Linux** — `.AppImage`, `.deb`, or `.rpm`.
 
-For the Tauri preview branch, build locally with `npm run build:tauri`. Public
-macOS/Windows/Linux preview artifacts are only release candidates after feature
-parity smoke testing is complete.
+MySkills keeps itself current: on launch it checks the stable release channel and, when a newer version is published, offers a one-click update from the notification or **Settings → Updates**. Updates are signature-verified before they install.
 
-Preview builds can check the `tauri-preview` GitHub Release for signed updates
-from Settings. The client only shows an update when the published `latest.json`
-version is greater than the installed app version.
+> The original `v0.1.x` line was an Electron, Apple-Silicon-only build. It's superseded by the cross-platform Tauri builds (`v0.2.0`+) and kept on the releases page only for history.
 
 ## On your desktop
 
 What MySkills puts where:
 
-- The Tauri preview app data directory is isolated as `myskills-tauri-preview`; it contains `myskills.db`, `backups/`, and `staging/`.
+- The app data directory contains `myskills.db`, `backups/`, and `staging/`. (Dev/preview builds use an isolated `myskills-tauri-preview` directory so they never touch your real data.)
 - Automatic backups are written before every sync write; retention is configurable in Settings.
 - AI provider API keys live in the system credential store when AI features are enabled.
 
@@ -181,9 +171,9 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 
 | Version | Theme | Status |
 |---|---|---|
-| **v0.1** | MVP-A — read-only inventory, scenarios, Discover, optional AI | shipping |
-| v0.2 | Tauri rewrite — cross-platform shell, Rust backend, feature parity with Electron `v0.1.x`, plus Create Skill preview | active preview branch |
-| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness, signed multi-platform release automation | planned |
+| v0.1 | MVP-A — read-only inventory, scenarios, Discover, optional AI | superseded (frozen Electron line) |
+| **v0.2** | Tauri rewrite — cross-platform (macOS / Windows / Linux), Rust backend, in-app auto-update, plus Create Skill | shipping |
+| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness | planned |
 
 **Not planned:**
 - General-purpose in-app skill editor — Create Skill may generate and install a reviewed `SKILL.md`, but long-form editing stays in your usual editor
@@ -192,16 +182,12 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 
 ## Status
 
-Solo personal project. `v0.1.x` is the frozen Electron/macOS line; `v0.2` is
-the Tauri rewrite branch. The Rust backend has unit coverage for migration and
-scanner invariants, the packaged preview app has passed first-window boot
-smoke, and Settings exposes read-only Electron DB candidate discovery for the
-future stable migration confirmation flow. Stable startup migration is gated by
-a confirmed source-hash manifest, written only after user confirmation, rather
-than a bare DB path. Release readiness is tracked in
-[docs/qa/tauri-parity-smoke.md](docs/qa/tauri-parity-smoke.md); Library,
-Coverage, Discover, Sync, History, Settings, and AI flows still require full
-desktop parity smoke before `v0.2.0` is treated as stable.
+Solo personal project. The shipping line is the cross-platform Tauri build
+(`v0.2.x`) — a Rust backend with a Next.js UI, signed and notarized on macOS,
+packaged for Windows and Linux, with in-app auto-update. The older Electron,
+macOS-only `v0.1.x` line is frozen. The Rust backend has unit coverage for the
+scanner and sync invariants, and the release workflow signs and publishes
+macOS / Windows / Linux artifacts on every version tag.
 
 ## Contributing
 
