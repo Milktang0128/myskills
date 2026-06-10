@@ -44,6 +44,13 @@ const config: Config = {
           DEFAULT: 'hsl(var(--card))',
           foreground: 'hsl(var(--card-foreground))',
         },
+        // Registered for the Radix dropdown menu (ui/dropdown-menu.tsx).
+        // The CSS vars existed in globals.css all along — without this entry
+        // `bg-popover` compiled to nothing and the menu rendered transparent.
+        popover: {
+          DEFAULT: 'hsl(var(--popover))',
+          foreground: 'hsl(var(--popover-foreground))',
+        },
       },
       // Right-angle geometry: every named radius is zero. Circles (rounded-full)
       // and the literal rounded-none stay as Tailwind defaults so color dots,

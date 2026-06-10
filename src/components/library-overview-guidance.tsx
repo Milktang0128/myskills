@@ -11,8 +11,8 @@
  * renders its own visual.
  */
 import { Sparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { useT } from '@/lib/i18n';
-import { cn } from '@/lib/utils';
 
 export const UNSCENARIZED_GUIDANCE_THRESHOLD = 0.8;
 
@@ -38,18 +38,10 @@ export function LibraryOverviewGuidance({
             {t('kanban.empty.guidance.body', { unscenarized, total })}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onOpenAiLens}
-          className={cn(
-            'inline-flex h-7 shrink-0 items-center gap-1.5 px-3 text-[12px] font-medium',
-            'bg-violet-600 text-white shadow-sm transition-colors hover:bg-violet-700',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1',
-          )}
-        >
+        <Button variant="ai" onClick={onOpenAiLens} className="h-7 shrink-0 gap-1.5 px-3 text-[12px]">
           <Sparkles className="h-3.5 w-3.5" />
           {t('kanban.empty.guidance.cta')}
-        </button>
+        </Button>
       </div>
     </div>
   );

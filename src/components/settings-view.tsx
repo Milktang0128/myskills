@@ -17,6 +17,7 @@ import {
   X,
   Wifi,
   Sparkles,
+  RotateCcw,
   KeyRound,
   Power,
   ShieldCheck,
@@ -1018,7 +1019,7 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                   window.location.assign('/');
                 }}
               >
-                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
                 {t('settings.onboarding.rerun')}
               </Button>
             </div>

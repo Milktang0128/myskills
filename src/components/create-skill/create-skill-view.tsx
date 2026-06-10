@@ -31,11 +31,20 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { SyncConfirm } from '@/components/sync-confirm';
+import { confirmAction } from '@/components/ui/confirm-dialog';
 import { api } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
 type Step = 'input' | 'outline' | 'questions' | 'draft' | 'install' | 'done';
+
+/**
+ * The renderer's pointer to the draft being worked on. The backend keeps the
+ * draft row + staging dir alive across view switches and app restarts — this
+ * key is how a remount finds it again (the copy already promises "你可以离开
+ * 此页"; without restore that promise only held for the background start job).
+ */
+const LAST_DRAFT_KEY = 'createSkill.lastDraftId';
 
 interface Props {
   seed?: string;
@@ -74,12 +83,58 @@ export function CreateSkillView({
   const [targetPlatformIds, setTargetPlatformIds] = useState<PlatformId[]>([canonicalPlatform]);
   const [targetScenarioIds, setTargetScenarioIds] = useState<number[]>([]);
   const [startJob, setStartJob] = useState<AiJob<CreateSkillStartResult> | null>(null);
+  // True once the user edits SKILL.md AFTER a review ran — the green "通过"
+  // verdict no longer describes the current text, so installing is gated on
+  // re-checking.
+  const [reviewStale, setReviewStale] = useState(false);
 
   useEffect(() => {
     if (!seed) return;
     setPrompt(seed);
     setStep('input');
   }, [seed]);
+
+  // Remember which draft is in progress; clear in resetAll / on install.
+  useEffect(() => {
+    if (draft?.id) window.localStorage.setItem(LAST_DRAFT_KEY, draft.id);
+  }, [draft?.id]);
+
+  // Restore the in-progress draft on remount (view switch / app restart).
+  useEffect(() => {
+    if (draft || seed) return;
+    const lastId = window.localStorage.getItem(LAST_DRAFT_KEY);
+    if (!lastId) return;
+    let cancelled = false;
+    void api.ai.createSkill
+      .get(lastId)
+      .then((existing) => {
+        if (cancelled || !existing) return;
+        const nextDraft = normalizeCreateSkillDraft(existing);
+        if (nextDraft.discardedAt || nextDraft.installedAt) {
+          window.localStorage.removeItem(LAST_DRAFT_KEY);
+          return;
+        }
+        setDraft(nextDraft);
+        setSpec(nextDraft.skillSpec);
+        setMarkdown(nextDraft.draftMarkdown ?? '');
+        setReview(nextDraft.validation);
+        if (nextDraft.rawPrompt) setPrompt(nextDraft.rawPrompt);
+        // Step inference mirrors applyStartResult, plus the draft stage.
+        const answers = nextDraft.answers ?? {};
+        const open = (nextDraft.followupQuestions ?? []).some((q) => !answers[q.id]);
+        if (nextDraft.draftMarkdown) setStep('draft');
+        else if (nextDraft.skillSpec) setStep(open ? 'questions' : 'outline');
+      })
+      .catch(() => {
+        // Draft row is gone — drop the stale pointer.
+        window.localStorage.removeItem(LAST_DRAFT_KEY);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Mount-only: restoring mid-session would stomp live state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!targetPlatformIds.length && canonicalPlatform) {
@@ -202,7 +257,7 @@ export function CreateSkillView({
       setSpec(nextDraft.skillSpec);
       setStep(nextStep);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(formatCreateSkillError(err, locale));
     } finally {
       setBusy(false);
     }
@@ -226,7 +281,7 @@ export function CreateSkillView({
       const hasOpenQuestions = (nextDraft.followupQuestions ?? []).some((q) => !answers[q.id]);
       setStep(hasOpenQuestions ? 'questions' : 'outline');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(formatCreateSkillError(err, locale));
     } finally {
       setBusy(false);
     }
@@ -243,9 +298,10 @@ export function CreateSkillView({
       setSpec(nextDraft.skillSpec);
       setMarkdown(nextDraft.draftMarkdown ?? '');
       setReview(nextDraft.validation);
+      setReviewStale(false);
       setStep('draft');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(formatCreateSkillError(err, locale));
     } finally {
       setBusy(false);
     }
@@ -265,6 +321,7 @@ export function CreateSkillView({
       const nextReview = normalizeCreateSkillReview(result.review);
       setDraft(nextDraft);
       setReview(nextReview);
+      setReviewStale(false);
       // 可安装性只看 blocking；warning 为非阻塞提示，不阻止进入安装步骤。
       if (nextReview.blocking.length === 0) {
         setStep('install');
@@ -274,7 +331,7 @@ export function CreateSkillView({
         onToast(copy.reviewBlockedToast);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(formatCreateSkillError(err, locale));
     } finally {
       setBusy(false);
     }
@@ -296,7 +353,7 @@ export function CreateSkillView({
       setPlan(result.plan);
       setConfirmOpen(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(formatCreateSkillError(err, locale));
     } finally {
       setBusy(false);
     }
@@ -338,12 +395,14 @@ export function CreateSkillView({
   }
 
   function resetAll() {
+    window.localStorage.removeItem(LAST_DRAFT_KEY);
     setStep('input');
     setPrompt('');
     setDraft(null);
     setSpec(null);
     setMarkdown('');
     setReview(null);
+    setReviewStale(false);
     setPlan(null);
     setExecuteResult(null);
     setStartJob(null);
@@ -352,10 +411,18 @@ export function CreateSkillView({
     setTargetPlatformIds([canonicalPlatform]);
   }
 
-  // Explicit "discard draft": tell the backend to mark the draft discarded and
-  // clean its staging dir, THEN reset the UI. Without this the DB row + staging
-  // temp dir leak forever (the button used to only reset front-end state).
+  // Explicit "discard draft": confirm (it erases the outline + any answered
+  // questions + the staging dir, with no undo), then tell the backend to mark
+  // the draft discarded and clean staging, THEN reset the UI. Without the
+  // backend call the DB row + staging temp dir leak forever.
   async function discardDraft() {
+    const ok = await confirmAction({
+      title: copy.discardConfirmTitle,
+      description: copy.discardConfirmBody,
+      tone: 'destructive',
+      confirmLabel: copy.discardDraft,
+    });
+    if (!ok) return;
     const id = draft?.id;
     resetAll();
     if (id) {
@@ -365,6 +432,19 @@ export function CreateSkillView({
         /* best-effort cleanup; UI already reset */
       }
     }
+  }
+
+  // Regenerating from the original prompt throws away the current outline +
+  // answers — same blast radius as discard, so it gets the same gate.
+  async function confirmRegenerate() {
+    const ok = await confirmAction({
+      title: copy.regenerateConfirmTitle,
+      description: copy.regenerateConfirmBody,
+      tone: 'destructive',
+      confirmLabel: copy.regenerateOutline,
+    });
+    if (!ok) return;
+    await start();
   }
 
   return (
@@ -420,7 +500,7 @@ export function CreateSkillView({
                     </button>
                   ))}
                 </div>
-                <Button onClick={start} disabled={busy || (aiAvailable && prompt.trim().length < 4)} data-smoke-action="create-skill-start">
+                <Button variant="ai" onClick={start} disabled={busy || (aiAvailable && prompt.trim().length < 4)} data-smoke-action="create-skill-start">
                   {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
                   {busy && startJob ? copy.backgroundRunningShort : aiAvailable ? copy.start : copy.configureAi}
                 </Button>
@@ -626,15 +706,27 @@ export function CreateSkillView({
                 </details>
 
                 <div className="flex gap-2">
-                  {/* 轮廓 = 澄清后的结晶确认面：主操作直接生成 SKILL.md。 */}
-                  <Button onClick={generate} disabled={busy || !spec}>
-                    <Sparkles className="mr-2 h-4 w-4" />
-                    {copy.generateDraft}
+                  {/* 轮廓 = 澄清后的结晶确认面：主操作直接生成 SKILL.md。
+                      这是最长的 LLM 调用——必须有清晰的进行中反馈。 */}
+                  <Button variant="ai" onClick={generate} disabled={busy || !spec}>
+                    {busy ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        {copy.generating}
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        {copy.generateDraft}
+                      </>
+                    )}
                   </Button>
-                  <Button variant="outline" onClick={() => setStep('questions')} disabled={busy}>
+                  {/* saveOutline 先把手改的轮廓字段写回后端再切步——直接 setStep
+                      会让后端 spec 在下一轮覆盖掉用户的编辑（静默丢失）。 */}
+                  <Button variant="outline" onClick={() => saveOutline('questions')} disabled={busy}>
                     {copy.refineMore}
                   </Button>
-                  <Button variant="outline" onClick={start} disabled={busy || prompt.trim().length < 4}>
+                  <Button variant="outline" onClick={confirmRegenerate} disabled={busy || prompt.trim().length < 4}>
                     {copy.regenerateOutline}
                   </Button>
                   <Button variant="outline" onClick={discardDraft} disabled={busy}>
@@ -693,12 +785,34 @@ export function CreateSkillView({
                 <Field label="SKILL.md">
                   <textarea
                     value={markdown}
-                    onChange={(e) => setMarkdown(e.target.value)}
+                    onChange={(e) => {
+                      setMarkdown(e.target.value);
+                      // Editing voids a previous review verdict — the green
+                      // "通过" would otherwise keep describing text that no
+                      // longer exists (and install would hit REVIEW_BLOCKED
+                      // with a raw English error).
+                      if (review) {
+                        setReviewStale(true);
+                        if (step === 'install') setStep('draft');
+                      }
+                    }}
                     className="min-h-[360px] w-full resize-y border bg-background p-3 font-mono text-xs leading-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     spellCheck={false}
                   />
                 </Field>
-                {review && <ReviewPanel review={review} copy={copy} />}
+                {review && <ReviewPanel review={review} stale={reviewStale} copy={copy} />}
+                {executeResult && (executeResult.sync.failed?.length ?? 0) > 0 && (
+                  <Notice tone="danger" icon={<AlertTriangle className="h-4 w-4" />}>
+                    <span className="block">{copy.installFailed}</span>
+                    <ul className="mt-1 space-y-0.5">
+                      {executeResult.sync.failed.map((f, i) => (
+                        <li key={i} className="break-all font-mono text-[11px]">
+                          {f.item.targetPath}: {f.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </Notice>
+                )}
                 <div className="flex gap-2">
                   <Button onClick={runReview} disabled={busy || !markdown.trim()}>
                     {busy ? (
@@ -822,6 +936,8 @@ export function CreateSkillView({
                     !draft ||
                     !markdown.trim() ||
                     review == null ||
+                    // 编辑过 markdown → 上次审查不再算数，先重新检查。
+                    reviewStale ||
                     // 只看 blocking：warning 为非阻塞质量提示，仍允许安装。
                     review.blocking.length !== 0 ||
                     targetPlatformIds.length === 0
@@ -863,6 +979,7 @@ export function CreateSkillView({
           }
           setExecuteResult(result);
           setDraft(normalizeCreateSkillDraft(result.draft));
+          window.localStorage.removeItem(LAST_DRAFT_KEY);
           setStep('done');
           return result.sync;
         }}
@@ -875,8 +992,11 @@ export function CreateSkillView({
 }
 
 function StepRail({ step, copy }: { step: Step; copy: Copy }) {
-  const steps: Step[] = ['input', 'outline', 'questions', 'draft', 'install'];
-  const active = Math.max(0, steps.indexOf(step));
+  // Rail order mirrors the actual flow (clarify-first): questions come
+  // BEFORE the crystallized outline. 'done' isn't a segment — it lights the
+  // whole rail.
+  const steps: Step[] = ['input', 'questions', 'outline', 'draft', 'install'];
+  const active = step === 'done' ? steps.length - 1 : Math.max(0, steps.indexOf(step));
   return (
     <div className="hidden items-center gap-1 lg:flex">
       {steps.map((item, index) => (
@@ -944,13 +1064,17 @@ function QuestionBlock({
   );
 }
 
-function ReviewPanel({ review, copy }: { review: CreateSkillReviewReport; copy: Copy }) {
+function ReviewPanel({ review, stale, copy }: { review: CreateSkillReviewReport; stale?: boolean; copy: Copy }) {
   const safeReview = normalizeCreateSkillReview(review);
   const blocking = safeReview.blocking;
   const warnings = safeReview.warnings;
   return (
     <div className="space-y-2">
-      {blocking.length === 0 ? (
+      {stale ? (
+        <Notice tone="info" icon={<AlertTriangle className="h-4 w-4" />}>
+          {copy.reviewStale}
+        </Notice>
+      ) : blocking.length === 0 ? (
         <Notice tone="success" icon={<CheckCircle2 className="h-4 w-4" />}>
           {copy.reviewPassed}
         </Notice>
@@ -1461,6 +1585,12 @@ interface Copy {
   generateNow: string;
   questionsDone: string;
   generateDraft: string;
+  generating: string;
+  discardConfirmTitle: string;
+  discardConfirmBody: string;
+  regenerateConfirmTitle: string;
+  regenerateConfirmBody: string;
+  reviewStale: string;
   enoughGenerate: string;
   viewOutline: string;
   refineMore: string;
@@ -1564,6 +1694,12 @@ const zhCopy: Copy = {
   generateNow: '直接生成草案',
   questionsDone: '关键问题已回答，下面是结晶出的技能轮廓。',
   generateDraft: '生成 SKILL.md',
+  generating: '正在生成 SKILL.md…',
+  discardConfirmTitle: '放弃这份草稿？',
+  discardConfirmBody: '当前轮廓、已回答的追问和暂存内容都会删除，无法撤销。',
+  regenerateConfirmTitle: '重新生成轮廓？',
+  regenerateConfirmBody: '会从最初的需求重新开始，当前轮廓和已回答的追问会被覆盖。',
+  reviewStale: '草案已修改 —— 上次检查结果不再算数，请重新检查后再安装。',
   enoughGenerate: '够了，直接看轮廓',
   viewOutline: '查看技能轮廓',
   refineMore: '继续补充澄清',
@@ -1674,6 +1810,12 @@ const enCopy: Copy = {
   generateNow: 'Generate draft now',
   questionsDone: 'Key questions are answered — here is the crystallized outline.',
   generateDraft: 'Generate SKILL.md',
+  generating: 'Generating SKILL.md…',
+  discardConfirmTitle: 'Discard this draft?',
+  discardConfirmBody: 'The outline, answered questions, and staged content are deleted. This cannot be undone.',
+  regenerateConfirmTitle: 'Regenerate the outline?',
+  regenerateConfirmBody: 'Starts over from the original prompt — the current outline and answered questions are replaced.',
+  reviewStale: 'The draft changed — the last review verdict no longer applies. Re-run the review before installing.',
   enoughGenerate: 'Enough — show the outline',
   viewOutline: 'Review the outline',
   refineMore: 'Add more clarification',

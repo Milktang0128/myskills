@@ -143,7 +143,7 @@ export function Sidebar({
           <span
             className={cn(
               'h-1.5 w-1.5 shrink-0 rounded-full',
-              scanning ? 'animate-pulse bg-amber-500' : 'bg-emerald-500',
+              scanning ? 'animate-pulse bg-amber-500 dark:bg-amber-400' : 'bg-emerald-500 dark:bg-emerald-400',
             )}
           />
           <span className="shrink-0 text-[11px] text-muted-foreground">

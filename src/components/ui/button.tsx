@@ -18,6 +18,10 @@ const buttonVariants = cva(
         secondary: 'bg-secondary text-secondary-foreground hover:bg-secondary/80',
         ghost: 'hover:bg-accent hover:text-accent-foreground',
         link: 'underline-offset-4 hover:underline text-primary',
+        // Violet = AI. Every AI-triggering primary action uses this variant so
+        // the "this will call your model" signal stays consistent (and so the
+        // hand-rolled bg-violet-600 buttons stop drifting per view).
+        ai: 'bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500',
       },
       size: {
         default: 'h-9 px-4 py-2',

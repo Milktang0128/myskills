@@ -24,7 +24,8 @@
  *   intentional: skipping is recoverable; completing is one-shot.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, FolderOpen, Loader2, X } from 'lucide-react';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
+import { ArrowLeft, ArrowRight, Check, FolderOpen, FolderPlus, Loader2, X } from 'lucide-react';
 import type { LlmProvider, Platform, PlatformId, ScanResult } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -86,11 +87,23 @@ export function OnboardingWizard({ onDone }: Props) {
     goNext();
   }, [goNext, step]);
 
-  // Pressing Escape always closes without writing the completion timestamp.
-  // The user can find "Re-run Onboarding" in Settings → About if they regret it.
+  // Escape is LAYERED. A reflexive Esc while typing in the API-key or
+  // custom-platform inputs used to vaporize the whole wizard with everything
+  // typed into it. Order of consumption:
+  //   1. an open inner disclosure (custom-platform form) collapses itself
+  //      via its own capture listener (see PlatformsStep) and stops the event
+  //   2. focus inside a text control → just blur the control
+  //   3. otherwise → close the wizard (without writing the completion
+  //      timestamp; "Re-run onboarding" in Settings remains the recovery path)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !advancing) onDone();
+      if (e.key !== 'Escape' || advancing) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+        el.blur();
+        return;
+      }
+      onDone();
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -110,10 +123,26 @@ export function OnboardingWizard({ onDone }: Props) {
   }, [onDone]);
 
   return (
-    // Full-screen frosted overlay. Pointer-events-auto on the inner card so
-    // clicks don't fall through to the workspace below.
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-      <div className="relative flex h-[min(640px,92vh)] w-[min(720px,92vw)] flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl">
+    // Radix Dialog shell: real modal semantics (role=dialog + aria-modal),
+    // focus trapped inside the card so Tab can't wander into the frosted
+    // workspace underneath. Esc/outside-close are disabled at the Radix
+    // layer — the layered window handler above owns Escape.
+    <DialogPrimitive.Root open>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm" />
+        <DialogPrimitive.Content
+          className="fixed inset-0 z-50 flex items-center justify-center focus:outline-none"
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
+          <DialogPrimitive.Title className="sr-only">
+            {t('onboarding.welcome.brand')}
+          </DialogPrimitive.Title>
+          <DialogPrimitive.Description className="sr-only">
+            {t('onboarding.welcome.tagline')}
+          </DialogPrimitive.Description>
+          <div className="relative flex h-[min(640px,92vh)] w-[min(720px,92vw)] flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl">
         {/* Header: brand + step indicator + skip */}
         <header className="flex shrink-0 items-center justify-between border-b px-5 py-3">
           <div className="flex items-center gap-2">
@@ -201,8 +230,10 @@ export function OnboardingWizard({ onDone }: Props) {
             </Button>
           )}
         </footer>
-      </div>
-    </div>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 
@@ -287,6 +318,23 @@ function PlatformsStep({ onStatusChange }: { onStatusChange: (status: PlatformsS
   const [customForm, setCustomForm] = useState({ id: '', label: '', skillsDir: '' });
   const [customError, setCustomError] = useState<string | null>(null);
   const [customBusy, setCustomBusy] = useState(false);
+  const [enableError, setEnableError] = useState<string | null>(null);
+
+  // Esc layer 1: an open custom-platform form swallows Escape (capture phase
+  // stops it from reaching the wizard's close handler) and just collapses
+  // itself — the half-filled form is the thing the user wants to back out
+  // of, not the whole wizard.
+  useEffect(() => {
+    if (!customOpen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setCustomOpen(false);
+      setCustomError(null);
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [customOpen]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -319,9 +367,14 @@ function PlatformsStep({ onStatusChange }: { onStatusChange: (status: PlatformsS
 
   async function enable(cand: ProbedCandidate) {
     setBusyId(cand.id);
+    setEnableError(null);
     try {
+      // platforms.create also creates the directory when it doesn't exist
+      // yet — on a fresh machine "enable" doubles as "create the folder".
       await api.platforms.create({ id: cand.id, label: cand.label, skillsDir: cand.defaultDir });
       await refresh();
+    } catch (err) {
+      setEnableError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyId(null);
     }
@@ -417,13 +470,27 @@ function PlatformsStep({ onStatusChange }: { onStatusChange: (status: PlatformsS
                     {busyId === cand.id ? t('onboarding.platforms.enabling') : t('onboarding.platforms.enable')}
                   </Button>
                 ) : (
-                  <span className="text-[11px] text-muted-foreground">—</span>
+                  // Fresh machine: none of the default dirs exist yet. Without
+                  // this button the step dead-ends (nothing to enable → Next
+                  // stays disabled forever). Creating the folder + registering
+                  // is exactly what "enable" means here.
+                  <Button size="sm" variant="outline" onClick={() => enable(cand)} disabled={busyId === cand.id} className="gap-1">
+                    <FolderPlus className="h-3 w-3" />
+                    {busyId === cand.id
+                      ? t('onboarding.platforms.enabling')
+                      : t('onboarding.platforms.createAndEnable')}
+                  </Button>
                 )}
               </div>
             );
           })}
+          {enableError && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] text-destructive break-all">
+              {enableError}
+            </p>
+          )}
           {enabledCount === 0 && !loading && (
-            <p className="text-center text-xs text-amber-600">{t('onboarding.platforms.none')}</p>
+            <p className="text-center text-xs text-amber-600 dark:text-amber-400">{t('onboarding.platforms.none')}</p>
           )}
 
           {/* Custom platform expander — power-user escape hatch for tools

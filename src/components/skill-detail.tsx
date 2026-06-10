@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
@@ -10,7 +10,11 @@ import type {
   SyncExecuteResult,
   SyncPlan,
 } from '@shared/types';
+import { isPlanSafeToAutoApply } from '@shared/types';
 import { Button } from '@/components/ui/button';
+import type { ToastAction } from '@/components/ui/toast';
+import { executePlanWithUndo } from '@/lib/sync-apply';
+import { STATUS_TONE } from '@/lib/status-tones';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { PlatformBadge } from './platform-badge';
@@ -24,10 +28,13 @@ interface Props {
   scenarios: Scenario[];
   onClose: () => void;
   onMutated: () => void;
+  /** Workspace toast pipe — errors + the instant-toggle undo affordance. */
+  onToast: (msg: string, action?: ToastAction, durationMs?: number) => void;
 }
 
-export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
+export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }: Props) {
   const t = useT();
+  const asideRef = useRef<HTMLElement | null>(null);
   const [skill, setSkill] = useState<Skill | null>(null);
   const [loading, setLoading] = useState(true);
   const [canonicalPlatform, setCanonicalPlatform] = useState<string>('shared');
@@ -61,6 +68,16 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
       setAiSuggestions([]);
     }
   }
+
+  // Move focus into the panel when it opens (or switches skill). Without
+  // this the aside's own Escape handler never fires on the common path —
+  // focus stays wherever the user clicked — and screen readers don't
+  // announce that a panel appeared.
+  useEffect(() => {
+    if (loading) return;
+    const id = window.setTimeout(() => asideRef.current?.focus(), 50);
+    return () => window.clearTimeout(id);
+  }, [skillId, loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,17 +128,46 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
       const plan = await api.sync.planPromote([{ skillId, sourceLocationId: loc.id }]);
       setPendingPlan(plan);
       setPlanOpen(true);
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   }
 
+  // Enable/disable follows the SAME model as the matrix cells (SPEC §9):
+  // safe plans apply instantly with an undo toast; anything destructive
+  // falls through to the confirm dialog. Forcing a dialog here for the
+  // identical action the matrix applies instantly taught users two
+  // contradictory costs for one operation.
   async function handleToggleDisabled(loc: SkillLocation, disable: boolean) {
     setBusy(true);
     try {
       const plan = await api.sync.planToggleDisabled([{ skillId, locationId: loc.id, disable }]);
-      setPendingPlan(plan);
-      setPlanOpen(true);
+      if (!isPlanSafeToAutoApply(plan.items)) {
+        setPendingPlan(plan);
+        setPlanOpen(true);
+        return;
+      }
+      const name = skill?.name ?? '';
+      await executePlanWithUndo({
+        plan,
+        undoMessage: disable
+          ? t('matrix.toast.disabled', { skill: name })
+          : t('matrix.toast.enabled', { skill: name }),
+        t,
+        onToast,
+        afterApplied: () => {
+          onMutated();
+          void fetchAll();
+        },
+        afterUndone: () => {
+          onMutated();
+          void fetchAll();
+        },
+      });
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -134,6 +180,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated }: Props) {
 
   return (
     <aside
+      ref={asideRef}
       className="flex h-full w-[460px] flex-col border-l bg-card/40 animate-slide-in-right"
       role="complementary"
       aria-label={t('detail.region.aria')}
@@ -466,7 +513,7 @@ function LocationRow({
   } else if (isCanonical) {
     statusIcon = <Crown className="h-3 w-3" />;
     statusLabel = t('detail.loc.canonical');
-    statusTone = 'text-amber-600';
+    statusTone = 'text-amber-600 dark:text-amber-400';
   } else if (loc.isSymlink) {
     statusIcon = <Link2 className="h-3 w-3" />;
     statusLabel = t('detail.loc.symlink');
@@ -475,17 +522,17 @@ function LocationRow({
     if (canonicalHash && loc.contentHash && loc.contentHash === canonicalHash) {
       statusIcon = <Check className="h-3 w-3" />;
       statusLabel = t('detail.loc.inSync');
-      statusTone = 'text-emerald-600';
+      statusTone = STATUS_TONE.ok;
     } else if (canonicalHash && loc.contentHash) {
       statusIcon = <AlertTriangle className="h-3 w-3" />;
       statusLabel = t('detail.loc.stale');
-      statusTone = 'text-amber-600';
+      statusTone = STATUS_TONE.warn;
       canAdopt = true;
     } else {
       // No canonical to compare against → this IS the only version
       statusIcon = <Check className="h-3 w-3" />;
       statusLabel = t('detail.loc.onlyVersion');
-      statusTone = 'text-blue-600';
+      statusTone = STATUS_TONE.link;
       canAdopt = true;
     }
   }

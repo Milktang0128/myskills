@@ -21,7 +21,8 @@ import { HistoryView } from '@/components/history-view';
 import { ScenariosView } from '@/components/scenarios-view';
 import { SettingsView } from '@/components/settings-view';
 import { CreateSkillView } from '@/components/create-skill/create-skill-view';
-import { Toast, type ToastAction } from '@/components/ui/toast';
+import { ToastViewport, type ToastAction, type ToastData } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
 import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 
@@ -53,6 +54,13 @@ export default function Workspace() {
   const [libraryView, setLibraryView] = useState<LibraryView>('list');
   const [filter, setFilter] = useState<SkillFilter>({ scope: 'all' });
   const [search, setSearch] = useState('');
+  // Discover's query is deliberately SEPARATE from the library/matrix search.
+  // Sharing one state meant a leftover library search term auto-fired a
+  // remote skills.sh query — or worse, a full LLM rerank pipeline — the
+  // moment the user switched to Discover, spending API quota with zero
+  // intent. Each view keeps its own input; switching views never re-runs
+  // the other view's search.
+  const [discoverQuery, setDiscoverQuery] = useState('');
   // Sort lives at the page level (not inside SkillList) so it survives view
   // switches and filter changes — switching from kanban back to list keeps
   // your sort choice.
@@ -67,7 +75,10 @@ export default function Workspace() {
   const [scenarioFormOpen, setScenarioFormOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [bridgeReady, setBridgeReady] = useState(false);
-  const [toast, setToast] = useState<{ message: string; action?: ToastAction; durationMs?: number } | null>(null);
+  // Small toast stack (max 3) — a single slot let any new toast instantly
+  // bury the previous one, which killed the 6s undo window in practice.
+  const [toasts, setToasts] = useState<ToastData[]>([]);
+  const toastIdRef = useRef(0);
   // Onboarding state:
   //   null  → unknown (still resolving — don't flash either UI)
   //   true  → completed previously, hide wizard
@@ -282,7 +293,7 @@ export default function Workspace() {
       {
         name: 'discover',
         click: () => {
-          setSearch('catalog');
+          setDiscoverQuery('catalog');
           setDiscoverMode('keyword');
           clickSmokeAction('nav-discover');
         },
@@ -406,10 +417,17 @@ export default function Workspace() {
     setScanning(true);
     try {
       await api.scan.run();
+    } catch (err) {
+      // Without this the sidebar dot just flips back to the green "已扫描"
+      // state and a failed scan looks like a successful one.
+      showToast(
+        t('scan.toast.failed', { message: err instanceof Error ? err.message : String(err) }),
+      );
     } finally {
       setScanning(false);
     }
-  }, [scanning]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanning, t]);
 
   useEffect(() => {
     if (!bridgeReady || frontendSmokeActive || onboardingDone !== true || autoScanRanRef.current) return;
@@ -441,7 +459,12 @@ export default function Workspace() {
   }, [bridgeReady, frontendSmokeActive, onboardingDone, refreshSkills, refreshMeta]);
 
   function showToast(msg: string, action?: ToastAction, durationMs?: number) {
-    setToast({ message: msg, action, durationMs });
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev.slice(-2), { id, message: msg, action, durationMs }]);
+  }
+
+  function dismissToast(id: number) {
+    setToasts((prev) => prev.filter((item) => item.id !== id));
   }
 
   const searchPlaceholder =
@@ -450,6 +473,11 @@ export default function Workspace() {
       : sidebarView === 'discover'
       ? t('app.search.discover.placeholder')
       : t('app.search.placeholder');
+
+  // The header input edits whichever search the current view owns.
+  const isDiscoverSearch = sidebarView === 'discover';
+  const searchValue = isDiscoverSearch ? discoverQuery : search;
+  const setSearchValue = isDiscoverSearch ? setDiscoverQuery : setSearch;
 
   // Search input is hidden on views that have nothing to filter from it:
   //   - AI Lens has its own regenerate affordance, no list
@@ -461,8 +489,10 @@ export default function Workspace() {
     sidebarView !== 'create' &&
     !(sidebarView === 'library' && effectiveLibraryView === 'ai-lens');
 
-  // Sub-toolbar — Library only, and only when filter is at default.
-  const showSubToolbar = sidebarView === 'library' && isFilterDefault;
+  // Sub-toolbar — Library only. When the filter is narrowed the kanban/AI-lens
+  // segments are DISABLED (with a hint) rather than the whole bar vanishing —
+  // a control that silently disappears reads as a bug, not a rule.
+  const showSubToolbar = sidebarView === 'library';
 
   return (
     <main className="flex h-screen w-screen overflow-hidden">
@@ -529,8 +559,13 @@ export default function Workspace() {
               <ModeSegmented
                 mode={discoverMode}
                 aiAvailable={aiSearchAvailable}
-                queryReady={search.trim().length >= 2}
+                queryReady={discoverQuery.trim().length >= 2}
                 onChange={setDiscoverMode}
+                onRequestAiSetup={() => {
+                  setSettingsFocusSection('ai');
+                  setSidebarView('settings');
+                  setSelectedId(null);
+                }}
               />
             )}
             {showSearchInput && (
@@ -541,16 +576,16 @@ export default function Workspace() {
                 />
                 <input
                   type="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  value={searchValue}
+                  onChange={(e) => setSearchValue(e.target.value)}
                   placeholder={searchPlaceholder}
                   aria-label={searchPlaceholder}
                   className="h-7 w-full border bg-background pl-9 pr-7 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                 />
-                {search && (
+                {searchValue && (
                   <button
                     type="button"
-                    onClick={() => setSearch('')}
+                    onClick={() => setSearchValue('')}
                     aria-label={t('common.clear')}
                     className="absolute right-1 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
@@ -564,7 +599,8 @@ export default function Workspace() {
 
         {showSubToolbar && (
           <LibrarySubToolbar
-            value={libraryView}
+            value={effectiveLibraryView}
+            restricted={!isFilterDefault}
             onChange={(v) => {
               setLibraryView(v);
               setSelectedId(null);
@@ -584,19 +620,32 @@ export default function Workspace() {
               selectedSkillId={selectedId}
               onMutated={refreshMeta}
               onOpenSettings={() => {
+                // Reset any stale deep-link (e.g. a leftover 'ai' focus from
+                // Create Skill) so this entry lands at the top of Settings.
+                setSettingsFocusSection(null);
                 setSidebarView('settings');
                 setSelectedId(null);
               }}
+              onSelectDiscover={() => {
+                setSidebarView('discover');
+                setSelectedId(null);
+              }}
+              onRescan={runScan}
             />
           </div>
         ) : sidebarView === 'discover' ? (
           <div data-smoke-view="discover" className="contents">
             <DiscoverView
-              query={search}
+              query={discoverQuery}
               mode={discoverMode}
               onModeChange={setDiscoverMode}
               aiAvailable={aiSearchAvailable}
               onToast={showToast}
+              onOpenSettings={() => {
+                setSettingsFocusSection(null);
+                setSidebarView('settings');
+                setSelectedId(null);
+              }}
             />
           </div>
         ) : sidebarView === 'create' ? (
@@ -645,6 +694,12 @@ export default function Workspace() {
               llmConfigured={llmConfigured}
               onScenariosChanged={refreshMeta}
               onToast={showToast}
+              scenarios={scenarios}
+              onOpenAiSettings={() => {
+                setSettingsFocusSection('ai');
+                setSidebarView('settings');
+                setSelectedId(null);
+              }}
             />
           </div>
         ) : (
@@ -718,6 +773,7 @@ export default function Workspace() {
             refreshSkills();
             refreshMeta();
           }}
+          onToast={showToast}
         />
       )}
 
@@ -736,14 +792,7 @@ export default function Workspace() {
         }
       />
 
-      {toast && (
-        <Toast
-          message={toast.message}
-          action={toast.action}
-          durationMs={toast.durationMs}
-          onDismiss={() => setToast(null)}
-        />
-      )}
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
 
       {onboardingDone === false && (
         <OnboardingWizard
@@ -769,12 +818,16 @@ export default function Workspace() {
  */
 function LibrarySubToolbar({
   value,
+  restricted,
   onChange,
   totalCount,
   scenarioCount,
   platformCount,
 }: {
   value: LibraryView;
+  /** Filter is narrowed: kanban/AI-lens don't apply to a slice — disable them
+   * with a hint instead of hiding the whole switcher. */
+  restricted: boolean;
   onChange: (v: LibraryView) => void;
   totalCount: number;
   scenarioCount: number;
@@ -789,24 +842,30 @@ function LibrarySubToolbar({
   return (
     <div className="flex shrink-0 items-center gap-1.5 px-6 pt-3">
       <div className="flex items-center gap-0.5 bg-secondary p-0.5">
-        {items.map((it) => (
-          <button
-            key={it.id}
-            type="button"
-            onClick={() => onChange(it.id)}
-            data-smoke-action={`library-${it.id}`}
-            className={cn(
-              'inline-flex h-6 items-center gap-1 whitespace-nowrap px-2.5 text-[11.5px] transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              value === it.id
-                ? 'bg-card text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {it.icon}
-            {it.label}
-          </button>
-        ))}
+        {items.map((it) => {
+          const disabled = restricted && it.id !== 'list';
+          return (
+            <button
+              key={it.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(it.id)}
+              data-smoke-action={`library-${it.id}`}
+              title={disabled ? t('libraryView.restricted.hint') : undefined}
+              className={cn(
+                'inline-flex h-6 items-center gap-1 whitespace-nowrap px-2.5 text-[11.5px] transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                value === it.id
+                  ? 'bg-card text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
+                  : 'text-muted-foreground hover:text-foreground',
+                disabled && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
+              )}
+            >
+              {it.icon}
+              {it.label}
+            </button>
+          );
+        })}
       </div>
       <div className="ml-2 whitespace-nowrap text-[11.5px] text-muted-foreground">
         {t('libraryView.summary', {
@@ -847,12 +906,10 @@ function AiLensBanner({
           {t('uncategorized.aiLens.helper', { count })}
         </p>
       </div>
-      <button
-        onClick={onClick}
-        className="inline-flex shrink-0 items-center gap-1.5 bg-violet-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:ring-offset-1"
-      >
-        ✨ {t('uncategorized.aiLens.cta')}
-      </button>
+      <Button variant="ai" size="sm" onClick={onClick} className="shrink-0 gap-1.5">
+        <Sparkles className="h-3.5 w-3.5" />
+        {t('uncategorized.aiLens.cta')}
+      </Button>
     </div>
   );
 }

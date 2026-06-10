@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Link2,
   AlertTriangle,
@@ -31,6 +31,7 @@ import { PlatformBadge } from './platform-badge';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { STATUS_TONE } from '@/lib/status-tones';
 
 const EXECUTE_TIMEOUT_MS = 30_000;
 
@@ -54,9 +55,20 @@ export function SyncConfirm({
   const t = useT();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // After a timeout the write may STILL complete in the background — the
+  // promise race only abandons the UI side. Retrying would re-consume the
+  // plan token (or double-apply); we disable retry and point the user at
+  // 同步历史 to see what actually happened.
+  const [timedOut, setTimedOut] = useState(false);
 
   // Group plan items by skill so multi-step ops (promote) are visually one unit.
   const grouped = useMemo(() => groupByOp(plan), [plan]);
+
+  // A fresh plan (or reopening) starts from a clean slate.
+  useEffect(() => {
+    setError(null);
+    setTimedOut(false);
+  }, [plan?.token, open]);
 
   if (!plan) return null;
 
@@ -105,13 +117,23 @@ export function SyncConfirm({
       const result = await Promise.race([
         onExecute ? onExecute(plan.token) : api.sync.execute(plan.token),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(t('syncConfirm.timedOut'))), EXECUTE_TIMEOUT_MS),
+          setTimeout(
+            () => reject(Object.assign(new Error(t('syncConfirm.timedOut')), { timeout: true })),
+            EXECUTE_TIMEOUT_MS,
+          ),
         ),
       ]);
       onApplied(result);
       onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      if ((err as { timeout?: boolean }).timeout === true) {
+        setTimedOut(true);
+        // The backend write may finish after we stopped waiting (iCloud paths
+        // routinely blow the 30s budget). Kick a rescan so when it lands, the
+        // scanFinished listeners refresh the matrix/list to the real state.
+        void api.scan.run().catch(() => {});
+      }
     } finally {
       setSubmitting(false);
     }
@@ -159,7 +181,12 @@ export function SyncConfirm({
         </ScrollArea>
 
         {error && (
-          <p className="text-xs text-destructive">{error}</p>
+          <div className="space-y-1">
+            <p className="text-xs text-destructive">{error}</p>
+            {timedOut && (
+              <p className="text-xs text-muted-foreground">{t('syncConfirm.timeoutHint')}</p>
+            )}
+          </div>
         )}
 
         {/* Rollback assurance — telegraphs the safety net so users feel
@@ -175,7 +202,7 @@ export function SyncConfirm({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={apply} disabled={submitting || writeItems.length === 0}>
+          <Button onClick={apply} disabled={submitting || timedOut || writeItems.length === 0}>
             {submitting
               ? t('syncConfirm.applying')
               : writeItems.length === 0
@@ -251,7 +278,9 @@ function ItemRow({ item }: { item: SyncPlanItem }) {
         </div>
       )}
       {item.action === 'conflict' && item.reason && (
-        <div className="mt-0.5 text-[11px] text-amber-700 pl-5">{reasonExplain(item.reason, t)}</div>
+        <div className={cn('mt-0.5 text-[11px] pl-5', STATUS_TONE.warnStrong)}>
+          {reasonExplain(item.reason, t)}
+        </div>
       )}
     </div>
   );
@@ -280,20 +309,22 @@ function iconFor(item: SyncPlanItem) {
 function toneFor(item: SyncPlanItem): string {
   switch (item.action) {
     case 'symlink_create':
-      return 'text-blue-600';
+      return STATUS_TONE.link;
     case 'symlink_replace':
-      return 'text-amber-600';
+      return STATUS_TONE.warn;
     case 'copy_to_canonical':
-      return 'text-purple-600';
+      // Sky, not purple — purple is the AI signal (and the codex platform
+      // badge right next to this row is purple too).
+      return 'text-sky-600 dark:text-sky-400';
     case 'disable':
-      return 'text-muted-foreground';
+      return STATUS_TONE.muted;
     case 'enable':
-      return 'text-emerald-600';
+      return STATUS_TONE.ok;
     case 'skip':
-      return 'text-emerald-600';
+      return STATUS_TONE.ok;
     case 'conflict':
     default:
-      return 'text-amber-600';
+      return STATUS_TONE.warn;
   }
 }
 
