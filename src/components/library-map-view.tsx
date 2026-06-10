@@ -18,7 +18,7 @@
  *   - When the cached snapshot is stale (skill set changed since), a banner
  *     surfaces with a "Refresh" CTA.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Sparkles,
   RefreshCw,
@@ -27,19 +27,21 @@ import {
   Map as MapIcon,
   Plus,
   Layers,
+  Check,
 } from 'lucide-react';
 import type {
   AiJob,
   LibraryOverview,
   LibraryOverviewCluster,
   LibraryOverviewSnapshot,
+  Scenario,
   Skill,
 } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { api } from '@/lib/api';
 import { useT, useI18n } from '@/lib/i18n';
-import { formatRelative } from '@/lib/utils';
+import { cn, formatRelative } from '@/lib/utils';
 
 interface Props {
   /**
@@ -61,6 +63,33 @@ interface Props {
   onToast: (message: string) => void;
   /** Deep-link to Settings → AI from the "AI required" gate. */
   onOpenAiSettings?: () => void;
+  /** Current scenarios — lets cluster buttons show "已转成 · 同步" instead of
+   * pretending a conversion would create something new. */
+  scenarios?: Scenario[];
+}
+
+/**
+ * Mirror of the backend's scenario-key derivation (Rust `slugify` in
+ * commands/mod.rs): lowercase, runs of whitespace + slashes collapse to one
+ * dash, leading/trailing dashes/underscores trimmed, 64 chars max. Keep the
+ * two in sync — this is how the UI predicts whether 转成场景 will create or
+ * merge.
+ */
+function scenarioKeyOf(name: string): string {
+  let out = '';
+  let prevDash = false;
+  for (const c of name.trim().toLowerCase()) {
+    if (/\s/.test(c) || c === '/' || c === '\\') {
+      if (!prevDash) {
+        out += '-';
+        prevDash = true;
+      }
+    } else {
+      out += c;
+      prevDash = false;
+    }
+  }
+  return out.replace(/^[-_]+/, '').replace(/[-_]+$/, '').slice(0, 64);
 }
 
 export function LibraryMapView({
@@ -69,6 +98,7 @@ export function LibraryMapView({
   onScenariosChanged,
   onToast,
   onOpenAiSettings,
+  scenarios = [],
 }: Props) {
   const t = useT();
   const { locale } = useI18n();
@@ -83,6 +113,11 @@ export function LibraryMapView({
   // "already converted" — regenerating the Map invalidates that boolean,
   // and merging into an existing scenario is idempotent anyway.
   const [converting, setConverting] = useState<Set<string>>(() => new Set());
+  // Live lookup: which scenario keys already exist. After a conversion,
+  // onScenariosChanged → page refreshes scenarios → buttons flip to
+  // "已转成 · 同步" without any local bookkeeping (which regeneration of the
+  // map would invalidate anyway).
+  const scenarioKeys = useMemo(() => new Set(scenarios.map((s) => s.key)), [scenarios]);
   // Batch "turn every cluster into a scenario" in-flight flag.
   const [convertingAll, setConvertingAll] = useState(false);
 
@@ -324,25 +359,43 @@ export function LibraryMapView({
                 </h1>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="ai"
-                  onClick={() => convertAllClusters(overview.clusters)}
-                  disabled={generating || convertingAll || overview.clusters.length === 0}
-                  title={t('map.convertAll.title')}
-                >
-                  {convertingAll ? (
-                    <>
-                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                      {t('map.convertAll.converting')}
-                    </>
-                  ) : (
-                    <>
-                      <Layers className="mr-1.5 h-3.5 w-3.5" />
-                      {t('map.convertAll')}
-                    </>
-                  )}
-                </Button>
+                {(() => {
+                  // All non-empty clusters already have a matching scenario →
+                  // demote to a quiet "sync" affordance. Still clickable:
+                  // re-running merges newly clustered skills into the existing
+                  // scenarios (idempotent — never duplicates).
+                  const allConverted =
+                    overview.clusters.filter((c) => c.skills.length > 0).length > 0 &&
+                    overview.clusters
+                      .filter((c) => c.skills.length > 0)
+                      .every((c) => scenarioKeys.has(scenarioKeyOf(c.name)));
+                  return (
+                    <Button
+                      size="sm"
+                      variant={allConverted ? 'outline' : 'ai'}
+                      onClick={() => convertAllClusters(overview.clusters)}
+                      disabled={generating || convertingAll || overview.clusters.length === 0}
+                      title={allConverted ? t('map.convertAll.synced.title') : t('map.convertAll.title')}
+                    >
+                      {convertingAll ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          {t('map.convertAll.converting')}
+                        </>
+                      ) : allConverted ? (
+                        <>
+                          <Check className="mr-1.5 h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                          {t('map.convertAll.synced')}
+                        </>
+                      ) : (
+                        <>
+                          <Layers className="mr-1.5 h-3.5 w-3.5" />
+                          {t('map.convertAll')}
+                        </>
+                      )}
+                    </Button>
+                  );
+                })()}
                 <Button
                   size="sm"
                   variant="outline"
@@ -382,6 +435,7 @@ export function LibraryMapView({
           <div className="space-y-5">
             {overview.clusters.map((c) => {
               const isConverting = converting.has(c.key);
+              const alreadyScenario = scenarioKeys.has(scenarioKeyOf(c.name));
               return (
                 <section key={c.key} className="rounded-lg border bg-card p-4">
                   <header className="mb-2 flex items-center gap-2">
@@ -392,18 +446,29 @@ export function LibraryMapView({
                     {/* AI Lens's sole write entry. Outline button keeps it
                         visually quieter than a primary action (this is still
                         a "lens" view, after all), but visible enough that
-                        users find it on their second look. */}
+                        users find it on their second look. Once a matching
+                        scenario exists the button says so — clicking again
+                        merges newly clustered skills in (never duplicates),
+                        so it stays enabled as a "sync". */}
                     <button
                       type="button"
                       onClick={() => convertCluster(c)}
                       disabled={isConverting || c.skills.length === 0}
-                      title={t('map.cluster.convert.title')}
-                      className="ml-auto inline-flex h-6 items-center gap-1 border border-input bg-background px-2 text-[11px] text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                      title={alreadyScenario ? t('map.cluster.sync.title') : t('map.cluster.convert.title')}
+                      className={cn(
+                        'ml-auto inline-flex h-6 items-center gap-1 border border-input bg-background px-2 text-[11px] transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                        alreadyScenario ? 'text-muted-foreground' : 'text-foreground',
+                      )}
                     >
                       {isConverting ? (
                         <>
                           <Loader2 className="h-3 w-3 animate-spin" />
                           {t('map.cluster.converting')}
+                        </>
+                      ) : alreadyScenario ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                          {t('map.cluster.sync')}
                         </>
                       ) : (
                         <>

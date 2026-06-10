@@ -694,6 +694,7 @@ export default function Workspace() {
               llmConfigured={llmConfigured}
               onScenariosChanged={refreshMeta}
               onToast={showToast}
+              scenarios={scenarios}
               onOpenAiSettings={() => {
                 setSettingsFocusSection('ai');
                 setSidebarView('settings');
