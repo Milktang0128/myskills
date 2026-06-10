@@ -59,6 +59,8 @@ interface Props {
   onScenariosChanged: () => void;
   /** Shared workspace toast — surfaces the "created N skills linked" message. */
   onToast: (message: string) => void;
+  /** Deep-link to Settings → AI from the "AI required" gate. */
+  onOpenAiSettings?: () => void;
 }
 
 export function LibraryMapView({
@@ -66,6 +68,7 @@ export function LibraryMapView({
   llmConfigured,
   onScenariosChanged,
   onToast,
+  onOpenAiSettings,
 }: Props) {
   const t = useT();
   const { locale } = useI18n();
@@ -276,7 +279,7 @@ export function LibraryMapView({
   }
 
   if (!llmConfigured) {
-    return <LlmGate />;
+    return <LlmGate onOpenAiSettings={onOpenAiSettings} />;
   }
 
   const overview = snapshot?.overview ?? null;
@@ -323,10 +326,10 @@ export function LibraryMapView({
               <div className="flex shrink-0 items-center gap-2">
                 <Button
                   size="sm"
+                  variant="ai"
                   onClick={() => convertAllClusters(overview.clusters)}
                   disabled={generating || convertingAll || overview.clusters.length === 0}
                   title={t('map.convertAll.title')}
-                  className="bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
                 >
                   {convertingAll ? (
                     <>
@@ -490,7 +493,10 @@ function StaleBanner({
   const t = useT();
   return (
     <div className="flex items-center gap-3 border-b border-amber-200/60 bg-amber-50/60 px-4 py-2 text-sm dark:border-amber-900/40 dark:bg-amber-950/20">
-      <Sparkles className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+      {/* RefreshCw, not Sparkles — this is a staleness warning; sparkles are
+          reserved for AI-invoking actions, and amber sparkles double-booked
+          the warning color onto the AI icon. */}
+      <RefreshCw className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
       <span className="flex-1 text-amber-900 dark:text-amber-200">
         {t('map.stale.message')}
       </span>
@@ -529,9 +535,10 @@ function EmptyState({
         <p className="mt-2 text-sm text-muted-foreground">{t('map.empty.body')}</p>
         <Button
           size="sm"
+          variant="ai"
           onClick={onGenerate}
           disabled={generating}
-          className="mt-4 bg-violet-600 text-white shadow-sm hover:bg-violet-700 focus-visible:ring-violet-500"
+          className="mt-4"
         >
           {generating ? (
             <>
@@ -555,7 +562,7 @@ function EmptyState({
   );
 }
 
-function LlmGate() {
+function LlmGate({ onOpenAiSettings }: { onOpenAiSettings?: () => void }) {
   const t = useT();
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
@@ -563,6 +570,11 @@ function LlmGate() {
         <Sparkles className="mx-auto h-10 w-10 text-muted-foreground" aria-hidden="true" />
         <h2 className="mt-3 text-base font-semibold">{t('map.llmRequired.title')}</h2>
         <p className="mt-2 text-sm text-muted-foreground">{t('map.llmRequired.body')}</p>
+        {onOpenAiSettings && (
+          <Button size="sm" variant="outline" onClick={onOpenAiSettings} className="mt-4">
+            {t('map.llmRequired.openSettings')}
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -16,6 +16,7 @@ import { Pencil, Plus, Trash2, Download, Upload } from 'lucide-react';
 import type { Scenario, ScenarioExport, ScenarioImportResult, Skill } from '@shared/types';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { EmptyState } from '@/components/ui/empty-state';
 import { ScenarioForm } from '@/components/scenario-form';
 import { ScenarioRecommendations } from '@/components/scenario-recommendations';
 import { alertAction, confirmAction } from '@/components/ui/confirm-dialog';
@@ -126,6 +127,7 @@ export function ScenariosView({ onChanged }: Props) {
           position so the user finds primary actions in the same place across
           views. */}
       <div className="flex items-center gap-1.5 px-6 pb-3 pt-3">
+        <h1 className="mr-2 text-sm font-semibold">{t('header.scenarios')}</h1>
         <Button variant="outline" size="sm" onClick={handleImport}>
           <Upload className="mr-1.5 h-3.5 w-3.5" /> {t('scenarios.btn.import')}
         </Button>
@@ -165,6 +167,14 @@ export function ScenariosView({ onChanged }: Props) {
       )}
 
       <ScrollArea className="flex-1 scrollbar-thin">
+        {scenarios.length === 0 && (
+          <div className="p-6">
+            <EmptyState
+              title={t('scenarios.empty')}
+              description={t('scenarios.empty.description')}
+            />
+          </div>
+        )}
         <div className="grid gap-3 p-6 sm:grid-cols-2 lg:grid-cols-3">
           {scenarios.map((sc) => {
             const isSelected = selectedId === sc.id;

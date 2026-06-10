@@ -33,7 +33,7 @@ import { api, type SyncHistoryRow } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { confirmAction } from '@/components/ui/confirm-dialog';
-import { Toast } from '@/components/ui/toast';
+import { ToastViewport } from '@/components/ui/toast';
 import { PlatformBadge } from '@/components/platform-badge';
 import { useT } from '@/lib/i18n';
 import { formatRelative, cn } from '@/lib/utils';
@@ -214,6 +214,7 @@ export function HistoryView() {
           inline rather than sticky so it doesn't fight the table headers
           inside the ScrollArea. */}
       <div className="flex items-center gap-3 px-6 pb-3 pt-3 text-xs text-muted-foreground">
+        <h1 className="text-sm font-semibold text-foreground">{t('header.history')}</h1>
         <span>{t('history.entries', { count: rows.length })}</span>
         {selected.size > 0 && (
           <div className="ml-auto flex items-center gap-2 text-foreground">
@@ -277,7 +278,10 @@ export function HistoryView() {
       </ScrollArea>
 
       {toast && (
-        <Toast message={toast} durationMs={4000} onDismiss={() => setToast(null)} />
+        <ToastViewport
+          toasts={[{ id: 1, message: toast, durationMs: 4000 }]}
+          onDismiss={() => setToast(null)}
+        />
       )}
     </div>
   );

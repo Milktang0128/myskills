@@ -264,6 +264,16 @@ pub fn platforms_create(payload: Option<Value>, state: State<'_, AppState>) -> A
             "platform id must be lowercase alphanumeric/underscore/dash, 1-64 chars",
         ));
     }
+    // Registering a platform whose directory doesn't exist yet (fresh machine,
+    // onboarding's 创建并启用) creates it — an empty skills dir is a valid,
+    // scannable platform. No-op when the dir already exists.
+    fs::create_dir_all(&skills_dir).map_err(|err| {
+        AppError::detail(
+            "CREATE_DIR_FAILED",
+            err.to_string(),
+            json!({ "path": skills_dir }),
+        )
+    })?;
     let db = conn(&state)?;
     let next: i64 = db.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM platforms",

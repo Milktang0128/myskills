@@ -18,11 +18,19 @@ import {
   ArrowUpToLine,
   Replace,
   Wrench,
-  Sparkles,
+  ListChecks,
   ArrowLeftRight,
   Crown,
   FilePlus2,
 } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+import { STATUS_TONE } from '@/lib/status-tones';
 import {
   Dialog,
   DialogContent,
@@ -64,9 +72,13 @@ interface Props {
   onMutated?: () => void;
   /** Workspace navigation: empty-state guidance links into Settings. */
   onOpenSettings: () => void;
+  /** Workspace navigation: empty-state guidance links into Discover. */
+  onSelectDiscover?: () => void;
+  /** Trigger a rescan from the empty-state guidance card. */
+  onRescan?: () => void;
 }
 
-export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated, onOpenSettings }: Props) {
+export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated, onOpenSettings, onSelectDiscover, onRescan }: Props) {
   const t = useT();
   const [matrix, setMatrix] = useState<CoverageMatrix | null>(null);
   const [filter, setFilter] = useState<CoverageFilter>('all');
@@ -115,10 +127,27 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     return () => clearInterval(iv);
   }, []);
 
+  // First-load failure renders an inline error + retry (a permanent "加载中…"
+  // is indistinguishable from a hang); refresh failures after data exists
+  // surface as a toast and keep the stale-but-usable matrix on screen.
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const refresh = async () => {
     if (!bridgeReady) return;
-    setMatrix(await api.coverage.matrix());
+    try {
+      setMatrix(await api.coverage.matrix());
+      setLoadError(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLoadError(message);
+      if (matrix) onToast(t('matrix.error.load', { message }));
+    }
   };
+
+  /** Single funnel for write-path failures — every handler reports here. */
+  function reportError(err: unknown) {
+    onToast(err instanceof Error ? err.message : String(err));
+  }
 
   async function presentPlan(plan: SyncPlan) {
     if (plan.items.length > 0 && plan.items.every((item) => item.action === 'skip')) {
@@ -153,10 +182,17 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
       return;
     }
     const result = await api.sync.execute(plan.token);
-    onApplied(result);
+    // Suppress the generic summary toast on this path — the undo toast below
+    // is the message. Failures are folded INTO the undo toast so they aren't
+    // hidden behind it.
+    onApplied(result, { silent: result.undoableHistoryIds.length > 0 });
     if (result.undoableHistoryIds.length > 0) {
+      const failedSuffix =
+        result.failed.length > 0
+          ? ` · ${t('matrix.toast.failedSuffix', { count: result.failed.length })}`
+          : '';
       onToast(
-        undoMessage,
+        undoMessage + failedSuffix,
         { label: t('common.undo'), onClick: () => undoWrites(result.undoableHistoryIds) },
         6000,
       );
@@ -299,6 +335,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         { skillId: row.skillId, targetPlatformIds: cls.tidyTargets, sourcePlatformId: source },
       ]);
       await applyPlan(plan, t('matrix.toast.tidied', { skill: row.skillName }));
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -319,6 +357,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
       ]);
       await applyPlan(plan, t('matrix.toast.repaired', { skill: row.skillName }));
       setResolveRow(null);
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -326,13 +366,21 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
 
   async function handleOpenCellLocation(cell: CoverageCell) {
     if (!cell.locationId) return;
-    await api.skills.openLocation(cell.locationId, 'install');
+    try {
+      await api.skills.openLocation(cell.locationId, 'install');
+    } catch (err) {
+      reportError(err);
+    }
   }
 
   async function handleCopyCellPath(cell: CoverageCell) {
     if (!cell.locationId) return;
-    await api.skills.copyLocationPath(cell.locationId, 'install');
-    onToast(t('matrix.cellMenu.copied'));
+    try {
+      await api.skills.copyLocationPath(cell.locationId, 'install');
+      onToast(t('matrix.cellMenu.copied'));
+    } catch (err) {
+      reportError(err);
+    }
   }
 
   async function handleMoveCellToCanonical(row: CoverageRow, platformId: string) {
@@ -346,6 +394,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
           : { skillId: row.skillId },
       ]);
       await presentPlan(plan);
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -358,6 +408,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         { skillId: row.skillId, targetPlatformIds: [platformId], forceReplace },
       ]);
       await presentPlan(plan);
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -373,6 +425,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         { skillId: row.skillId, targetPlatformId: platformId },
       ]);
       await presentPlan(plan);
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -386,6 +440,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         { skillId: row.skillId, locationId: cell.locationId, disable: true },
       ]);
       await applyPlan(plan, t('matrix.toast.disabled', { skill: row.skillName }));
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -453,6 +509,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         { skillId: row.skillId, locationId: cell.locationId, disable: true },
       ]);
       await applyPlan(plan, t('matrix.toast.disabled', { skill }));
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
@@ -479,27 +537,33 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
       if (requests.length === 0) return;
       const plan = await api.sync.planFromCanonical(requests);
       await presentPlan(plan);
+    } catch (err) {
+      reportError(err);
     } finally {
       setBusy(false);
     }
   }
 
-  function onApplied(result: SyncExecuteResult) {
-    if (result.failed.length) {
-      onToast(
-        t('matrix.toast.appliedFailed', {
-          applied: result.applied.length,
-          skipped: result.skipped.length,
-          failed: result.failed.length,
-        }),
-      );
-    } else {
-      onToast(
-        t('matrix.toast.applied', {
-          applied: result.applied.length,
-          skipped: result.skipped.length,
-        }),
-      );
+  function onApplied(result: SyncExecuteResult, opts?: { silent?: boolean }) {
+    // `silent` = the caller shows its own toast (the undo toast, which now
+    // carries the failure count) — avoid stacking a redundant summary.
+    if (!opts?.silent) {
+      if (result.failed.length) {
+        onToast(
+          t('matrix.toast.appliedFailed', {
+            applied: result.applied.length,
+            skipped: result.skipped.length,
+            failed: result.failed.length,
+          }),
+        );
+      } else {
+        onToast(
+          t('matrix.toast.applied', {
+            applied: result.applied.length,
+            skipped: result.skipped.length,
+          }),
+        );
+      }
     }
     // Pin the just-acted-on rows to their CURRENT state before refresh() pulls
     // in the new (in-sync) data. sortRows will keep using these snapshots as
@@ -525,6 +589,7 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
         <div className="flex flex-wrap items-center gap-1.5">
+          <h1 className="mr-2 text-sm font-semibold">{t('header.coverage')}</h1>
           {MATRIX_FILTERS.map((f) => (
             <button
               key={f.value}
@@ -575,7 +640,9 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
               className="gap-1.5"
               title={t('matrix.bulk.tidy.title')}
             >
-              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              {/* ListChecks, not Sparkles — 整理 is deterministic housekeeping;
+                  sparkles are reserved for actions that call the user's AI. */}
+              <ListChecks className="h-3.5 w-3.5 shrink-0" />
               <span className="min-w-0">{t('matrix.bulk.tidy', { count: tidyTotal })}</span>
             </Button>
           )}
@@ -586,6 +653,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
         <div className="px-4 py-3">
           <Table
             matrix={matrix}
+            loadError={loadError}
+            onRetryLoad={refresh}
             rows={visibleRows}
             selectedSkillId={selectedSkillId}
             onTidyRow={handleTidyRow}
@@ -600,6 +669,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
             onSelectRow={onSelectSkill}
             busy={busy}
             onOpenSettings={onOpenSettings}
+            onSelectDiscover={onSelectDiscover}
+            onRescan={onRescan}
           />
           {matrix && visibleRows.length > 0 && <Legend />}
         </div>
@@ -629,6 +700,8 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
 
 function Table({
   matrix,
+  loadError,
+  onRetryLoad,
   rows,
   selectedSkillId,
   onTidyRow,
@@ -643,8 +716,12 @@ function Table({
   onSelectRow,
   busy,
   onOpenSettings,
+  onSelectDiscover,
+  onRescan,
 }: {
   matrix: CoverageMatrix | null;
+  loadError: string | null;
+  onRetryLoad: () => void;
   rows: CoverageRow[];
   selectedSkillId: string | null;
   onTidyRow: (r: CoverageRow) => void;
@@ -659,16 +736,23 @@ function Table({
   onSelectRow: (id: string) => void;
   busy: boolean;
   onOpenSettings: () => void;
+  onSelectDiscover?: () => void;
+  onRescan?: () => void;
 }) {
   const t = useT();
   const [openCellKey, setOpenCellKey] = useState<string | null>(null);
-  useEffect(() => {
-    if (!openCellKey) return;
-    const close = () => setOpenCellKey(null);
-    window.addEventListener('click', close);
-    return () => window.removeEventListener('click', close);
-  }, [openCellKey]);
   if (!matrix) {
+    if (loadError) {
+      return (
+        <div className="flex flex-col items-start gap-3 p-6 text-sm">
+          <p className="text-destructive">{t('matrix.error.load', { message: loadError })}</p>
+          <Button size="sm" variant="outline" onClick={onRetryLoad}>
+            <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            {t('common.retry')}
+          </Button>
+        </div>
+      );
+    }
     return <div className="p-6 text-sm text-muted-foreground">{t('matrix.loading')}</div>;
   }
   if (rows.length === 0) {
@@ -676,7 +760,13 @@ function Table({
     // next steps), vs the active filter has no matches (just a hint).
     const noSkillsAnywhere = matrix.rows.length === 0;
     if (noSkillsAnywhere) {
-      return <EmptyCoverageGuidance onOpenSettings={onOpenSettings} />;
+      return (
+        <EmptyCoverageGuidance
+          onOpenSettings={onOpenSettings}
+          onSelectDiscover={onSelectDiscover}
+          onRescan={onRescan}
+        />
+      );
     }
     return (
       <div className="p-6 text-sm text-muted-foreground">{t('matrix.empty')}</div>
@@ -744,7 +834,7 @@ function Table({
                 </Button>
               )}
               {cls.ready && (
-                <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600">
+                <span className={cn('inline-flex items-center gap-1 text-[11px]', STATUS_TONE.ok)}>
                   <Check className="h-3.5 w-3.5" />
                   {t('matrix.action.ready')}
                 </span>
@@ -762,17 +852,29 @@ function Table({
               )}
             >
               <td className="px-3 py-2">
-                <div className="font-medium truncate max-w-[280px]" title={row.skillName}>
-                  {row.skillName}
-                </div>
-                {row.description && (
-                  <div
-                    className="truncate text-[11px] text-muted-foreground max-w-[280px]"
-                    title={row.description}
-                  >
-                    {row.description}
+                {/* Real <button> so keyboard users can Tab into the row and
+                    open the detail panel — the tr's onClick only serves as a
+                    larger mouse hit area. */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectRow(row.skillId);
+                  }}
+                  className="block w-full rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                >
+                  <div className="font-medium truncate max-w-[280px]" title={row.skillName}>
+                    {row.skillName}
                   </div>
-                )}
+                  {row.description && (
+                    <div
+                      className="truncate text-[11px] text-muted-foreground max-w-[280px]"
+                      title={row.description}
+                    >
+                      {row.description}
+                    </div>
+                  )}
+                </button>
               </td>
               {matrix.platforms.map((p) => {
                 const cell = row.cells[p];
@@ -1058,7 +1160,7 @@ function DiffView({
   return (
     <div className="space-y-2">
       {identical && (
-        <div className="text-xs text-emerald-600">{t('matrix.resolve.diff.identical')}</div>
+        <div className={cn('text-xs', STATUS_TONE.ok)}>{t('matrix.resolve.diff.identical')}</div>
       )}
       <div className="flex gap-2">
         {pane(a, head, ta, 'bg-rose-50 dark:bg-rose-950/30', leftLabel)}
@@ -1090,15 +1192,15 @@ function CellGlyph({
     case 'present':
       // Canonical is no longer surfaced as a distinct identity — a real copy
       // reads as "present" (green) everywhere; only drift recolors it amber.
-      return wrapper(<Check className="h-4 w-4" />, stale ? 'text-amber-600' : 'text-emerald-600');
+      return wrapper(<Check className="h-4 w-4" />, stale ? STATUS_TONE.warn : STATUS_TONE.ok);
     case 'symlink':
-      return wrapper(<Link2 className="h-4 w-4" />, 'text-blue-600');
+      return wrapper(<Link2 className="h-4 w-4" />, STATUS_TONE.link);
     case 'symlink_other':
-      return wrapper(<Link2 className="h-4 w-4 -rotate-45" />, 'text-amber-700');
+      return wrapper(<Link2 className="h-4 w-4 -rotate-45" />, STATUS_TONE.warnStrong);
     case 'broken':
-      return wrapper(<AlertTriangle className="h-4 w-4" />, 'text-destructive');
+      return wrapper(<AlertTriangle className="h-4 w-4" />, STATUS_TONE.danger);
     case 'disabled':
-      return wrapper(<EyeOff className="h-4 w-4" />, 'text-muted-foreground');
+      return wrapper(<EyeOff className="h-4 w-4" />, STATUS_TONE.muted);
     case 'missing':
     default:
       // Faint dash by default; a "+" fades in on hover to signal "click to add"
@@ -1173,141 +1275,108 @@ function CellActionMenu({
   const canDisable = hasLocation && state !== 'missing' && state !== 'disabled';
   const hasWriteAction = canMoveToCanonical || canReplace || canSetAsCopy || canCopyReal || canDisable;
 
-  async function run(action: () => void | Promise<void>) {
-    onOpenChange(false);
-    await action();
-  }
+  const menuAvailable = Boolean(cell) && state !== 'missing';
 
   return (
-    <span className={cn('relative inline-flex', open && 'z-50')}>
-      <button
-        type="button"
-        disabled={busy}
-        // Left-click is the primary toggle (cc-switch style): on↔off, instant
-        // when safe. Right-click opens the advanced per-cell menu (open dir,
-        // copy path, resolve) — only meaningful when the cell has a location.
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggle(row, platformId);
-        }}
-        onContextMenu={(e) => {
-          if (!cell || state === 'missing') return;
-          e.preventDefault();
-          e.stopPropagation();
-          onOpenChange(!open);
-        }}
-        title={t('matrix.cell.toggleHint', { state: label })}
-        aria-label={label}
-        className={cn(
-          'group inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-transparent px-1',
-          'hover:border-border hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-          'disabled:cursor-default disabled:opacity-50',
-        )}
-      >
-        <CellGlyph state={state} drift={cell?.drift} isCanonical={isCanonical} />
-      </button>
-      {open && cell && (
-        // Transparent full-screen backdrop: any click/right-click anywhere
-        // dismisses the menu. Needed because the matrix cells/rows stopPropagate
-        // their own clicks, so a bubbling window listener never sees an
-        // outside click — only an explicit backdrop catches it.
-        <span
-          aria-hidden
-          className="fixed inset-0 z-[90]"
+    // Radix DropdownMenu supplies what the hand-rolled menu lacked: focus
+    // moves into the menu, arrow keys + typeahead + Esc work, focus restores
+    // to the cell button on close, and outside-click dismissal doesn't care
+    // that the matrix rows stopPropagation their clicks.
+    //
+    // Interaction split on the trigger (the cell button itself):
+    //   left-click / Enter / Space → toggle the cell (cc-switch primary action)
+    //   right-click / Shift+F10 / ContextMenu key / ArrowDown → open the menu
+    <DropdownMenu open={open && menuAvailable} onOpenChange={onOpenChange}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          disabled={busy}
+          onPointerDown={(e) => {
+            // Block Radix's pointerdown-open for plain left-click — that's the
+            // toggle. preventDefault also suppresses native focus, so restore it.
+            if (e.button === 0 && !e.ctrlKey) {
+              e.preventDefault();
+              e.currentTarget.focus();
+            }
+          }}
           onClick={(e) => {
             e.stopPropagation();
-            onOpenChange(false);
+            onToggle(row, platformId);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onToggle(row, platformId);
+            } else if (menuAvailable && (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) {
+              e.preventDefault();
+              onOpenChange(true);
+            }
+            // ArrowDown falls through to Radix → opens the menu.
           }}
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            onOpenChange(false);
+            if (menuAvailable) onOpenChange(!open);
           }}
-        />
-      )}
-      {open && cell && (
-        <span
-          role="menu"
-          className="absolute left-1/2 top-full z-[100] mt-1 w-44 -translate-x-1/2 border border-border bg-white p-1 text-left text-xs text-foreground shadow-2xl ring-1 ring-black/5 dark:bg-zinc-900 dark:text-zinc-50 dark:ring-white/10"
+          title={t('matrix.cell.toggleHint', { state: label })}
+          aria-label={label}
+          className={cn(
+            'group inline-flex min-h-8 min-w-8 items-center justify-center rounded border border-transparent px-1',
+            'hover:border-border hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+            'disabled:cursor-default disabled:opacity-50',
+          )}
+        >
+          <CellGlyph state={state} drift={cell?.drift} isCanonical={isCanonical} />
+        </button>
+      </DropdownMenuTrigger>
+      {cell && (
+        <DropdownMenuContent
+          align="center"
+          className="w-44"
           onClick={(e) => e.stopPropagation()}
         >
-          <CellMenuButton
-            icon={<FolderOpen className="h-3.5 w-3.5" />}
-            label={t('matrix.cellMenu.open')}
-            onClick={() => run(() => onOpenLocation(cell))}
-          />
-          <CellMenuButton
-            icon={<Copy className="h-3.5 w-3.5" />}
-            label={t('matrix.cellMenu.copy')}
-            onClick={() => run(() => onCopyPath(cell))}
-          />
-          {hasWriteAction && <span className="my-1 block h-px bg-border" />}
+          <DropdownMenuItem onSelect={() => onOpenLocation(cell)}>
+            <FolderOpen className="h-3.5 w-3.5" />
+            <span>{t('matrix.cellMenu.open')}</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onCopyPath(cell)}>
+            <Copy className="h-3.5 w-3.5" />
+            <span>{t('matrix.cellMenu.copy')}</span>
+          </DropdownMenuItem>
+          {hasWriteAction && <DropdownMenuSeparator />}
           {canMoveToCanonical && (
-            <CellMenuButton
-              icon={<ArrowUpToLine className="h-3.5 w-3.5" />}
-              label={t('matrix.cellMenu.moveToMain')}
-              onClick={() => run(() => onMoveToCanonical(row, platformId))}
-            />
+            <DropdownMenuItem onSelect={() => onMoveToCanonical(row, platformId)}>
+              <ArrowUpToLine className="h-3.5 w-3.5" />
+              <span>{t('matrix.cellMenu.moveToMain')}</span>
+            </DropdownMenuItem>
           )}
           {canSetAsCopy && (
-            <CellMenuButton
-              icon={<Link2 className="h-3.5 w-3.5" />}
-              label={t('matrix.cellMenu.setAsCopy')}
-              onClick={() => run(() => onSetAsCopy(row, platformId, true))}
-            />
+            <DropdownMenuItem onSelect={() => onSetAsCopy(row, platformId, true)}>
+              <Link2 className="h-3.5 w-3.5" />
+              <span>{t('matrix.cellMenu.setAsCopy')}</span>
+            </DropdownMenuItem>
           )}
           {canCopyReal && (
-            <CellMenuButton
-              icon={<FilePlus2 className="h-3.5 w-3.5" />}
-              label={t('matrix.cellMenu.copyReal')}
-              onClick={() => run(() => onCopyReal(row, platformId))}
-            />
+            <DropdownMenuItem onSelect={() => onCopyReal(row, platformId)}>
+              <FilePlus2 className="h-3.5 w-3.5" />
+              <span>{t('matrix.cellMenu.copyReal')}</span>
+            </DropdownMenuItem>
           )}
           {canReplace && (
-            <CellMenuButton
-              icon={<Replace className="h-3.5 w-3.5" />}
-              label={t('matrix.cellMenu.replaceOld')}
-              onClick={() => run(() => onSetAsCopy(row, platformId))}
-            />
+            <DropdownMenuItem onSelect={() => onSetAsCopy(row, platformId)}>
+              <Replace className="h-3.5 w-3.5" />
+              <span>{t('matrix.cellMenu.replaceOld')}</span>
+            </DropdownMenuItem>
           )}
           {canDisable && (
-            <CellMenuButton
-              icon={<EyeOff className="h-3.5 w-3.5" />}
-              label={t('matrix.cellMenu.disable')}
-              danger
-              onClick={() => run(() => onDisable(row, cell))}
-            />
+            <DropdownMenuItem danger onSelect={() => onDisable(row, cell)}>
+              <EyeOff className="h-3.5 w-3.5" />
+              <span>{t('matrix.cellMenu.disable')}</span>
+            </DropdownMenuItem>
           )}
-        </span>
+        </DropdownMenuContent>
       )}
-    </span>
-  );
-}
-
-function CellMenuButton({
-  icon,
-  label,
-  danger = false,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={cn(
-        'flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-        danger && 'text-destructive hover:text-destructive',
-      )}
-    >
-      {icon}
-      <span>{label}</span>
-    </button>
+    </DropdownMenu>
   );
 }
 
@@ -1499,22 +1568,22 @@ function Legend() {
     <div className="mt-4 rounded-md border bg-card/40 px-3 py-2 text-[11px] text-muted-foreground">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
         <span className="inline-flex items-center gap-1">
-          <Check className="h-3 w-3 text-emerald-600" /> {t('matrix.legend.inSync')}
+          <Check className={cn('h-3 w-3', STATUS_TONE.ok)} /> {t('matrix.legend.inSync')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Check className="h-3 w-3 text-amber-600" /> {t('matrix.legend.stale')}
+          <Check className={cn('h-3 w-3', STATUS_TONE.warn)} /> {t('matrix.legend.stale')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Link2 className="h-3 w-3 text-blue-600" /> {t('matrix.legend.symlinkCanonical')}
+          <Link2 className={cn('h-3 w-3', STATUS_TONE.link)} /> {t('matrix.legend.symlinkCanonical')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <Link2 className="h-3 w-3 -rotate-45 text-amber-700" /> {t('matrix.legend.symlinkOther')}
+          <Link2 className={cn('h-3 w-3 -rotate-45', STATUS_TONE.warnStrong)} /> {t('matrix.legend.symlinkOther')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <AlertTriangle className="h-3 w-3 text-destructive" /> {t('matrix.legend.broken')}
+          <AlertTriangle className={cn('h-3 w-3', STATUS_TONE.danger)} /> {t('matrix.legend.broken')}
         </span>
         <span className="inline-flex items-center gap-1">
-          <EyeOff className="h-3 w-3 text-muted-foreground" /> {t('matrix.legend.disabled')}
+          <EyeOff className={cn('h-3 w-3', STATUS_TONE.muted)} /> {t('matrix.legend.disabled')}
         </span>
         <span className="inline-flex items-center gap-1">
           <Minus className="h-3 w-3 text-muted-foreground/40" /> {t('matrix.legend.missing')}
@@ -1533,8 +1602,43 @@ function Legend() {
  * not when the active filter happens to be empty. Gives the user three
  * concrete next steps instead of a flat "No skills" line.
  */
-function EmptyCoverageGuidance({ onOpenSettings }: { onOpenSettings: () => void }) {
+function EmptyCoverageGuidance({
+  onOpenSettings,
+  onSelectDiscover,
+  onRescan,
+}: {
+  onOpenSettings: () => void;
+  onSelectDiscover?: () => void;
+  onRescan?: () => void;
+}) {
   const t = useT();
+  // Each guidance card IS the action — the whole card is one button, not a
+  // description with a single clickable word buried in it.
+  const card = (
+    icon: React.ReactNode,
+    title: string,
+    body: string,
+    onClick: (() => void) | undefined,
+  ) => (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!onClick}
+        className={cn(
+          'flex w-full items-start gap-3 rounded-md border bg-background p-3 text-left',
+          onClick && 'hover:border-foreground/30 hover:bg-accent/40',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        )}
+      >
+        {icon}
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">{title}</div>
+          <div className="text-xs text-muted-foreground">{body}</div>
+        </div>
+      </button>
+    </li>
+  );
   return (
     <div className="mx-auto mt-8 max-w-md px-6">
       <div className="rounded-lg border bg-card p-5">
@@ -1543,45 +1647,24 @@ function EmptyCoverageGuidance({ onOpenSettings }: { onOpenSettings: () => void 
           {t('matrix.empty.guidance.body')}
         </p>
         <ul className="mt-4 space-y-2">
-          <li className="flex items-start gap-3 rounded-md border bg-background p-3">
-            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">
-                {t('matrix.empty.guidance.discover.title')}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {t('matrix.empty.guidance.discover.body')}
-              </div>
-            </div>
-          </li>
-          <li className="flex items-start gap-3 rounded-md border bg-background p-3">
-            <SettingsIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">
-                <button
-                  type="button"
-                  onClick={onOpenSettings}
-                  className="hover:underline focus-visible:outline-none focus-visible:underline"
-                >
-                  {t('matrix.empty.guidance.settings.title')}
-                </button>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {t('matrix.empty.guidance.settings.body')}
-              </div>
-            </div>
-          </li>
-          <li className="flex items-start gap-3 rounded-md border bg-background p-3">
-            <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium">
-                {t('matrix.empty.guidance.rescan.title')}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {t('matrix.empty.guidance.rescan.body')}
-              </div>
-            </div>
-          </li>
+          {card(
+            <Globe className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" aria-hidden="true" />,
+            t('matrix.empty.guidance.discover.title'),
+            t('matrix.empty.guidance.discover.body'),
+            onSelectDiscover,
+          )}
+          {card(
+            <SettingsIcon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />,
+            t('matrix.empty.guidance.settings.title'),
+            t('matrix.empty.guidance.settings.body'),
+            onOpenSettings,
+          )}
+          {card(
+            <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />,
+            t('matrix.empty.guidance.rescan.title'),
+            t('matrix.empty.guidance.rescan.body'),
+            onRescan,
+          )}
         </ul>
       </div>
     </div>

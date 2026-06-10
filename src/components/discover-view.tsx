@@ -30,6 +30,9 @@ interface Props {
    *  workspace so the header toggle can render correctly too. */
   aiAvailable: boolean;
   onToast: (msg: string) => void;
+  /** Deep-link to Settings (network toggle lives there) for the
+   *  network-disabled empty state. */
+  onOpenSettings?: () => void;
 }
 
 const DEBOUNCE_MS = 300;
@@ -131,7 +134,7 @@ function normalizeSkillKey(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
-export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }: Props) {
+export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast, onOpenSettings }: Props) {
   const t = useT();
   const [bridgeReady, setBridgeReady] = useState(false);
   const [results, setResults] = useState<CatalogSearchResult[]>([]);
@@ -594,9 +597,14 @@ export function DiscoverView({ query, mode, onModeChange, aiAvailable, onToast }
           {t('discover.networkDisabled.banner')}
         </div>
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-          <div className="flex flex-col items-center gap-2 p-6 text-center">
+          <div className="flex flex-col items-center gap-3 p-6 text-center">
             <Globe className="h-6 w-6 opacity-50" />
             {t('discover.networkDisabled.cta')}
+            {onOpenSettings && (
+              <Button size="sm" variant="outline" onClick={onOpenSettings}>
+                {t('discover.networkDisabled.openSettings')}
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -866,16 +874,22 @@ export function ModeSegmented({
   aiAvailable,
   queryReady,
   onChange,
+  onRequestAiSetup,
 }: {
   mode: SearchMode;
   aiAvailable: boolean;
   queryReady: boolean;
   onChange: (m: SearchMode) => void;
+  /** When AI isn't configured, clicking the AI tab routes here (deep-link to
+   * Settings → AI) instead of being a dead disabled control. */
+  onRequestAiSetup?: () => void;
 }) {
   const t = useT();
-  const aiClickable = aiAvailable;
+  const aiClickable = aiAvailable || Boolean(onRequestAiSetup);
   const aiTitle = !aiAvailable
-    ? t('discover.mode.ai.title.disabled')
+    ? onRequestAiSetup
+      ? t('discover.mode.ai.title.needsSetup')
+      : t('discover.mode.ai.title.disabled')
     : !queryReady
     ? t('discover.mode.ai.title.willEngage')
     : t('discover.mode.ai.title.enabled');
@@ -903,12 +917,20 @@ export function ModeSegmented({
         aria-selected={mode === 'ai'}
         disabled={!aiClickable}
         title={aiTitle}
-        onClick={() => aiClickable && onChange('ai')}
+        onClick={() => {
+          if (!aiClickable) return;
+          if (!aiAvailable) {
+            onRequestAiSetup?.();
+            return;
+          }
+          onChange('ai');
+        }}
         className={cn(
           'flex items-center gap-1 rounded px-2 py-0.5 transition-colors',
-          mode === 'ai' && aiClickable
+          mode === 'ai' && aiAvailable
             ? 'bg-accent text-foreground'
             : 'text-muted-foreground hover:text-foreground',
+          !aiAvailable && 'opacity-60',
           !aiClickable && 'cursor-not-allowed opacity-50 hover:text-muted-foreground',
         )}
       >

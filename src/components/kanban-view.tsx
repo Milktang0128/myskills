@@ -15,6 +15,7 @@
 import { useMemo } from 'react';
 import { AlertTriangle, EyeOff, Link2 } from 'lucide-react';
 import type { Scenario, Skill } from '@shared/types';
+import { EmptyState } from '@/components/ui/empty-state';
 import { PlatformBadge } from './platform-badge';
 import { useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -66,6 +67,16 @@ export function KanbanView({
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
         {t('list.empty.loading')}
+      </div>
+    );
+  }
+
+  // No skills at all → a full-bleed blank board is indistinguishable from a
+  // rendering bug. Reuse the list view's empty state instead.
+  if (skills.length === 0) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+        <EmptyState title={t('list.empty.title')} description={t('list.empty.description')} />
       </div>
     );
   }
