@@ -229,6 +229,8 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
         return next;
       });
       await refresh();
+      // The new directory's skills are invisible until scanned.
+      await scanAfterPlatformChange();
     } finally {
       setSavingId(null);
     }
@@ -279,6 +281,8 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
     try {
       await api.platforms.create({ id: cand.id, label: cand.label, skillsDir: cand.defaultDir });
       await refresh();
+      // Surface the platform's existing skills immediately — no manual rescan.
+      await scanAfterPlatformChange();
     } catch (err) {
       await alertAction({
         title: t('common.error'),
@@ -302,6 +306,8 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
       });
       setCustomForm({ id: '', label: '', skillsDir: '' });
       await refresh();
+      // Surface the platform's existing skills immediately — no manual rescan.
+      await scanAfterPlatformChange();
       return true;
     } catch (err) {
       setCustomError(err instanceof Error ? err.message : String(err));
@@ -318,6 +324,26 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
       await refresh();
     } finally {
       setScanning(false);
+    }
+  }
+
+  /**
+   * Registering a platform (or repointing its directory) only writes the DB
+   * row — without a scan the platform sits at 0 skills until the user
+   * discovers the rescan button. Run one automatically. A scan failure is
+   * reported but doesn't roll back the platform change itself.
+   */
+  async function scanAfterPlatformChange() {
+    try {
+      await runScan();
+    } catch (err) {
+      await alertAction({
+        title: t('scan.toast.failed', {
+          message: err instanceof Error ? err.message : String(err),
+        }),
+        tone: 'destructive',
+        okLabel: t('common.ok'),
+      });
     }
   }
 
