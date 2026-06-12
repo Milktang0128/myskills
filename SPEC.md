@@ -232,6 +232,7 @@ IntentFrame 是中间产物，不直接写入 skill 目录。它保存在本地 
 
 - ❌ **不做 Skill 编辑器** — 用户用 VS Code 编辑 SKILL.md，我们只管管理
 - ✅ **可以做 Skill 创建流水线** — 引导、生成、校验、安装一个新 skill；但不做长期 Markdown 编辑器、脚本 IDE、文件树管理器
+- ✅ **可以做 Skill 优化流水线** — 诊断（三问：会被选中吗 / 照着能做对吗 / 比主流差在哪）、对标主流、AI 生成单点改写、diff 确认落盘、历史回滚；但不做自由编辑器、不做无人值守自动改写、不做新老版本并存试用。详见 [docs/design/skill-optimization.md](docs/design/skill-optimization.md)
 - ❌ **不做 Skill 执行/运行时** — 这是各平台自己的事
 - ❌ **不做云端存储** — 一切本地优先，云同步走用户自己的 iCloud / Git
 - ❌ **不做权限/沙箱审计** — 用户自己负责审查第三方 skill
@@ -872,6 +873,7 @@ rollback(history_id):
 - 用户输入「我想做 X」→ 推荐合适 skill
 - 浏览市场时给 skill 写一句话总结
 - 用户描述一个反复困境/需求 → 建模 IntentFrame、选项式追问、生成并审查 SKILL.md 草案
+- 技能优化（三问一刀）：诊断已有 skill 的触发性/可执行性/对标差距 → 推荐单点修复（附预期改进表述 + 验证提示词）→ 经确认落盘，可回滚
 
 ### 10.2 实现策略
 
@@ -879,6 +881,7 @@ rollback(history_id):
 - **优先 Vercel AI Gateway：** 用户给一个 key 即可用多家模型
 - **完全可选：** 用户不配 key，所有 AI 功能优雅降级（按钮置灰 + 提示）
 - **请求最小化：** 只发 frontmatter + 前 500 字，不发整个 body
+  - **例外（技能优化）：** 诊断与改写需要发送目标 skill 的 SKILL.md 全文（含对标对象的公开 SKILL.md）；调用前显式提示发送范围，且 fail-closed
 - **创造技能最小上下文：** 只发送用户在 Create Skill 输入框、轮廓编辑和追问中主动提供的内容；不会自动发送本地 skill 库、目录树或其他文件正文
 
 ### 10.3 隐私
