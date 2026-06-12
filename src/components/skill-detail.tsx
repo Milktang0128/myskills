@@ -18,6 +18,7 @@ import { STATUS_TONE } from '@/lib/status-tones';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { PlatformBadge } from './platform-badge';
+import { SkillDiagnosis } from './skill-diagnosis';
 import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
@@ -337,6 +338,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
               )}
             </div>
           </section>
+
+          <Separator />
+
+          <SkillDiagnosis skillId={skill.id} />
 
           <Separator />
 

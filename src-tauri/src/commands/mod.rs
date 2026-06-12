@@ -5691,19 +5691,21 @@ pub async fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) 
             json!({ "query": "", "searchType": "fuzzy", "skills": [], "count": 0, "duration_ms": 0 }),
         );
     }
-    let limit = clamp_i64(optional_i64(&payload, "limit").unwrap_or(30), 1, 100).to_string();
-    let offset = optional_i64(&payload, "offset")
-        .unwrap_or(0)
-        .max(0)
-        .to_string();
+    let limit = clamp_i64(optional_i64(&payload, "limit").unwrap_or(30), 1, 100);
+    let offset = optional_i64(&payload, "offset").unwrap_or(0).max(0);
+    catalog_search_blocking(&q, limit, offset)
+}
+
+/// skills.sh search, callable from non-command paths (the optimization
+/// module's benchmark step reuses it). Caller is responsible for the
+/// `require_network` gate.
+fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value> {
+    let limit = limit.to_string();
+    let offset = offset.to_string();
     let client = catalog_client()?;
     let res = client
         .get(CATALOG_SEARCH_BASE)
-        .query(&[
-            ("q", q.as_str()),
-            ("limit", limit.as_str()),
-            ("offset", offset.as_str()),
-        ])
+        .query(&[("q", q), ("limit", limit.as_str()), ("offset", offset.as_str())])
         .header(reqwest::header::USER_AGENT, CATALOG_USER_AGENT)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
@@ -5742,7 +5744,7 @@ pub async fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) 
             format!("skills.sh returned malformed JSON: {err}"),
         )
     })?;
-    Ok(normalize_catalog_search_response(&body, &q))
+    Ok(normalize_catalog_search_response(&body, q))
 }
 
 #[tauri::command]
@@ -12341,4 +12343,734 @@ fn current_set_hash(db: &Connection) -> AppResult<String> {
         joined.push('\n');
     }
     Ok(hex::encode(sha2::Sha256::digest(joined.as_bytes())))
+}
+
+// ─── 技能优化（三问一刀）— phase 1: read-only diagnosis ─────────────────────
+// Design: docs/design/skill-optimization.md. Three questions — will the agent
+// pick it (trigger), can the agent follow it (executability), where does it
+// lag the mainstream (benchmark) — each finding must carry verbatim evidence.
+// Reports cache by (skill_id, content_hash, language); the benchmark peer
+// table is built ONLY from real catalog results, never from model output.
+
+const OPTIMIZE_PEER_LIMIT: usize = 4;
+const OPTIMIZE_PEER_MD_MAX_CHARS: usize = 6000;
+const OPTIMIZE_LOCAL_MD_MAX_CHARS: usize = 16000;
+const OPTIMIZE_PEER_CACHE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+struct OptimizePeer {
+    name: String,
+    source: String,
+    installs: i64,
+    markdown: String,
+}
+
+#[tauri::command]
+pub fn optimize_get_report(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let db = conn(&state)?;
+    let skill_id = required_str(&payload, "skillId")?;
+    let language = normalize_ai_language(
+        payload
+            .as_ref()
+            .and_then(|p| p.get("language"))
+            .and_then(Value::as_str)
+            .unwrap_or("en"),
+    );
+    let current_hash: String = db
+        .query_row(
+            "SELECT content_hash FROM skills WHERE id = ?1",
+            params![skill_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("skill {skill_id}")))?;
+    // Latest report in this language regardless of hash: a stale report is
+    // still worth showing (with the stale flag) after the skill changed.
+    let row: Option<(String, String)> = db
+        .query_row(
+            "SELECT content_hash, report_json FROM skill_audits
+             WHERE skill_id = ?1 AND language = ?2
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+            params![skill_id, language],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let report = row
+        .as_ref()
+        .and_then(|(_, json)| serde_json::from_str::<Value>(json).ok());
+    let stale = row
+        .map(|(hash, _)| hash != current_hash)
+        .unwrap_or(false);
+    Ok(json!({ "report": report, "stale": stale, "currentHash": current_hash }))
+}
+
+#[tauri::command]
+pub fn optimize_diagnose_job(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let skill_id = required_str(&payload, "skillId")?.to_string();
+    let language = normalize_ai_language(
+        payload
+            .as_ref()
+            .and_then(|p| p.get("language"))
+            .and_then(Value::as_str)
+            .unwrap_or("en"),
+    )
+    .to_string();
+    let force = payload
+        .as_ref()
+        .and_then(|p| p.get("force"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let pool = state.db.clone();
+    let paths = state.paths.clone();
+    let key = format!("{skill_id}:{language}");
+    ai_spawn_job(&state, "optimize_diagnose", &key, move || {
+        optimize_diagnose_inner(&pool, &paths, &skill_id, &language, force)
+    })
+}
+
+fn optimize_diagnose_inner(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    paths: &AppPaths,
+    skill_id: &str,
+    language: &str,
+    force: bool,
+) -> AppResult<Value> {
+    let db = pool.get()?;
+    let (name, description, content_hash): (String, Option<String>, String) = db
+        .query_row(
+            "SELECT name, description, content_hash FROM skills WHERE id = ?1",
+            params![skill_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("skill {skill_id}")))?;
+
+    if !force {
+        let cached: Option<String> = db
+            .query_row(
+                "SELECT report_json FROM skill_audits
+                 WHERE skill_id = ?1 AND content_hash = ?2 AND language = ?3",
+                params![skill_id, content_hash, language],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(json) = cached {
+            if let Ok(report) = serde_json::from_str::<Value>(&json) {
+                return Ok(report);
+            }
+        }
+    }
+
+    let install: String = db
+        .query_row(
+            "SELECT install_path FROM skill_locations
+             WHERE skill_id = ?1 AND is_broken_link = 0
+             ORDER BY is_disabled ASC, id ASC LIMIT 1",
+            params![skill_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            AppError::new("NOT_FOUND", format!("skill {skill_id} has no readable location"))
+        })?;
+    let skill_md_path = Path::new(&install).join("SKILL.md");
+    let markdown = fs::read_to_string(&skill_md_path).map_err(|err| {
+        AppError::detail(
+            "READ_FAILED",
+            err.to_string(),
+            json!({ "path": skill_md_path.to_string_lossy() }),
+        )
+    })?;
+    let local_md: String = markdown.chars().take(OPTIMIZE_LOCAL_MD_MAX_CHARS).collect();
+
+    require_network(&db)?;
+    let config = llm_read_config(&db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new(
+            "LLM_NO_MODEL",
+            "No LLM model configured. Set one in Settings -> AI.",
+        ));
+    }
+    let api_key = llm_read_api_key(&db, paths)?;
+    if api_key.is_none() && config.provider != "ollama" {
+        return Err(AppError::new(
+            "LLM_NO_KEY",
+            "No LLM API key configured. Set one in Settings -> AI.",
+        ));
+    }
+
+    // Benchmark peers are best-effort: a dead catalog degrades to an honest
+    // empty benchmark instead of failing the whole diagnosis.
+    let (peers, empty_reason) = optimize_find_peers(&db, &name, description.as_deref());
+
+    let (system, user) = optimize_diagnose_prompt(&name, &local_md, &peers, language);
+    let mut report = None;
+    for _attempt in 0..2 {
+        let response = llm_chat_with_config(
+            &config,
+            api_key.as_deref(),
+            &json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": user }
+                ],
+                "temperature": 0,
+                "jsonMode": true,
+                "maxTokens": 16384
+            }),
+        )?;
+        let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+        let raw = optimize_parse_json(text);
+        if let Some(built) = optimize_build_report(
+            &raw,
+            skill_id,
+            &content_hash,
+            language,
+            &config.model,
+            &peers,
+            empty_reason.as_deref(),
+        ) {
+            report = Some(built);
+            break;
+        }
+    }
+    let report = report.ok_or_else(|| {
+        AppError::new(
+            "LLM_BAD_RESPONSE",
+            "The model produced no usable diagnosis across 2 attempts.",
+        )
+    })?;
+
+    db.execute(
+        "INSERT INTO skill_audits (skill_id, content_hash, language, report_json, model, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(skill_id, content_hash, language) DO UPDATE SET
+           report_json = excluded.report_json,
+           model = excluded.model,
+           created_at = excluded.created_at",
+        params![
+            skill_id,
+            content_hash,
+            language,
+            serde_json::to_string(&report)
+                .map_err(|err| AppError::new("SERIALIZE_FAILED", err.to_string()))?,
+            config.model,
+            now_ms()
+        ],
+    )?;
+    Ok(report)
+}
+
+/// Derive deterministic catalog search queries from the skill's own name and
+/// description. No LLM round-trip: the name is the strongest signal, the
+/// description supplies a keyword fallback for badly named skills.
+fn optimize_search_queries(name: &str, description: Option<&str>) -> Vec<String> {
+    let mut queries = Vec::new();
+    let name_q = name.replace(['-', '_'], " ").trim().to_string();
+    if !name_q.is_empty() {
+        queries.push(name_q);
+    }
+    if let Some(desc) = description {
+        const STOP: &[&str] = &[
+            "the", "and", "for", "use", "when", "this", "that", "your", "you", "with",
+            "from", "into", "skill", "helps", "help", "using", "used",
+        ];
+        let mut words = Vec::new();
+        for word in desc.split(|c: char| !c.is_alphanumeric()) {
+            if word.chars().count() < 3 {
+                continue;
+            }
+            let lower = word.to_lowercase();
+            if STOP.contains(&lower.as_str()) {
+                continue;
+            }
+            words.push(lower);
+            if words.len() == 4 {
+                break;
+            }
+        }
+        if words.len() >= 2 {
+            let q = words.join(" ");
+            if !queries.iter().any(|existing| existing.eq_ignore_ascii_case(&q)) {
+                queries.push(q);
+            }
+        }
+    }
+    queries
+}
+
+/// Search skills.sh for mainstream peers (install count defines "mainstream")
+/// and fetch their SKILL.md through the on-disk cache. Returns the peers plus
+/// an empty-reason code when nothing reliable was found.
+fn optimize_find_peers(
+    db: &Connection,
+    name: &str,
+    description: Option<&str>,
+) -> (Vec<OptimizePeer>, Option<String>) {
+    let mut candidates: Vec<(String, String, String, i64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut search_failed = true;
+    for q in optimize_search_queries(name, description) {
+        let Ok(response) = catalog_search_blocking(&q, 10, 0) else {
+            continue;
+        };
+        search_failed = false;
+        let Some(results) = response.get("skills").and_then(Value::as_array) else {
+            continue;
+        };
+        for item in results {
+            let Some(obj) = item.as_object() else { continue };
+            let Some(peer_name) = obj.get("name").and_then(Value::as_str) else { continue };
+            let Some(source) = obj.get("source").and_then(Value::as_str) else { continue };
+            let Some(peer_skill_id) = obj.get("skillId").and_then(Value::as_str) else {
+                continue;
+            };
+            // The skill itself (or a same-named fork) is not a peer.
+            if last_path_segment(peer_name).eq_ignore_ascii_case(&last_path_segment(name)) {
+                continue;
+            }
+            let installs = number_to_i64(obj.get("installs")).unwrap_or(0);
+            if installs < 1 {
+                continue;
+            }
+            if !seen.insert(format!("{source}/{peer_skill_id}")) {
+                continue;
+            }
+            candidates.push((
+                peer_name.to_string(),
+                source.to_string(),
+                peer_skill_id.to_string(),
+                installs,
+            ));
+        }
+    }
+    if search_failed {
+        return (Vec::new(), Some("catalog_unavailable".to_string()));
+    }
+    candidates.sort_by(|a, b| b.3.cmp(&a.3));
+
+    let mut peers = Vec::new();
+    for (peer_name, source, peer_skill_id, installs) in candidates {
+        if peers.len() == OPTIMIZE_PEER_LIMIT {
+            break;
+        }
+        let Ok(raw) = optimize_fetch_peer_markdown(db, &source, &peer_skill_id) else {
+            continue;
+        };
+        peers.push(OptimizePeer {
+            name: peer_name,
+            source,
+            installs,
+            markdown: raw.chars().take(OPTIMIZE_PEER_MD_MAX_CHARS).collect(),
+        });
+    }
+    if peers.is_empty() {
+        (peers, Some("no_peers_found".to_string()))
+    } else {
+        (peers, None)
+    }
+}
+
+fn optimize_fetch_peer_markdown(
+    db: &Connection,
+    source: &str,
+    skill_id: &str,
+) -> AppResult<String> {
+    let cached: Option<(String, i64)> = db
+        .query_row(
+            "SELECT markdown, fetched_at FROM catalog_skill_md WHERE source = ?1 AND skill_id = ?2",
+            params![source, skill_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if let Some((markdown, fetched_at)) = cached {
+        if now_ms() - fetched_at < OPTIMIZE_PEER_CACHE_TTL_MS {
+            return Ok(markdown);
+        }
+    }
+    let raw = catalog_fetch_skill_content(db, source, skill_id)?;
+    db.execute(
+        "INSERT INTO catalog_skill_md (source, skill_id, markdown, fetched_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(source, skill_id) DO UPDATE SET
+           markdown = excluded.markdown,
+           fetched_at = excluded.fetched_at",
+        params![source, skill_id, raw, now_ms()],
+    )?;
+    Ok(raw)
+}
+
+fn optimize_diagnose_prompt(
+    name: &str,
+    local_md: &str,
+    peers: &[OptimizePeer],
+    language: &str,
+) -> (String, String) {
+    let language_rule = if language == "zh" {
+        "All user-facing strings (summary, suggestion, pattern, notApplicable) MUST be in Simplified Chinese. Keep `evidence` quotes verbatim in their original language."
+    } else {
+        "All user-facing strings MUST be in English. Keep `evidence` quotes verbatim in their original language."
+    };
+    let system = format!(
+        r#"You are the diagnosis engine of MySkills' skill-optimization module. You audit one AI agent skill (a SKILL.md) by answering EXACTLY three questions:
+
+1. "trigger" — Will an agent reading only the frontmatter `description` select this skill at the right moments? Look for missing trigger vocabulary, vague phrasing, or an unclear scope.
+2. "executability" — Can an agent follow the body correctly? Look for vague steps, missing concrete commands/paths, and unhandled failure modes.
+3. "benchmark" — Compared with the mainstream peer skills provided (if any), which specific structural practices is this skill missing?
+
+Hard rules:
+- Every finding MUST include `evidence`: a short verbatim quote from this skill's SKILL.md (for trigger/executability) or from a peer's SKILL.md (for benchmark). No evidence, no finding.
+- From peers, extract STRUCTURAL PATTERNS only (how they organize triggers, steps, failure handling). NEVER suggest copying or paraphrasing peer content into this skill.
+- At most 3 findings per question. If the skill is already strong on a question, return zero findings for it and verdict "good".
+- `recommendedFindingIndex` is the index (into `findings`) of the SINGLE highest-leverage fix for this round, or null if there are no findings.
+- {language_rule}
+
+Respond with ONLY a JSON object in this exact shape:
+{{
+  "verdicts": {{ "trigger": "good"|"needs_work", "executability": "good"|"needs_work", "benchmark": "good"|"needs_work"|"no_data" }},
+  "findings": [ {{ "question": "trigger"|"executability"|"benchmark", "summary": string, "evidence": string, "suggestion": string, "severity": "high"|"medium"|"low" }} ],
+  "peers": [ {{ "index": number, "patterns": [ {{ "pattern": string, "evidence": string }} ], "notApplicable": string|null }} ],
+  "recommendedFindingIndex": number|null
+}}"#
+    );
+
+    let mut user = format!("## Skill under diagnosis: {name}\n\n```markdown\n{local_md}\n```\n");
+    if peers.is_empty() {
+        user.push_str("\n## Peers\n\nNo mainstream peers were found in the catalog. Answer the benchmark question with verdict \"no_data\", produce no benchmark findings, and return an empty `peers` array.\n");
+    } else {
+        user.push_str("\n## Mainstream peers (real catalog results, sorted by installs)\n");
+        for (idx, peer) in peers.iter().enumerate() {
+            user.push_str(&format!(
+                "\n### Peer index {idx}: {} (source: {}, installs: {})\n\n```markdown\n{}\n```\n",
+                peer.name, peer.source, peer.installs, peer.markdown
+            ));
+        }
+    }
+    (system, user)
+}
+
+fn optimize_parse_json(text: &str) -> Value {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .or_else(|| {
+            let start = text.find('{')?;
+            let end = text.rfind('}')?;
+            serde_json::from_str::<Value>(&text[start..=end]).ok()
+        })
+        .unwrap_or(Value::Null)
+}
+
+fn optimize_severity_rank(severity: &str) -> i32 {
+    match severity {
+        "high" => 0,
+        "medium" => 1,
+        _ => 2,
+    }
+}
+
+fn optimize_build_report(
+    raw: &Value,
+    skill_id: &str,
+    content_hash: &str,
+    language: &str,
+    model: &str,
+    peers: &[OptimizePeer],
+    empty_reason: Option<&str>,
+) -> Option<Value> {
+    let obj = raw.as_object()?;
+
+    let mut findings = Vec::new();
+    if let Some(items) = obj.get("findings").and_then(Value::as_array) {
+        for item in items {
+            let Some(f) = item.as_object() else { continue };
+            let question = f.get("question").and_then(Value::as_str).unwrap_or("");
+            if !matches!(question, "trigger" | "executability" | "benchmark") {
+                continue;
+            }
+            let summary = f.get("summary").and_then(Value::as_str).unwrap_or("").trim();
+            let evidence = f.get("evidence").and_then(Value::as_str).unwrap_or("").trim();
+            // 证据先行：findings without evidence are dropped, not repaired.
+            if summary.is_empty() || evidence.is_empty() {
+                continue;
+            }
+            let suggestion = f
+                .get("suggestion")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let severity = match f.get("severity").and_then(Value::as_str) {
+                Some(s @ ("high" | "medium" | "low")) => s,
+                _ => "medium",
+            };
+            findings.push(json!({
+                "id": format!("f{}", findings.len() + 1),
+                "question": question,
+                "summary": summary,
+                "evidence": evidence,
+                "suggestion": suggestion,
+                "severity": severity,
+            }));
+            if findings.len() == 9 {
+                break;
+            }
+        }
+    }
+
+    let raw_verdicts = obj.get("verdicts").and_then(Value::as_object);
+    if raw_verdicts.is_none() && findings.is_empty() {
+        // Nothing usable came back — let the caller retry.
+        return None;
+    }
+    let has_findings_for = |question: &str| {
+        findings
+            .iter()
+            .any(|f| f.get("question").and_then(Value::as_str) == Some(question))
+    };
+    let verdict_for = |question: &str, allow_no_data: bool| -> String {
+        let raw = raw_verdicts
+            .and_then(|v| v.get(question))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match raw {
+            "good" | "needs_work" => raw.to_string(),
+            "no_data" if allow_no_data => raw.to_string(),
+            _ if has_findings_for(question) => "needs_work".to_string(),
+            _ => "good".to_string(),
+        }
+    };
+    let benchmark_verdict = if peers.is_empty() {
+        "no_data".to_string()
+    } else {
+        verdict_for("benchmark", true)
+    };
+
+    // Peer rows come from OUR catalog data; the model only contributes the
+    // pattern analysis, matched back by index.
+    let model_peers = obj.get("peers").and_then(Value::as_array);
+    let peer_values: Vec<Value> = peers
+        .iter()
+        .enumerate()
+        .map(|(idx, peer)| {
+            let analysis = model_peers.and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("index").and_then(Value::as_i64) == Some(idx as i64)
+                })
+            });
+            let patterns: Vec<Value> = analysis
+                .and_then(|a| a.get("patterns"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|p| {
+                            let pattern = p.get("pattern").and_then(Value::as_str)?.trim();
+                            let evidence =
+                                p.get("evidence").and_then(Value::as_str).unwrap_or("").trim();
+                            if pattern.is_empty() {
+                                return None;
+                            }
+                            Some(json!({ "pattern": pattern, "evidence": evidence }))
+                        })
+                        .take(4)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let not_applicable = analysis
+                .and_then(|a| a.get("notApplicable"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            json!({
+                "name": peer.name,
+                "source": peer.source,
+                "url": format!("https://github.com/{}", peer.source),
+                "installs": peer.installs,
+                "patterns": patterns,
+                "notApplicable": not_applicable,
+            })
+        })
+        .collect();
+
+    let recommended_id = obj
+        .get("recommendedFindingIndex")
+        .and_then(Value::as_i64)
+        .and_then(|idx| usize::try_from(idx).ok())
+        .and_then(|idx| findings.get(idx))
+        .and_then(|f| f.get("id").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            // Fall back to the most severe finding so one is always on offer.
+            findings
+                .iter()
+                .min_by_key(|f| {
+                    optimize_severity_rank(
+                        f.get("severity").and_then(Value::as_str).unwrap_or("low"),
+                    )
+                })
+                .and_then(|f| f.get("id").and_then(Value::as_str).map(str::to_string))
+        });
+
+    Some(json!({
+        "skillId": skill_id,
+        "contentHash": content_hash,
+        "language": language,
+        "model": model,
+        "generatedAt": now_ms(),
+        "verdicts": {
+            "trigger": verdict_for("trigger", false),
+            "executability": verdict_for("executability", false),
+            "benchmark": benchmark_verdict,
+        },
+        "findings": findings,
+        "benchmark": {
+            "peers": peer_values,
+            "empty": peers.is_empty(),
+            "emptyReason": empty_reason,
+        },
+        "recommendedFindingId": recommended_id,
+    }))
+}
+
+#[cfg(test)]
+mod optimize_tests {
+    use super::*;
+
+    #[test]
+    fn search_queries_derive_from_name_and_description() {
+        let queries = optimize_search_queries(
+            "pdf-helper",
+            Some("Extract tables and figures from PDF documents"),
+        );
+        assert_eq!(queries[0], "pdf helper");
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[1], "extract tables figures pdf");
+    }
+
+    #[test]
+    fn search_queries_skip_duplicate_and_empty() {
+        let queries = optimize_search_queries("review", Some("review"));
+        assert_eq!(queries, vec!["review".to_string()]);
+        assert!(optimize_search_queries("---", None).is_empty());
+    }
+
+    #[test]
+    fn parse_json_tolerates_fenced_output() {
+        let parsed = optimize_parse_json("```json\n{\"a\": 1}\n```");
+        assert_eq!(parsed.get("a").and_then(Value::as_i64), Some(1));
+        assert_eq!(optimize_parse_json("not json"), Value::Null);
+    }
+
+    fn sample_peer() -> OptimizePeer {
+        OptimizePeer {
+            name: "peer-skill".to_string(),
+            source: "owner/repo".to_string(),
+            installs: 42,
+            markdown: "# peer".to_string(),
+        }
+    }
+
+    #[test]
+    fn build_report_drops_findings_without_evidence_and_recommends_severest() {
+        let raw = json!({
+            "verdicts": { "trigger": "needs_work", "executability": "good", "benchmark": "needs_work" },
+            "findings": [
+                { "question": "trigger", "summary": "no evidence", "evidence": "", "suggestion": "x", "severity": "high" },
+                { "question": "bogus", "summary": "bad question", "evidence": "q", "suggestion": "x", "severity": "high" },
+                { "question": "trigger", "summary": "vague description", "evidence": "\"helps with stuff\"", "suggestion": "name the triggers", "severity": "medium" },
+                { "question": "benchmark", "summary": "missing failure section", "evidence": "## When things fail", "suggestion": "add one", "severity": "high" }
+            ],
+            "peers": [
+                { "index": 0, "patterns": [ { "pattern": "dedicated failure section", "evidence": "## When things fail" } ], "notApplicable": null }
+            ],
+            "recommendedFindingIndex": 99
+        });
+        let peers = vec![sample_peer()];
+        let report =
+            optimize_build_report(&raw, "skill-1", "hash-1", "en", "model-x", &peers, None)
+                .expect("report");
+        let findings = report.get("findings").and_then(Value::as_array).unwrap();
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].get("id").and_then(Value::as_str), Some("f1"));
+        // Out-of-range recommendation falls back to the severest finding (f2, high).
+        assert_eq!(
+            report.get("recommendedFindingId").and_then(Value::as_str),
+            Some("f2")
+        );
+        let peer_rows = report
+            .pointer("/benchmark/peers")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(peer_rows.len(), 1);
+        assert_eq!(
+            peer_rows[0].get("url").and_then(Value::as_str),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(
+            peer_rows[0]
+                .pointer("/patterns/0/pattern")
+                .and_then(Value::as_str),
+            Some("dedicated failure section")
+        );
+    }
+
+    #[test]
+    fn build_report_marks_benchmark_no_data_without_peers() {
+        let raw = json!({
+            "verdicts": { "trigger": "good", "executability": "good", "benchmark": "needs_work" },
+            "findings": [],
+            "peers": [],
+            "recommendedFindingIndex": null
+        });
+        let report = optimize_build_report(
+            &raw,
+            "skill-1",
+            "hash-1",
+            "zh",
+            "model-x",
+            &[],
+            Some("no_peers_found"),
+        )
+        .expect("report");
+        assert_eq!(
+            report.pointer("/verdicts/benchmark").and_then(Value::as_str),
+            Some("no_data")
+        );
+        assert_eq!(
+            report.pointer("/benchmark/empty").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
+                .pointer("/benchmark/emptyReason")
+                .and_then(Value::as_str),
+            Some("no_peers_found")
+        );
+        assert!(report.get("recommendedFindingId").unwrap().is_null());
+    }
+
+    #[test]
+    fn build_report_rejects_unusable_payload() {
+        assert!(optimize_build_report(
+            &Value::Null,
+            "skill-1",
+            "hash-1",
+            "en",
+            "m",
+            &[],
+            None
+        )
+        .is_none());
+        // No verdicts and no usable findings → retry signal.
+        assert!(optimize_build_report(
+            &json!({ "findings": [] }),
+            "skill-1",
+            "hash-1",
+            "en",
+            "m",
+            &[],
+            None
+        )
+        .is_none());
+    }
 }

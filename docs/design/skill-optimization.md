@@ -71,9 +71,10 @@
 
 完全踩在既有 catalog 能力上，无新基建：
 
-1. **定义主流**：由本地技能 name + description 生成 2~3 个检索词（LLM），调
-   `catalog:search`（skills.sh），按返回的 `installs` 排序取 top 3~5。
-   “主流”由安装量定义，不由主观判断定义。
+1. **定义主流**：由本地技能 name + description 派生 1~2 个检索词（首版为确定
+   性派生：name 转空格 + description 关键词，省一次 LLM 往返；效果不足再升级
+   为 LLM 生成），调 `catalog:search`（skills.sh），按返回的 `installs` 排序取
+   top 3~5。“主流”由安装量定义，不由主观判断定义。
 2. **取全文**：对每个对标对象经既有 preview 路径从 GitHub raw 拉取完整
    SKILL.md，按 `(source, skill_id)` 缓存（新表 `catalog_skill_md`，模式照抄
    `catalog_descriptions`）。

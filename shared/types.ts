@@ -852,3 +852,71 @@ export interface AiJob<T = unknown> {
   result: T | null;
   error: { code?: string; message: string; detail?: unknown } | null;
 }
+
+// ── 技能优化（三问一刀）— phase 1 diagnosis ─────────────────────────────────
+// Design: docs/design/skill-optimization.md. The diagnosis answers exactly
+// three questions about an existing skill and recommends ONE finding to fix
+// per round. Reports are cached by (skillId, contentHash, language).
+
+export type DiagnosisQuestion = 'trigger' | 'executability' | 'benchmark';
+
+export type DiagnosisVerdict = 'good' | 'needs_work';
+
+export interface DiagnosisFinding {
+  /** Stable within one report (f1, f2, …); phase 2 references it. */
+  id: string;
+  question: DiagnosisQuestion;
+  summary: string;
+  /** Verbatim quote from SKILL.md or a peer fact — findings without evidence are dropped. */
+  evidence: string;
+  suggestion: string;
+  severity: 'high' | 'medium' | 'low';
+}
+
+export interface BenchmarkPeerPattern {
+  /** A structural pattern worth borrowing (never content to copy). */
+  pattern: string;
+  evidence: string;
+}
+
+export interface BenchmarkPeer {
+  name: string;
+  /** owner/repo on GitHub — always from a real catalog search result. */
+  source: string;
+  url: string;
+  installs: number;
+  patterns: BenchmarkPeerPattern[];
+  /** Why this peer's approach does NOT transfer, when it doesn't. */
+  notApplicable: string | null;
+}
+
+export interface SkillDiagnosis {
+  skillId: string;
+  /** Hash of the skill revision this report was generated against. */
+  contentHash: string;
+  language: string;
+  model: string | null;
+  generatedAt: number;
+  verdicts: {
+    trigger: DiagnosisVerdict;
+    executability: DiagnosisVerdict;
+    /** 'no_data' when no peers with real installs were found (honest empty). */
+    benchmark: DiagnosisVerdict | 'no_data';
+  };
+  findings: DiagnosisFinding[];
+  benchmark: {
+    peers: BenchmarkPeer[];
+    empty: boolean;
+    emptyReason: string | null;
+  };
+  /** The ONE finding recommended for this round; null when nothing to fix. */
+  recommendedFindingId: string | null;
+}
+
+/** Returned by optimize:getReport — report may be null before first run. */
+export interface SkillDiagnosisSnapshot {
+  report: SkillDiagnosis | null;
+  /** True when a report exists but the skill content has changed since. */
+  stale: boolean;
+  currentHash: string;
+}

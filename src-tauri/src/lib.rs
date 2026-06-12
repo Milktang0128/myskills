@@ -98,7 +98,9 @@ pub fn run() {
             commands::ai_apply_bulk_categorization,
             commands::ai_library_overview_get,
             commands::ai_library_overview_generate,
-            commands::ai_library_overview_generate_job
+            commands::ai_library_overview_generate_job,
+            commands::optimize_get_report,
+            commands::optimize_diagnose_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running MySkills");
