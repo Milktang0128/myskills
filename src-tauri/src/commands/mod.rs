@@ -763,7 +763,10 @@ pub fn skills_copy_location_path(
 /// the 需要确认 drawer to show a read-only diff between diverging copies. Read
 /// ONLY — it never writes, so it is safe to expose for comparison.
 #[tauri::command]
-pub fn skills_read_location(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub fn skills_read_location(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
     let db = conn(&state)?;
     let id = optional_i64(&payload, "locationId")
         .ok_or_else(|| AppError::new("INVALID_INPUT", "locationId required"))?;
@@ -1636,7 +1639,8 @@ pub(crate) fn execute_sync_items(
     // Newest applied history id per op-group → one undo handle per user action.
     // Drives the "undo" affordance on safe-instant toggles; rolling back any one
     // id sweeps its whole group, so one representative per group is enough.
-    let mut undo_by_group: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut undo_by_group: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
 
     for item in items {
         let group = item
@@ -4890,10 +4894,7 @@ mod tests {
                 state.clone(),
             )
             .expect("start draft");
-            start["draft"]["id"]
-                .as_str()
-                .expect("draft id")
-                .to_string()
+            start["draft"]["id"].as_str().expect("draft id").to_string()
         })
     }
 
@@ -5390,7 +5391,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(!blocking.iter().any(|code| code == "NETWORK_NEEDS_GATE"));
         assert!(!blocking.iter().any(|code| code == "WRITE_NEEDS_GATE"));
-        assert!(warnings.iter().any(|code| code == "NETWORK_MENTION_UNGATED"));
+        assert!(warnings
+            .iter()
+            .any(|code| code == "NETWORK_MENTION_UNGATED"));
         assert!(warnings.iter().any(|code| code == "WRITE_MENTION_UNGATED"));
     }
 
@@ -5682,7 +5685,10 @@ const LLM_CONNECTION_OK_SETTING: &str = "llm.connectionOk";
 const CREATE_SKILL_MAX_CLARIFY_ROUNDS: i64 = 3;
 
 #[tauri::command]
-pub async fn catalog_search(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn catalog_search(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
     let db = conn(&state)?;
     require_network(&db)?;
     let q = required_str(&payload, "q")?.trim().to_string();
@@ -5705,7 +5711,11 @@ fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value>
     let client = catalog_client()?;
     let res = client
         .get(CATALOG_SEARCH_BASE)
-        .query(&[("q", q), ("limit", limit.as_str()), ("offset", offset.as_str())])
+        .query(&[
+            ("q", q),
+            ("limit", limit.as_str()),
+            ("offset", offset.as_str()),
+        ])
         .header(reqwest::header::USER_AGENT, CATALOG_USER_AGENT)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
@@ -5748,7 +5758,10 @@ fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value>
 }
 
 #[tauri::command]
-pub async fn catalog_preview(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn catalog_preview(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
     let db = conn(&state)?;
     let source = required_str(&payload, "source")?;
     let skill_id = required_str(&payload, "skillId")?;
@@ -6620,7 +6633,10 @@ pub async fn llm_chat(payload: Option<Value>, state: State<'_, AppState>) -> App
 }
 
 #[tauri::command]
-pub async fn llm_test_connection(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn llm_test_connection(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
     let _ = payload;
     let db = conn(&state)?;
     if get_setting(&db, "allow_external_network")?.as_deref() != Some("1") {
@@ -7124,12 +7140,7 @@ fn ai_create_skill_start_inner(
             now
         ],
     )?;
-    Ok(create_skill_clarify_envelope(
-        &db,
-        &draft_id,
-        &turn,
-        turn.ai_used,
-    )?)
+    create_skill_clarify_envelope(&db, &draft_id, &turn, turn.ai_used)
 }
 
 /// 把一轮澄清结果包成发给 renderer 的状态机 envelope：
@@ -7261,7 +7272,10 @@ pub async fn ai_create_skill_answer(
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let round = draft.get("clarifyRound").and_then(Value::as_i64).unwrap_or(1);
+    let round = draft
+        .get("clarifyRound")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
     let force = p
         .get("forceCrystallize")
         .and_then(Value::as_bool)
@@ -7283,7 +7297,8 @@ pub async fn ai_create_skill_answer(
                 .count()
         })
         .unwrap_or(0);
-    let crystallize = force || remaining_unanswered == 0 || (round + 1) >= CREATE_SKILL_MAX_CLARIFY_ROUNDS;
+    let crystallize =
+        force || remaining_unanswered == 0 || (round + 1) >= CREATE_SKILL_MAX_CLARIFY_ROUNDS;
     let mut understanding = draft
         .get("understanding")
         .and_then(Value::as_str)
@@ -8320,13 +8335,18 @@ fn create_skill_start_quality_issues(spec: &Value, _questions: &Value) -> Vec<Va
     }
     let intent = spec.get("intentFrame").unwrap_or(&Value::Null);
     if weak_create_skill_text(intent.get("whenToUse").and_then(Value::as_str), 12) {
-        issues.push(json!({ "field": "intentFrame.whenToUse", "message": "When-to-use is missing." }));
+        issues.push(
+            json!({ "field": "intentFrame.whenToUse", "message": "When-to-use is missing." }),
+        );
     }
     if weak_create_skill_text(intent.get("userInput").and_then(Value::as_str), 12) {
-        issues.push(json!({ "field": "intentFrame.userInput", "message": "User input is missing." }));
+        issues
+            .push(json!({ "field": "intentFrame.userInput", "message": "User input is missing." }));
     }
     if weak_create_skill_text(intent.get("output").and_then(Value::as_str), 1) {
-        issues.push(json!({ "field": "intentFrame.output", "message": "Output description is missing." }));
+        issues.push(
+            json!({ "field": "intentFrame.output", "message": "Output description is missing." }),
+        );
     }
     if non_empty_array_len(intent.get("outputParts")) < 2 {
         issues.push(json!({ "field": "intentFrame.outputParts", "message": "Output needs at least two concrete parts." }));
@@ -9220,7 +9240,9 @@ fn create_skill_normalize_spec(spec: &mut Value) {
         spec,
         "whenToUse",
         &[&["intentFrame", "triggerContext"]],
-        spec.get("description").and_then(Value::as_str).map(String::from),
+        spec.get("description")
+            .and_then(Value::as_str)
+            .map(String::from),
     );
 
     // --- userInput：空 → 旧 userJob，再把旧 acceptedInputs 折叠进来。 ---
@@ -9243,21 +9265,27 @@ fn create_skill_normalize_spec(spec: &mut Value) {
     }
 
     // --- output：自由正文。决策2：空就留空，并把 "output" 加进 missing。 ---
-    if !spec["intentFrame"]
+    if spec["intentFrame"]
         .get("output")
         .and_then(Value::as_str)
-        .is_some_and(|value| !value.trim().is_empty())
+        .is_none_or(|value| value.trim().is_empty())
     {
         spec["intentFrame"]["output"] = json!("");
     }
 
     // --- outputParts：保持已有数组，否则空数组。 ---
-    if !spec["intentFrame"].get("outputParts").is_some_and(Value::is_array) {
+    if !spec["intentFrame"]
+        .get("outputParts")
+        .is_some_and(Value::is_array)
+    {
         spec["intentFrame"]["outputParts"] = json!([]);
     }
 
     // --- workflow：去掉 .steps 嵌套（旧 workflow.steps → 顶层 workflow 数组）。 ---
-    if !spec["intentFrame"].get("workflow").is_some_and(Value::is_array) {
+    if !spec["intentFrame"]
+        .get("workflow")
+        .is_some_and(Value::is_array)
+    {
         let migrated = spec
             .get("intentFrame")
             .and_then(|i| i.get("workflow"))
@@ -9268,7 +9296,10 @@ fn create_skill_normalize_spec(spec: &mut Value) {
     }
 
     // --- boundaries：合并旧 failClosedRules + nonGoals。 ---
-    if !spec["intentFrame"].get("boundaries").is_some_and(Value::is_array) {
+    if !spec["intentFrame"]
+        .get("boundaries")
+        .is_some_and(Value::is_array)
+    {
         let mut merged: Vec<Value> = Vec::new();
         for path in [
             ["intentFrame", "workflow", "failClosedRules"].as_slice(),
@@ -9288,7 +9319,10 @@ fn create_skill_normalize_spec(spec: &mut Value) {
         spec["intentFrame"]["boundaries"] = json!(merged);
     }
 
-    if !spec["intentFrame"].get("successCriteria").is_some_and(Value::is_array) {
+    if !spec["intentFrame"]
+        .get("successCriteria")
+        .is_some_and(Value::is_array)
+    {
         spec["intentFrame"]["successCriteria"] = json!([]);
     }
 
@@ -9296,10 +9330,7 @@ fn create_skill_normalize_spec(spec: &mut Value) {
     create_skill_normalize_safety(spec);
 
     // 清理旧结构，避免悬空的旧形状嵌套被下游误读。
-    if let Some(intent) = spec
-        .get_mut("intentFrame")
-        .and_then(Value::as_object_mut)
-    {
+    if let Some(intent) = spec.get_mut("intentFrame").and_then(Value::as_object_mut) {
         for legacy in [
             "userJob",
             "userIntention",
@@ -9511,9 +9542,7 @@ fn create_skill_normalize_safety(spec: &mut Value) {
         .or_else(|| {
             legacy_privacy
                 .as_deref()
-                .filter(|v| {
-                    matches!(*v, "local_only" | "may_send_summary" | "may_send_content")
-                })
+                .filter(|v| matches!(*v, "local_only" | "may_send_summary" | "may_send_content"))
                 .map(String::from)
         })
         .unwrap_or_else(|| "local_only".to_string());
@@ -9753,7 +9782,10 @@ fn ensure_safety_gates(markdown: &str, safety: Option<&Value>, spec: &Value) -> 
         return markdown.to_string();
     };
     let lang = spec.get("language").and_then(Value::as_str).unwrap_or("zh");
-    let network = safety.get("network").and_then(Value::as_str).unwrap_or("no");
+    let network = safety
+        .get("network")
+        .and_then(Value::as_str)
+        .unwrap_or("no");
     let file_writes = safety
         .get("fileWrites")
         .and_then(Value::as_str)
@@ -11113,7 +11145,10 @@ fn ai_parse_json_object(text: &str) -> Value {
 }
 
 #[tauri::command]
-pub async fn ai_bulk_categorize(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+pub async fn ai_bulk_categorize(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
     let raw_ids = payload
         .as_ref()
         .and_then(|p| p.get("skillIds"))
@@ -12398,9 +12433,7 @@ pub fn optimize_get_report(payload: Option<Value>, state: State<'_, AppState>) -
     let report = row
         .as_ref()
         .and_then(|(_, json)| serde_json::from_str::<Value>(json).ok());
-    let stale = row
-        .map(|(hash, _)| hash != current_hash)
-        .unwrap_or(false);
+    let stale = row.map(|(hash, _)| hash != current_hash).unwrap_or(false);
     Ok(json!({ "report": report, "stale": stale, "currentHash": current_hash }))
 }
 
@@ -12474,7 +12507,10 @@ fn optimize_diagnose_inner(
         )
         .optional()?
         .ok_or_else(|| {
-            AppError::new("NOT_FOUND", format!("skill {skill_id} has no readable location"))
+            AppError::new(
+                "NOT_FOUND",
+                format!("skill {skill_id} has no readable location"),
+            )
         })?;
     let skill_md_path = Path::new(&install).join("SKILL.md");
     let markdown = fs::read_to_string(&skill_md_path).map_err(|err| {
@@ -12575,8 +12611,8 @@ fn optimize_search_queries(name: &str, description: Option<&str>) -> Vec<String>
     }
     if let Some(desc) = description {
         const STOP: &[&str] = &[
-            "the", "and", "for", "use", "when", "this", "that", "your", "you", "with",
-            "from", "into", "skill", "helps", "help", "using", "used",
+            "the", "and", "for", "use", "when", "this", "that", "your", "you", "with", "from",
+            "into", "skill", "helps", "help", "using", "used",
         ];
         let mut words = Vec::new();
         for word in desc.split(|c: char| !c.is_alphanumeric()) {
@@ -12594,7 +12630,10 @@ fn optimize_search_queries(name: &str, description: Option<&str>) -> Vec<String>
         }
         if words.len() >= 2 {
             let q = words.join(" ");
-            if !queries.iter().any(|existing| existing.eq_ignore_ascii_case(&q)) {
+            if !queries
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&q))
+            {
                 queries.push(q);
             }
         }
@@ -12622,9 +12661,15 @@ fn optimize_find_peers(
             continue;
         };
         for item in results {
-            let Some(obj) = item.as_object() else { continue };
-            let Some(peer_name) = obj.get("name").and_then(Value::as_str) else { continue };
-            let Some(source) = obj.get("source").and_then(Value::as_str) else { continue };
+            let Some(obj) = item.as_object() else {
+                continue;
+            };
+            let Some(peer_name) = obj.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(source) = obj.get("source").and_then(Value::as_str) else {
+                continue;
+            };
             let Some(peer_skill_id) = obj.get("skillId").and_then(Value::as_str) else {
                 continue;
             };
@@ -12650,7 +12695,7 @@ fn optimize_find_peers(
     if search_failed {
         return (Vec::new(), Some("catalog_unavailable".to_string()));
     }
-    candidates.sort_by(|a, b| b.3.cmp(&a.3));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.3));
 
     let mut peers = Vec::new();
     for (peer_name, source, peer_skill_id, installs) in candidates {
@@ -12791,8 +12836,16 @@ fn optimize_build_report(
             if !matches!(question, "trigger" | "executability" | "benchmark") {
                 continue;
             }
-            let summary = f.get("summary").and_then(Value::as_str).unwrap_or("").trim();
-            let evidence = f.get("evidence").and_then(Value::as_str).unwrap_or("").trim();
+            let summary = f
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let evidence = f
+                .get("evidence")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim();
             // 证据先行：findings without evidence are dropped, not repaired.
             if summary.is_empty() || evidence.is_empty() {
                 continue;
@@ -12802,10 +12855,10 @@ fn optimize_build_report(
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .trim();
-            let severity = match f.get("severity").and_then(Value::as_str) {
-                Some(s @ ("high" | "medium" | "low")) => s,
-                _ => "medium",
-            };
+            let severity = f
+                .get("severity")
+                .and_then(Value::as_str)
+                .unwrap_or("medium");
             findings.push(json!({
                 "id": format!("f{}", findings.len() + 1),
                 "question": question,
@@ -12856,9 +12909,9 @@ fn optimize_build_report(
         .enumerate()
         .map(|(idx, peer)| {
             let analysis = model_peers.and_then(|items| {
-                items.iter().find(|item| {
-                    item.get("index").and_then(Value::as_i64) == Some(idx as i64)
-                })
+                items
+                    .iter()
+                    .find(|item| item.get("index").and_then(Value::as_i64) == Some(idx as i64))
             });
             let patterns: Vec<Value> = analysis
                 .and_then(|a| a.get("patterns"))
@@ -12868,8 +12921,11 @@ fn optimize_build_report(
                         .iter()
                         .filter_map(|p| {
                             let pattern = p.get("pattern").and_then(Value::as_str)?.trim();
-                            let evidence =
-                                p.get("evidence").and_then(Value::as_str).unwrap_or("").trim();
+                            let evidence = p
+                                .get("evidence")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .trim();
                             if pattern.is_empty() {
                                 return None;
                             }
@@ -13567,12 +13623,18 @@ Respond with ONLY this JSON object:
 }}"#
     );
     let finding_summary = finding.get("summary").and_then(Value::as_str).unwrap_or("");
-    let finding_evidence = finding.get("evidence").and_then(Value::as_str).unwrap_or("");
+    let finding_evidence = finding
+        .get("evidence")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let finding_suggestion = finding
         .get("suggestion")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let finding_question = finding.get("question").and_then(Value::as_str).unwrap_or("");
+    let finding_question = finding
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let user = format!(
         "## Skill: {name}\n\n## The one problem to fix (question: {finding_question})\n\nProblem: {finding_summary}\nEvidence: {finding_evidence}\nSuggested direction: {finding_suggestion}\n\n## Current SKILL.md\n\n```markdown\n{baseline}\n```\n"
     );
@@ -13744,7 +13806,9 @@ mod optimize_tests {
         )
         .expect("report");
         assert_eq!(
-            report.pointer("/verdicts/benchmark").and_then(Value::as_str),
+            report
+                .pointer("/verdicts/benchmark")
+                .and_then(Value::as_str),
             Some("no_data")
         );
         assert_eq!(
@@ -13762,16 +13826,10 @@ mod optimize_tests {
 
     #[test]
     fn build_report_rejects_unusable_payload() {
-        assert!(optimize_build_report(
-            &Value::Null,
-            "skill-1",
-            "hash-1",
-            "en",
-            "m",
-            &[],
-            None
-        )
-        .is_none());
+        assert!(
+            optimize_build_report(&Value::Null, "skill-1", "hash-1", "en", "m", &[], None)
+                .is_none()
+        );
         // No verdicts and no usable findings → retry signal.
         assert!(optimize_build_report(
             &json!({ "findings": [] }),
