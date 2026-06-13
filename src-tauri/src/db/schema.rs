@@ -175,6 +175,47 @@ CREATE TABLE IF NOT EXISTS skill_creation_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_skill_creation_status ON skill_creation_drafts(status);
 CREATE INDEX IF NOT EXISTS idx_skill_creation_updated ON skill_creation_drafts(updated_at);
+
+CREATE TABLE IF NOT EXISTS skill_audits (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id      TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  content_hash  TEXT NOT NULL,
+  language      TEXT NOT NULL,
+  report_json   TEXT NOT NULL,
+  model         TEXT,
+  created_at    INTEGER NOT NULL,
+  UNIQUE(skill_id, content_hash, language)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_audits_skill ON skill_audits(skill_id);
+
+CREATE TABLE IF NOT EXISTS catalog_skill_md (
+  source      TEXT NOT NULL,
+  skill_id    TEXT NOT NULL,
+  markdown    TEXT NOT NULL,
+  fetched_at  INTEGER NOT NULL,
+  PRIMARY KEY (source, skill_id)
+);
+
+CREATE TABLE IF NOT EXISTS skill_optimizations (
+  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id                  TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  status                    TEXT NOT NULL,
+  finding_json              TEXT NOT NULL,
+  baseline_hash             TEXT NOT NULL,
+  baseline_markdown         TEXT NOT NULL,
+  proposed_markdown         TEXT NOT NULL,
+  expected_improvement      TEXT NOT NULL,
+  verification_prompts_json TEXT NOT NULL DEFAULT '[]',
+  gate_json                 TEXT NOT NULL,
+  language                  TEXT NOT NULL,
+  model                     TEXT,
+  sync_history_id           INTEGER,
+  before_hash               TEXT,
+  after_hash                TEXT,
+  created_at                INTEGER NOT NULL,
+  applied_at                INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skill_optimizations_skill ON skill_optimizations(skill_id);
 "#;
 
 pub const IDEMPOTENT_MIGRATIONS: &[(i64, &str, &str)] = &[
@@ -214,5 +255,48 @@ CREATE TABLE IF NOT EXISTS skill_creation_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_skill_creation_status ON skill_creation_drafts(status);
 CREATE INDEX IF NOT EXISTS idx_skill_creation_updated ON skill_creation_drafts(updated_at);
+"#),
+    (12, "skill_optimization_phase1", r#"
+CREATE TABLE IF NOT EXISTS skill_audits (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id      TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  content_hash  TEXT NOT NULL,
+  language      TEXT NOT NULL,
+  report_json   TEXT NOT NULL,
+  model         TEXT,
+  created_at    INTEGER NOT NULL,
+  UNIQUE(skill_id, content_hash, language)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_audits_skill ON skill_audits(skill_id);
+
+CREATE TABLE IF NOT EXISTS catalog_skill_md (
+  source      TEXT NOT NULL,
+  skill_id    TEXT NOT NULL,
+  markdown    TEXT NOT NULL,
+  fetched_at  INTEGER NOT NULL,
+  PRIMARY KEY (source, skill_id)
+);
+"#),
+    (13, "skill_optimizations_phase2", r#"
+CREATE TABLE IF NOT EXISTS skill_optimizations (
+  id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id                  TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  status                    TEXT NOT NULL,
+  finding_json              TEXT NOT NULL,
+  baseline_hash             TEXT NOT NULL,
+  baseline_markdown         TEXT NOT NULL,
+  proposed_markdown         TEXT NOT NULL,
+  expected_improvement      TEXT NOT NULL,
+  verification_prompts_json TEXT NOT NULL DEFAULT '[]',
+  gate_json                 TEXT NOT NULL,
+  language                  TEXT NOT NULL,
+  model                     TEXT,
+  sync_history_id           INTEGER,
+  before_hash               TEXT,
+  after_hash                TEXT,
+  created_at                INTEGER NOT NULL,
+  applied_at                INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_skill_optimizations_skill ON skill_optimizations(skill_id);
 "#),
 ];

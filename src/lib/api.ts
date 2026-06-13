@@ -47,7 +47,12 @@ import type {
   ScenarioExport,
   ScenarioImportResult,
   ScanResult,
+  OptimizationApplyResult,
+  OptimizationProposal,
+  OptimizationRound,
   Skill,
+  SkillDiagnosis,
+  SkillDiagnosisSnapshot,
   SkillFilter,
   SyncExecuteResult,
   SyncPlan,
@@ -174,6 +179,14 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.ai.libraryOverviewGet]: 'ai_library_overview_get',
   [IPC.ai.libraryOverviewGenerate]: 'ai_library_overview_generate',
   [IPC.ai.libraryOverviewGenerateJob]: 'ai_library_overview_generate_job',
+
+  [IPC.optimize.getReport]: 'optimize_get_report',
+  [IPC.optimize.diagnoseJob]: 'optimize_diagnose_job',
+  [IPC.optimize.getProposal]: 'optimize_get_proposal',
+  [IPC.optimize.proposeFixJob]: 'optimize_propose_fix_job',
+  [IPC.optimize.apply]: 'optimize_apply',
+  [IPC.optimize.discard]: 'optimize_discard',
+  [IPC.optimize.history]: 'optimize_history',
 };
 
 function normalizeApiError(err: unknown): Error & { code?: string; detail?: unknown } {
@@ -512,6 +525,39 @@ export const api = {
       bridge().invoke(IPC.ai.libraryOverviewGenerate, { language }) as Promise<LibraryOverview>,
     libraryOverviewGenerateJob: (language: 'zh' | 'en') =>
       bridge().invoke(IPC.ai.libraryOverviewGenerateJob, { language }) as Promise<AiJob<LibraryOverview>>,
+  },
+  optimize: {
+    /** Cached three-question diagnosis snapshot. Cheap (no LLM call). */
+    getReport: (skillId: string, language: 'zh' | 'en') =>
+      bridge().invoke(IPC.optimize.getReport, { skillId, language }) as Promise<SkillDiagnosisSnapshot>,
+    /**
+     * Run (or resume) the diagnosis as an ai job — LLM + catalog fetches are
+     * slow. Poll with ai.jobGet; kind is 'optimize_diagnose', key
+     * `${skillId}:${language}`.
+     */
+    diagnoseJob: (skillId: string, language: 'zh' | 'en', force = false) =>
+      bridge().invoke(IPC.optimize.diagnoseJob, { skillId, language, force }) as Promise<AiJob<SkillDiagnosis>>,
+    /** The skill's pending (un-applied) proposal, or null. Cheap (no LLM). */
+    getProposal: (skillId: string) =>
+      bridge().invoke(IPC.optimize.getProposal, { skillId }) as Promise<OptimizationProposal | null>,
+    /**
+     * Generate a surgical rewrite for one finding as an ai job — LLM + gates.
+     * Poll with ai.jobGet; kind 'optimize_propose_fix', key
+     * `${skillId}:${findingId}:${language}`.
+     */
+    proposeFixJob: (skillId: string, findingId: string, language: 'zh' | 'en') =>
+      bridge().invoke(IPC.optimize.proposeFixJob, { skillId, findingId, language }) as Promise<
+        AiJob<OptimizationProposal>
+      >,
+    /** Land a proposal — backup, atomic write, rescan. Returns rollback handle. */
+    apply: (proposalId: number) =>
+      bridge().invoke(IPC.optimize.apply, { proposalId }) as Promise<OptimizationApplyResult>,
+    /** Drop a pending proposal without writing anything. */
+    discard: (proposalId: number) =>
+      bridge().invoke(IPC.optimize.discard, { proposalId }) as Promise<{ ok: true }>,
+    /** Applied rounds for a skill, newest first (with rolled-back state). */
+    history: (skillId: string) =>
+      bridge().invoke(IPC.optimize.history, { skillId }) as Promise<OptimizationRound[]>,
   },
   on: {
     scanStarted: (cb: (data: { startedAt: number }) => void) =>

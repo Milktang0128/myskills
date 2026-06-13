@@ -125,6 +125,25 @@ export const IPC = {
     libraryOverviewGenerate: 'ai:libraryOverview:generate',
     libraryOverviewGenerateJob: 'ai:libraryOverview:generateJob',
   },
+  optimize: {
+    /**
+     * 技能优化（三问一刀）phase 1 — read-only diagnosis. The diagnose runs
+     * as an ai job (LLM + catalog fetches are slow); poll via ai:job:get.
+     * Reports cache by (skillId, contentHash, language).
+     */
+    getReport: 'optimize:getReport',
+    diagnoseJob: 'optimize:diagnoseJob',
+    /**
+     * Phase 2 (writes). proposeFix runs as an ai job (LLM rewrite + gates);
+     * apply lands the chosen proposal through the sync plan→execute path.
+     * Rollback reuses sync:rollback with the round's syncHistoryId.
+     */
+    getProposal: 'optimize:getProposal',
+    proposeFixJob: 'optimize:proposeFixJob',
+    apply: 'optimize:apply',
+    discard: 'optimize:discard',
+    history: 'optimize:history',
+  },
   events: {
     scanStarted: 'event:scanStarted',
     scanFinished: 'event:scanFinished',
@@ -143,7 +162,8 @@ export type IpcChannel =
   | typeof IPC.sync[keyof typeof IPC.sync]
   | typeof IPC.catalog[keyof typeof IPC.catalog]
   | typeof IPC.llm[keyof typeof IPC.llm]
-  | typeof IPC.ai[keyof typeof IPC.ai];
+  | typeof IPC.ai[keyof typeof IPC.ai]
+  | typeof IPC.optimize[keyof typeof IPC.optimize];
 
 export type IpcEventChannel = typeof IPC.events[keyof typeof IPC.events];
 
@@ -159,6 +179,7 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.catalog),
   ...Object.values(IPC.llm),
   ...Object.values(IPC.ai),
+  ...Object.values(IPC.optimize),
 ]);
 
 export const ALL_EVENT_CHANNELS: ReadonlySet<string> = new Set<string>(Object.values(IPC.events));
