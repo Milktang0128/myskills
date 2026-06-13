@@ -90,7 +90,13 @@ export function SkillDiagnosis({ skillId }: { skillId: string }) {
       try {
         const next = await api.ai.jobGet<SkillDiagnosis>(job.jobId);
         if (cancelled) return;
-        setJob(next);
+        // Do NOT setJob(next) on every tick: `job` is an effect dependency, so
+        // updating it tears down + re-subscribes this effect, flipping the
+        // in-flight closure's `cancelled` to true. The await on getReport()
+        // below would then bail before setRunning(false) — leaving the spinner
+        // stuck forever even though the job already succeeded. `running` (not
+        // `job`) drives the UI, so the intermediate object isn't needed; job
+        // only needs to change on start (→ poll begins) and terminal (→ null).
         if (next.status === 'succeeded') {
           const snap = await api.optimize.getReport(skillId, lang);
           if (cancelled) return;
