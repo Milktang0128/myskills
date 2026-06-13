@@ -241,6 +241,7 @@ export const en = {
   'detail.section.locations.canonicalLabel': 'Source:',
   'detail.section.frontmatter': 'Frontmatter',
   'diagnosis.heading': 'Optimization check',
+  'diagnosis.beta.title': 'Still maturing: diagnosis/rewrite quality and false positives may vary — use your own judgment.',
   'diagnosis.empty': 'Three questions about this skill: will agents pick it, can they follow it, and where it lags the mainstream.',
   'diagnosis.runBtn': 'Run check',
   'diagnosis.rerun': 'Re-run',
@@ -899,6 +900,7 @@ export const en = {
   'common.clear': 'Clear',
   'common.undo': 'Undo',
   'common.retry': 'Retry',
+  'common.beta': 'Beta',
   'common.openInFinder': 'Reveal in file manager',
 
   // ── Bulk AI categorize ──────────────────────────────────────────────────

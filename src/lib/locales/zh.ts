@@ -243,6 +243,7 @@ export const zh: Dict = {
   'detail.section.locations.canonicalLabel': '来源：',
   'detail.section.frontmatter': 'Frontmatter',
   'diagnosis.heading': '优化诊断',
+  'diagnosis.beta.title': '功能仍在完善中:诊断与改写质量、误报都可能有波动,请结合自己的判断使用。',
   'diagnosis.empty': '对这个技能问三个问题：会被选中吗、照着能做对吗、比主流差在哪。',
   'diagnosis.runBtn': '运行诊断',
   'diagnosis.rerun': '重新诊断',
@@ -894,6 +895,7 @@ export const zh: Dict = {
   'common.clear': '清空',
   'common.undo': '撤销',
   'common.retry': '重试',
+  'common.beta': 'Beta',
   'common.openInFinder': '在文件管理器中显示',
 
   // ── 批量 AI 分类 ───────────────────────────────────────────────────────

@@ -149,9 +149,17 @@ export function SkillDiagnosis({ skillId }: { skillId: string }) {
   return (
     <section>
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           <Stethoscope className="h-3 w-3" aria-hidden="true" />
           {t('diagnosis.heading')}
+          {/* Beta marker — the optimize module is still maturing (gate noise,
+              surgical-rewrite quality). Sets the user's expectations. */}
+          <span
+            className="rounded bg-violet-100 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-violet-700 dark:bg-violet-500/15 dark:text-violet-300"
+            title={t('diagnosis.beta.title')}
+          >
+            {t('common.beta')}
+          </span>
         </h3>
         {report && !running && (
           <button
