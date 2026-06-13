@@ -21,7 +21,9 @@ import type {
   SkillDiagnosis,
   SkillDiagnosisSnapshot,
 } from '@shared/types';
+import { Wand2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { OptimizeFix, OptimizeHistory } from '@/components/skill-optimize';
 import { api } from '@/lib/api';
 import { useI18n, useT } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
@@ -49,6 +51,10 @@ export function SkillDiagnosis({ skillId }: { skillId: string }) {
   const [job, setJob] = useState<AiJob<SkillDiagnosis> | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The finding the user is actively fixing (mounts the rewrite flow), and a
+  // counter that re-renders the applied-round history after a write/rollback.
+  const [activeFindingId, setActiveFindingId] = useState<string | null>(null);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
 
   // Cached report + any still-active job from a previous panel visit.
   useEffect(() => {
@@ -57,6 +63,7 @@ export function SkillDiagnosis({ skillId }: { skillId: string }) {
     setJob(null);
     setRunning(false);
     setError(null);
+    setActiveFindingId(null);
     void api.optimize
       .getReport(skillId, lang)
       .then((snap) => {
@@ -125,6 +132,14 @@ export function SkillDiagnosis({ skillId }: { skillId: string }) {
 
   const report = snapshot?.report ?? null;
 
+  // After a successful write: re-diagnose against the new content and refresh
+  // the round history. This closes the loop — the user sees the before/after.
+  function onApplied() {
+    setActiveFindingId(null);
+    setHistoryRefresh((n) => n + 1);
+    void run(true);
+  }
+
   return (
     <section>
       <div className="mb-2 flex items-center justify-between">
@@ -166,7 +181,16 @@ export function SkillDiagnosis({ skillId }: { skillId: string }) {
           </Button>
         </div>
       ) : (
-        <DiagnosisReport report={report} stale={snapshot?.stale ?? false} onRerun={() => void run(true)} />
+        <DiagnosisReport
+          report={report}
+          stale={snapshot?.stale ?? false}
+          onRerun={() => void run(true)}
+          skillId={skillId}
+          activeFindingId={activeFindingId}
+          onFix={setActiveFindingId}
+          onApplied={onApplied}
+          historyRefresh={historyRefresh}
+        />
       )}
     </section>
   );
@@ -176,14 +200,41 @@ function DiagnosisReport({
   report,
   stale,
   onRerun,
+  skillId,
+  activeFindingId,
+  onFix,
+  onApplied,
+  historyRefresh,
 }: {
   report: SkillDiagnosis;
   stale: boolean;
   onRerun: () => void;
+  skillId: string;
+  activeFindingId: string | null;
+  onFix: (findingId: string | null) => void;
+  onApplied: () => void;
+  historyRefresh: number;
 }) {
   const t = useT();
   const recommended = report.findings.find((f) => f.id === report.recommendedFindingId) ?? null;
   const rest = report.findings.filter((f) => f.id !== report.recommendedFindingId);
+  const renderFix = (finding: DiagnosisFinding) =>
+    activeFindingId === finding.id ? (
+      <OptimizeFix
+        skillId={skillId}
+        finding={finding}
+        onApplied={onApplied}
+        onClose={() => onFix(null)}
+      />
+    ) : (
+      <button
+        onClick={() => onFix(finding.id)}
+        className="inline-flex items-center gap-1 rounded border border-primary/40 px-2 py-1 text-[11px] text-primary hover:bg-primary/10"
+      >
+        <Wand2 className="h-3 w-3" />
+        {t('optimize.fixBtn')}
+      </button>
+    );
 
   return (
     <div className="space-y-2">
@@ -211,6 +262,7 @@ function DiagnosisReport({
             {t('diagnosis.recommended')}
           </div>
           <FindingBody finding={recommended} />
+          <div className="mt-2">{renderFix(recommended)}</div>
         </div>
       )}
 
@@ -221,7 +273,10 @@ function DiagnosisReport({
           </summary>
           <div className="mt-2 space-y-3">
             {rest.map((f) => (
-              <FindingBody key={f.id} finding={f} />
+              <div key={f.id} className="space-y-2">
+                <FindingBody finding={f} />
+                {renderFix(f)}
+              </div>
             ))}
           </div>
         </details>
@@ -235,6 +290,7 @@ function DiagnosisReport({
       )}
 
       <BenchmarkSection report={report} />
+      <OptimizeHistory skillId={skillId} refreshKey={historyRefresh} />
     </div>
   );
 }

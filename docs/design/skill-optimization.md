@@ -147,10 +147,28 @@ CREATE TABLE skill_optimizations (
 
 ## 9. 分期
 
-- **第一期（纯读，零风险）**：`optimize:diagnose` / `optimize:getReport` 全量
-  三问（含对标）+ 技能详情页报告 UI + `catalog_skill_md` 缓存。
-- **第二期（写入）**：`optimize:proposeFix` / `optimize:apply` / `optimize:history`
-  + 四道闸门 + diff 确认 UI + 回滚入口提升。
+- **第一期（纯读，零风险）✅ 已建**：`optimize:getReport` / `optimize:diagnoseJob`
+  全量三问（含对标）+ 技能详情页报告 UI + `catalog_skill_md` 缓存 + `skill_audits`
+  缓存表（迁移 12）。
+- **第二期（写入）✅ 已建**：`optimize:proposeFixJob` / `optimize:getProposal` /
+  `optimize:apply` / `optimize:discard` / `optimize:history` + 四道闸门 + diff 确认
+  UI + 轮次表 `skill_optimizations`（迁移 13）。回滚复用 `sync:rollback`。
+
+### 实现要点（与设计的偏差记录）
+
+- **落盘走 `copy_real` 动作**：apply 把技能真实目录整体暂存（保留非 SKILL.md 资产），
+  仅覆写 SKILL.md，再经既有 `execute_sync_items` 的 `copy_real` 分支落盘——自动获得
+  备份、临时目录原子 rename、hash 校验、`sync_history` 记录与回滚。写目标永远是技能的
+  **真实目录**（非软链位置），软链兄弟自动跟随。
+- **TOCTOU 防护**：apply 前比对技能当前 `content_hash` 与提案的 `baseline_hash`，
+  不一致即 `SKILL_CHANGED`，要求重新诊断。
+- **轮次状态简化为 `proposed | applied`**；`rolled_back` 不落库，由 `sync_history`
+  的 `rolled_back_at` 实时派生（始终与真实回滚状态一致）。一技能同一时间至多一个
+  `proposed`，新提案自动顶替旧的未决提案。
+- **防抄袭闸门**为词级 8-gram 重叠检测：proposed 与任一对标（缓存于 `catalog_skill_md`）
+  共享 ≥2 个不同 8-gram 即 `PLAGIARISM_SUSPECTED` 阻断。防膨胀闸门：增幅 >40% 且
+  >1500 字符为阻断，>20% 且 >600 字符为告警。前三道（frontmatter/密钥/危险 shell）
+  复用 create-skill 的 `create_skill_review_markdown`。
 
 实现说明：后端落在 Tauri（`src-tauri/`）。仓库 CLAUDE.md 仍描述 Electron 架构、
 已过时，应另行更新（不在本模块范围内）。

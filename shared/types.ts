@@ -883,6 +883,8 @@ export interface BenchmarkPeer {
   name: string;
   /** owner/repo on GitHub — always from a real catalog search result. */
   source: string;
+  /** Catalog skill id — used internally to locate the cached peer SKILL.md. */
+  skillId: string;
   url: string;
   installs: number;
   patterns: BenchmarkPeerPattern[];
@@ -919,4 +921,58 @@ export interface SkillDiagnosisSnapshot {
   /** True when a report exists but the skill content has changed since. */
   stale: boolean;
   currentHash: string;
+}
+
+// ── 技能优化（三问一刀）— phase 2: propose + apply ──────────────────────────
+
+export interface OptimizationGateResult {
+  /** Blocking gate failures — apply is refused while any are present. */
+  blocking: { code: string; message: string }[];
+  warnings: { code: string; message: string }[];
+}
+
+/** A fix proposal for ONE finding — read-only until the user confirms apply. */
+export interface OptimizationProposal {
+  id: number;
+  skillId: string;
+  status: 'proposed' | 'applied';
+  finding: DiagnosisFinding;
+  baselineHash: string;
+  baselineMarkdown: string;
+  proposedMarkdown: string;
+  /** One observable-behavior sentence: what the agent will now do differently. */
+  expectedImprovement: string;
+  /** 1–2 prompts to paste into Claude Code / Codex to verify the change. */
+  verificationPrompts: string[];
+  gate: OptimizationGateResult;
+  /** True only when every blocking gate passed — the apply button's gate. */
+  applicable: boolean;
+  language: string;
+  model: string | null;
+  createdAt: number;
+}
+
+/** One optimization round in a skill's timeline. */
+export interface OptimizationRound {
+  id: number;
+  skillId: string;
+  status: 'proposed' | 'applied';
+  finding: DiagnosisFinding;
+  expectedImprovement: string;
+  verificationPrompts: string[];
+  beforeHash: string | null;
+  afterHash: string | null;
+  /** sync_history row backing the write — drives the rollback button. */
+  syncHistoryId: number | null;
+  /** Derived from sync_history: true when the write was rolled back. */
+  rolledBack: boolean;
+  createdAt: number;
+  appliedAt: number | null;
+}
+
+export interface OptimizationApplyResult {
+  ok: boolean;
+  round: OptimizationRound;
+  /** sync_history id to pass to sync:rollback if the user wants to revert. */
+  historyId: number | null;
 }

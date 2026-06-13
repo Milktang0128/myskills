@@ -133,6 +133,16 @@ export const IPC = {
      */
     getReport: 'optimize:getReport',
     diagnoseJob: 'optimize:diagnoseJob',
+    /**
+     * Phase 2 (writes). proposeFix runs as an ai job (LLM rewrite + gates);
+     * apply lands the chosen proposal through the sync plan→execute path.
+     * Rollback reuses sync:rollback with the round's syncHistoryId.
+     */
+    getProposal: 'optimize:getProposal',
+    proposeFixJob: 'optimize:proposeFixJob',
+    apply: 'optimize:apply',
+    discard: 'optimize:discard',
+    history: 'optimize:history',
   },
   events: {
     scanStarted: 'event:scanStarted',

@@ -12360,6 +12360,7 @@ const OPTIMIZE_PEER_CACHE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 struct OptimizePeer {
     name: String,
     source: String,
+    skill_id: String,
     installs: i64,
     markdown: String,
 }
@@ -12662,6 +12663,7 @@ fn optimize_find_peers(
         peers.push(OptimizePeer {
             name: peer_name,
             source,
+            skill_id: peer_skill_id,
             installs,
             markdown: raw.chars().take(OPTIMIZE_PEER_MD_MAX_CHARS).collect(),
         });
@@ -12885,6 +12887,7 @@ fn optimize_build_report(
             json!({
                 "name": peer.name,
                 "source": peer.source,
+                "skillId": peer.skill_id,
                 "url": format!("https://github.com/{}", peer.source),
                 "installs": peer.installs,
                 "patterns": patterns,
@@ -12932,6 +12935,713 @@ fn optimize_build_report(
     }))
 }
 
+// ─── 技能优化（三问一刀）— phase 2: propose + apply ─────────────────────────
+// One round = one finding fixed. proposeFix generates a surgical rewrite and
+// runs four gates (frontmatter compliance, secret scan, anti-plagiarism,
+// anti-bloat) read-only; apply lands it through the SAME sync plan→execute
+// path (backup, atomic rename, rescan, rollback) used everywhere else.
+
+/// n-gram width for the anti-plagiarism check. 8 consecutive identical words
+/// rarely co-occur by chance; a shared run this long signals copied text.
+const OPTIMIZE_PLAGIARISM_NGRAM: usize = 8;
+/// Reject when a single peer shares this many distinct n-grams with the rewrite.
+const OPTIMIZE_PLAGIARISM_MAX_SHARED: usize = 2;
+
+#[tauri::command]
+pub fn optimize_propose_fix_job(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let skill_id = required_str(&payload, "skillId")?.to_string();
+    let finding_id = required_str(&payload, "findingId")?.to_string();
+    let language = normalize_ai_language(
+        payload
+            .as_ref()
+            .and_then(|p| p.get("language"))
+            .and_then(Value::as_str)
+            .unwrap_or("en"),
+    )
+    .to_string();
+    let pool = state.db.clone();
+    let paths = state.paths.clone();
+    let key = format!("{skill_id}:{finding_id}:{language}");
+    ai_spawn_job(&state, "optimize_propose_fix", &key, move || {
+        optimize_propose_fix_inner(&pool, &paths, &skill_id, &finding_id, &language)
+    })
+}
+
+fn optimize_propose_fix_inner(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    paths: &AppPaths,
+    skill_id: &str,
+    finding_id: &str,
+    language: &str,
+) -> AppResult<Value> {
+    let db = pool.get()?;
+    let (name, content_hash): (String, String) = db
+        .query_row(
+            "SELECT name, content_hash FROM skills WHERE id = ?1",
+            params![skill_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("skill {skill_id}")))?;
+
+    // The proposal must target the diagnosis the user is looking at: require a
+    // cached report for the CURRENT revision, then locate the chosen finding.
+    let report_json: String = db
+        .query_row(
+            "SELECT report_json FROM skill_audits
+             WHERE skill_id = ?1 AND content_hash = ?2 AND language = ?3",
+            params![skill_id, content_hash, language],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            AppError::new(
+                "DIAGNOSIS_STALE",
+                "The diagnosis is out of date for this skill version. Re-run the check first.",
+            )
+        })?;
+    let report: Value = serde_json::from_str(&report_json)
+        .map_err(|err| AppError::new("PARSE_ERROR", err.to_string()))?;
+    let finding = report
+        .get("findings")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|f| f.get("id").and_then(Value::as_str) == Some(finding_id))
+        })
+        .cloned()
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("finding {finding_id}")))?;
+
+    let location = optimize_real_location(&db, skill_id)?;
+    let baseline = fs::read_to_string(Path::new(&location.install_path).join("SKILL.md"))
+        .map_err(|err| AppError::new("READ_FAILED", err.to_string()))?
+        .replace("\r\n", "\n");
+    let basename = Path::new(&location.install_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&name)
+        .to_string();
+
+    require_network(&db)?;
+    let config = llm_read_config(&db)?;
+    if config.model.trim().is_empty() {
+        return Err(AppError::new(
+            "LLM_NO_MODEL",
+            "No LLM model configured. Set one in Settings -> AI.",
+        ));
+    }
+    let api_key = llm_read_api_key(&db, paths)?;
+    if api_key.is_none() && config.provider != "ollama" {
+        return Err(AppError::new(
+            "LLM_NO_KEY",
+            "No LLM API key configured. Set one in Settings -> AI.",
+        ));
+    }
+
+    let peer_markdowns = optimize_peer_markdowns(&db, &report);
+    let (system, user) = optimize_propose_prompt(&name, &baseline, &finding, language);
+
+    let mut best: Option<(String, String, Vec<String>, Value)> = None;
+    for _attempt in 0..2 {
+        let response = llm_chat_with_config(
+            &config,
+            api_key.as_deref(),
+            &json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": user }
+                ],
+                "temperature": 0,
+                "jsonMode": true,
+                "maxTokens": 16384
+            }),
+        )?;
+        let text = response.get("text").and_then(Value::as_str).unwrap_or("");
+        let parsed = optimize_parse_json(text);
+        let Some((proposed, improvement, prompts)) = optimize_extract_proposal(&parsed) else {
+            continue;
+        };
+        let proposed = proposed.replace("\r\n", "\n");
+        let gate = optimize_run_gates(&proposed, &baseline, &basename, &peer_markdowns);
+        let blocking_empty = gate
+            .get("blocking")
+            .and_then(Value::as_array)
+            .is_some_and(|b| b.is_empty());
+        let candidate = (proposed, improvement, prompts, gate);
+        if blocking_empty {
+            best = Some(candidate);
+            break;
+        }
+        // Keep the first attempt so the user can see WHY it was blocked even if
+        // both attempts fail the gates.
+        if best.is_none() {
+            best = Some(candidate);
+        }
+    }
+    let (proposed_markdown, expected_improvement, verification_prompts, gate) =
+        best.ok_or_else(|| {
+            AppError::new(
+                "LLM_BAD_RESPONSE",
+                "The model produced no usable rewrite across 2 attempts.",
+            )
+        })?;
+
+    // One pending round per skill: a fresh proposal supersedes any un-applied one.
+    db.execute(
+        "DELETE FROM skill_optimizations WHERE skill_id = ?1 AND status = 'proposed'",
+        params![skill_id],
+    )?;
+    let now = now_ms();
+    db.execute(
+        "INSERT INTO skill_optimizations
+           (skill_id, status, finding_json, baseline_hash, baseline_markdown,
+            proposed_markdown, expected_improvement, verification_prompts_json,
+            gate_json, language, model, created_at)
+         VALUES (?1, 'proposed', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            skill_id,
+            json_string(&finding)?,
+            content_hash,
+            baseline,
+            proposed_markdown,
+            expected_improvement,
+            json_string(&Value::Array(
+                verification_prompts.iter().map(|p| json!(p)).collect()
+            ))?,
+            json_string(&gate)?,
+            language,
+            config.model,
+            now
+        ],
+    )?;
+    let id = db.last_insert_rowid();
+    optimize_proposal_row(&db, id)
+}
+
+#[tauri::command]
+pub fn optimize_apply(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let proposal_id = optional_i64(&payload, "proposalId")
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "proposalId required"))?;
+    let _lock = state
+        .sync_lock
+        .lock()
+        .map_err(|_| AppError::new("SYNC_LOCK_POISONED", "sync lock poisoned"))?;
+    let db = conn(&state)?;
+    let row: Option<(String, String, String, String, String, String)> = db
+        .query_row(
+            "SELECT skill_id, status, baseline_hash, baseline_markdown, proposed_markdown, gate_json
+             FROM skill_optimizations WHERE id = ?1",
+            params![proposal_id],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (skill_id, status, baseline_hash, _baseline_md, proposed_markdown, gate_json) =
+        row.ok_or_else(|| AppError::new("NOT_FOUND", format!("proposal {proposal_id}")))?;
+    if status != "proposed" {
+        return Err(AppError::new(
+            "INVALID_STATE",
+            "this proposal was already applied",
+        ));
+    }
+    // Re-assert the gates as a backstop — never trust a stored "applicable".
+    let gate: Value = serde_json::from_str(&gate_json).unwrap_or_else(|_| json!({}));
+    if !gate
+        .get("blocking")
+        .and_then(Value::as_array)
+        .is_some_and(|b| b.is_empty())
+    {
+        return Err(AppError::detail(
+            "OPTIMIZE_GATE_BLOCKED",
+            "Fix the blocking issues before applying.",
+            gate,
+        ));
+    }
+
+    // TOCTOU: the skill must not have changed since the proposal was generated.
+    let current_hash: String = db
+        .query_row(
+            "SELECT content_hash FROM skills WHERE id = ?1",
+            params![skill_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("skill {skill_id}")))?;
+    if current_hash != baseline_hash {
+        return Err(AppError::new(
+            "SKILL_CHANGED",
+            "The skill changed since this fix was proposed. Re-run the check and propose again.",
+        ));
+    }
+
+    let location = optimize_real_location(&db, &skill_id)?;
+    let platform: SyncPlatformRow = db
+        .query_row(
+            "SELECT id, skills_dir FROM platforms WHERE id = ?1",
+            params![location.platform_id],
+            |r| {
+                Ok(SyncPlatformRow {
+                    id: r.get(0)?,
+                    skills_dir: r.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::new("INVALID_STATE", "platform for skill location missing"))?;
+    let name: String = db.query_row(
+        "SELECT name FROM skills WHERE id = ?1",
+        params![skill_id],
+        |r| r.get(0),
+    )?;
+
+    // Stage a full copy of the real dir so non-SKILL.md assets survive, then
+    // overwrite just SKILL.md with the rewrite.
+    let stage_wrap = state
+        .paths
+        .staging_root
+        .join(format!("optimize-{}", Uuid::new_v4()));
+    let basename = Path::new(&location.install_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::new("INVALID_STATE", "skill dir has no basename"))?;
+    let staging_dir = stage_wrap.join(basename);
+    let source_real = fs::canonicalize(&location.install_path)
+        .map_err(|err| AppError::new("READ_FAILED", err.to_string()))?;
+    if has_symlink_in_tree(&source_real)? {
+        let _ = fs::remove_dir_all(&stage_wrap);
+        return Err(AppError::new(
+            "SOURCE_HAS_SYMLINK",
+            "skill directory contains symlinks — optimization writes are not supported for it",
+        ));
+    }
+    copy_tree(&source_real, &staging_dir)?;
+    fs::write(staging_dir.join("SKILL.md"), &proposed_markdown).map_err(|err| {
+        let _ = fs::remove_dir_all(&stage_wrap);
+        AppError::new("WRITE_FAILED", err.to_string())
+    })?;
+    let parsed = scanner::parser::parse_skill_markdown(&proposed_markdown)?;
+    let source_hash = parsed.content_hash;
+    let op_group_id = Uuid::new_v4().to_string();
+    let item = json!({
+        "skillName": name,
+        "skillId": skill_id,
+        "opGroupId": op_group_id,
+        "targetBasename": basename,
+        "sourcePlatformId": "staging",
+        "sourceLocationId": -1,
+        "sourceRealPath": staging_dir.to_string_lossy(),
+        "sourceDev": 0,
+        "sourceIno": 0,
+        "sourceHash": source_hash,
+        "targetPlatformId": platform.id,
+        "targetPath": location.install_path,
+        "targetHash": current_hash,
+        "mode": "copy",
+        "action": "copy_real",
+    });
+    let plan = finalize_sync_plan("optimize_apply", vec![item]);
+    let plan_json = serde_json::to_string(&plan)
+        .map_err(|err| AppError::new("SERIALIZE_FAILED", err.to_string()))?;
+    let items = plan
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let result = execute_sync_items(&db, &state.paths.backup_root, items, &plan_json);
+    let _ = fs::remove_dir_all(&stage_wrap);
+    let result = result?;
+
+    if let Some(failed) = result.get("failed").and_then(Value::as_array) {
+        if let Some(first) = failed.first() {
+            let message = first
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("optimization write failed");
+            return Err(AppError::new("OPTIMIZE_WRITE_FAILED", message));
+        }
+    }
+
+    let scan = scanner::scan_all(&db)?;
+    if let Ok(mut last) = state.last_scan.lock() {
+        *last = Some(scan);
+    }
+
+    let history_id = db
+        .query_row(
+            "SELECT id, before_hash, after_hash FROM sync_history
+             WHERE op_group_id = ?1 AND success = 1 ORDER BY id DESC LIMIT 1",
+            params![op_group_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (sync_history_id, before_hash, after_hash) = match history_id {
+        Some((id, before, after)) => (Some(id), before, after),
+        None => (None, None, Some(source_hash.clone())),
+    };
+    let now = now_ms();
+    db.execute(
+        "UPDATE skill_optimizations
+         SET status = 'applied', sync_history_id = ?1, before_hash = ?2,
+             after_hash = ?3, applied_at = ?4
+         WHERE id = ?5",
+        params![sync_history_id, before_hash, after_hash, now, proposal_id],
+    )?;
+    let round = optimize_round_row(&db, proposal_id)?;
+    Ok(json!({ "ok": true, "round": round, "historyId": sync_history_id }))
+}
+
+#[tauri::command]
+pub fn optimize_discard(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let proposal_id = optional_i64(&payload, "proposalId")
+        .ok_or_else(|| AppError::new("INVALID_INPUT", "proposalId required"))?;
+    let db = conn(&state)?;
+    db.execute(
+        "DELETE FROM skill_optimizations WHERE id = ?1 AND status = 'proposed'",
+        params![proposal_id],
+    )?;
+    Ok(ok())
+}
+
+#[tauri::command]
+pub fn optimize_history(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let skill_id = required_str(&payload, "skillId")?;
+    let db = conn(&state)?;
+    let mut stmt = db.prepare(
+        "SELECT id FROM skill_optimizations
+         WHERE skill_id = ?1 AND status = 'applied'
+         ORDER BY id DESC",
+    )?;
+    let ids = stmt
+        .query_map(params![skill_id], |r| r.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut rounds = Vec::new();
+    for id in ids {
+        rounds.push(optimize_round_row(&db, id)?);
+    }
+    Ok(Value::Array(rounds))
+}
+
+#[tauri::command]
+pub fn optimize_get_proposal(
+    payload: Option<Value>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    let skill_id = required_str(&payload, "skillId")?;
+    let db = conn(&state)?;
+    let id: Option<i64> = db
+        .query_row(
+            "SELECT id FROM skill_optimizations
+             WHERE skill_id = ?1 AND status = 'proposed'
+             ORDER BY id DESC LIMIT 1",
+            params![skill_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match id {
+        Some(id) => optimize_proposal_row(&db, id),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The skill's real (non-symlink, non-broken, enabled) directory — the write
+/// target. Symlinked siblings follow automatically once it's overwritten.
+fn optimize_real_location(db: &Connection, skill_id: &str) -> AppResult<LocRow> {
+    let locs = sync_locations_for_skill(db, skill_id)?;
+    let canonical = canonical_platform(
+        db,
+        &sync_platforms(db)?
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    locs.iter()
+        .find(|l| {
+            l.platform_id == canonical && !l.is_symlink && !l.is_broken_link && !l.is_disabled
+        })
+        .or_else(|| {
+            locs.iter()
+                .find(|l| !l.is_symlink && !l.is_broken_link && !l.is_disabled)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            AppError::new(
+                "NO_REAL_LOCATION",
+                "This skill has no real directory to optimize (all locations are links).",
+            )
+        })
+}
+
+/// Pull cached SKILL.md for the report's benchmark peers — input to the
+/// anti-plagiarism gate. Best-effort: peers missing from the cache are skipped.
+fn optimize_peer_markdowns(db: &Connection, report: &Value) -> Vec<String> {
+    let Some(peers) = report.pointer("/benchmark/peers").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for peer in peers {
+        let Some(source) = peer.get("source").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(skill_id) = peer.get("skillId").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Ok(Some(md)) = db
+            .query_row(
+                "SELECT markdown FROM catalog_skill_md WHERE source = ?1 AND skill_id = ?2",
+                params![source, skill_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+        {
+            out.push(md);
+        }
+    }
+    out
+}
+
+fn optimize_extract_proposal(parsed: &Value) -> Option<(String, String, Vec<String>)> {
+    let obj = parsed.as_object()?;
+    let proposed = obj
+        .get("proposedMarkdown")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let improvement = obj
+        .get("expectedImprovement")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let prompts = obj
+        .get("verificationPrompts")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|p| p.as_str().map(str::trim).filter(|s| !s.is_empty()))
+                .map(str::to_string)
+                .take(2)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Some((proposed, improvement, prompts))
+}
+
+/// The four gates. Reuses create-skill's review for frontmatter/secret/danger
+/// checks, then layers the optimization-specific anti-plagiarism + anti-bloat.
+fn optimize_run_gates(
+    proposed: &str,
+    baseline: &str,
+    basename: &str,
+    peer_markdowns: &[String],
+) -> Value {
+    let review = create_skill_review_markdown(proposed, Some(basename));
+    let mut blocking = review
+        .get("blocking")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut warnings = review
+        .get("warnings")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    // Anti-plagiarism: a long shared word-run with any peer is a hard block.
+    if let Some(peer) = optimize_plagiarism_offender(proposed, peer_markdowns) {
+        blocking.push(json!({
+            "code": "PLAGIARISM_SUSPECTED",
+            "message": format!(
+                "The rewrite shares long passages with a peer skill ({peer}). Borrow structure, not text."
+            )
+        }));
+    }
+
+    // Anti-bloat: a fix should be surgical. Large unexplained growth is a block.
+    let base_len = baseline.chars().count();
+    let new_len = proposed.chars().count();
+    if new_len > base_len + 1500 && new_len as f64 > base_len as f64 * 1.4 {
+        blocking.push(json!({
+            "code": "DOC_BLOAT",
+            "message": "The rewrite grows the document substantially. Keep the fix focused; don't pad length."
+        }));
+    } else if new_len > base_len + 600 && new_len as f64 > base_len as f64 * 1.2 {
+        warnings.push(json!({
+            "code": "DOC_GROWTH",
+            "message": "The rewrite noticeably lengthens the skill. Confirm every added line earns its place."
+        }));
+    }
+
+    json!({ "blocking": blocking, "warnings": warnings })
+}
+
+/// Returns the name of the first peer that shares too many distinct n-grams
+/// with the rewrite, or None when all peers are clear.
+fn optimize_plagiarism_offender(proposed: &str, peer_markdowns: &[String]) -> Option<String> {
+    let proposed_ngrams = optimize_word_ngrams(proposed, OPTIMIZE_PLAGIARISM_NGRAM);
+    if proposed_ngrams.is_empty() {
+        return None;
+    }
+    for peer in peer_markdowns {
+        let peer_ngrams = optimize_word_ngrams(peer, OPTIMIZE_PLAGIARISM_NGRAM);
+        let shared = proposed_ngrams
+            .iter()
+            .filter(|ng| peer_ngrams.contains(*ng))
+            .count();
+        if shared >= OPTIMIZE_PLAGIARISM_MAX_SHARED {
+            return Some(format!("{shared} shared phrases"));
+        }
+    }
+    None
+}
+
+/// Lowercased word-level n-grams (frontmatter stripped) for overlap detection.
+fn optimize_word_ngrams(text: &str, n: usize) -> std::collections::HashSet<String> {
+    let body = text.strip_prefix("---\n").and_then(|rest| {
+        rest.find("\n---\n")
+            .map(|idx| &rest[idx + "\n---\n".len()..])
+    });
+    let words: Vec<String> = body
+        .unwrap_or(text)
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+    let mut set = std::collections::HashSet::new();
+    if words.len() < n {
+        return set;
+    }
+    for window in words.windows(n) {
+        set.insert(window.join(" "));
+    }
+    set
+}
+
+fn optimize_propose_prompt(
+    name: &str,
+    baseline: &str,
+    finding: &Value,
+    language: &str,
+) -> (String, String) {
+    let language_rule = if language == "zh" {
+        "Write `expectedImprovement` and `verificationPrompts` in Simplified Chinese. Keep the SKILL.md in its original language."
+    } else {
+        "Write `expectedImprovement` and `verificationPrompts` in English. Keep the SKILL.md in its original language."
+    };
+    let system = format!(
+        r#"You are the rewrite engine of MySkills' skill-optimization module. You fix ONE diagnosed problem in a skill's SKILL.md with the smallest change that resolves it.
+
+Hard rules:
+- Make a SURGICAL edit. Change only what the finding requires; leave everything else byte-for-byte identical. Do not reformat, reorder, or "improve" unrelated parts.
+- Keep the frontmatter format exactly (only `name` and `description` unless the original had more). Never change the `name`.
+- NEVER copy or paraphrase text from any other skill. Borrow structure if useful, never wording.
+- Do not pad the document. A good fix is usually a few lines, not a rewrite.
+- `expectedImprovement` MUST describe one observable change in agent behavior (e.g. "the agent will now trigger this skill when the user mentions scanned PDFs"), not a vague quality claim.
+- `verificationPrompts` are 1-2 prompts the user can paste into Claude Code / Codex where the OLD skill would fail and the NEW one should succeed.
+- {language_rule}
+
+Respond with ONLY this JSON object:
+{{
+  "proposedMarkdown": "the full revised SKILL.md",
+  "expectedImprovement": string,
+  "verificationPrompts": [string]
+}}"#
+    );
+    let finding_summary = finding.get("summary").and_then(Value::as_str).unwrap_or("");
+    let finding_evidence = finding.get("evidence").and_then(Value::as_str).unwrap_or("");
+    let finding_suggestion = finding
+        .get("suggestion")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let finding_question = finding.get("question").and_then(Value::as_str).unwrap_or("");
+    let user = format!(
+        "## Skill: {name}\n\n## The one problem to fix (question: {finding_question})\n\nProblem: {finding_summary}\nEvidence: {finding_evidence}\nSuggested direction: {finding_suggestion}\n\n## Current SKILL.md\n\n```markdown\n{baseline}\n```\n"
+    );
+    (system, user)
+}
+
+fn optimize_proposal_row(db: &Connection, id: i64) -> AppResult<Value> {
+    db.query_row(
+        "SELECT id, skill_id, status, finding_json, baseline_hash, baseline_markdown,
+                proposed_markdown, expected_improvement, verification_prompts_json,
+                gate_json, language, model, created_at
+         FROM skill_optimizations WHERE id = ?1",
+        params![id],
+        |r| {
+            let gate: Value = serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or(json!({}));
+            let applicable = gate
+                .get("blocking")
+                .and_then(Value::as_array)
+                .is_some_and(|b| b.is_empty());
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "skillId": r.get::<_, String>(1)?,
+                "status": r.get::<_, String>(2)?,
+                "finding": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
+                "baselineHash": r.get::<_, String>(4)?,
+                "baselineMarkdown": r.get::<_, String>(5)?,
+                "proposedMarkdown": r.get::<_, String>(6)?,
+                "expectedImprovement": r.get::<_, String>(7)?,
+                "verificationPrompts": serde_json::from_str::<Value>(&r.get::<_, String>(8)?).unwrap_or(json!([])),
+                "gate": gate,
+                "applicable": applicable,
+                "language": r.get::<_, String>(10)?,
+                "model": r.get::<_, Option<String>>(11)?,
+                "createdAt": r.get::<_, i64>(12)?,
+            }))
+        },
+    )
+    .map_err(|err| AppError::new("NOT_FOUND", err.to_string()))
+}
+
+fn optimize_round_row(db: &Connection, id: i64) -> AppResult<Value> {
+    db.query_row(
+        "SELECT o.id, o.skill_id, o.status, o.finding_json, o.expected_improvement,
+                o.verification_prompts_json, o.before_hash, o.after_hash,
+                o.sync_history_id, o.created_at, o.applied_at, h.rolled_back_at
+         FROM skill_optimizations o
+         LEFT JOIN sync_history h ON h.id = o.sync_history_id
+         WHERE o.id = ?1",
+        params![id],
+        |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "skillId": r.get::<_, String>(1)?,
+                "status": r.get::<_, String>(2)?,
+                "finding": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
+                "expectedImprovement": r.get::<_, String>(4)?,
+                "verificationPrompts": serde_json::from_str::<Value>(&r.get::<_, String>(5)?).unwrap_or(json!([])),
+                "beforeHash": r.get::<_, Option<String>>(6)?,
+                "afterHash": r.get::<_, Option<String>>(7)?,
+                "syncHistoryId": r.get::<_, Option<i64>>(8)?,
+                "rolledBack": r.get::<_, Option<i64>>(11)?.is_some(),
+                "createdAt": r.get::<_, i64>(9)?,
+                "appliedAt": r.get::<_, Option<i64>>(10)?,
+            }))
+        },
+    )
+    .map_err(|err| AppError::new("NOT_FOUND", err.to_string()))
+}
+
 #[cfg(test)]
 mod optimize_tests {
     use super::*;
@@ -12965,6 +13675,7 @@ mod optimize_tests {
         OptimizePeer {
             name: "peer-skill".to_string(),
             source: "owner/repo".to_string(),
+            skill_id: "peer-skill".to_string(),
             installs: 42,
             markdown: "# peer".to_string(),
         }
@@ -13072,5 +13783,71 @@ mod optimize_tests {
             None
         )
         .is_none());
+    }
+
+    // ── phase 2 gates ──────────────────────────────────────────────────────
+
+    #[test]
+    fn word_ngrams_strip_frontmatter() {
+        let md = "---\nname: x\ndescription: y\n---\nalpha beta gamma delta";
+        let grams = optimize_word_ngrams(md, 3);
+        assert!(grams.contains("alpha beta gamma"));
+        assert!(grams.contains("beta gamma delta"));
+        // Frontmatter words must not leak into the n-gram set.
+        assert!(!grams.iter().any(|g| g.contains("description")));
+    }
+
+    #[test]
+    fn plagiarism_flags_long_shared_run_and_clears_distinct_text() {
+        let shared = "one two three four five six seven eight nine ten";
+        let proposed = format!("---\nname: a\n---\n{shared} and some original tail content");
+        let peer = format!("intro words then {shared} continuing differently after");
+        assert!(optimize_plagiarism_offender(&proposed, &[peer]).is_some());
+
+        let clean = "---\nname: a\n---\ncompletely different wording with nothing in common here";
+        let peer2 = "an entirely unrelated peer document about other matters entirely".to_string();
+        assert!(optimize_plagiarism_offender(clean, &[peer2]).is_none());
+    }
+
+    #[test]
+    fn gates_block_large_growth_and_pass_small_edit() {
+        let basename = "demo";
+        let baseline = format!(
+            "---\nname: {basename}\ndescription: Use when you need a demo. Triggers on demo requests.\n---\n## Workflow\n1. do a thing\n2. confirm with the user before writing\n## Output\nA result.\n## Boundaries\nAsk before network."
+        );
+        // A small clean edit passes all blocking gates.
+        let small = format!("{baseline}\n3. then finish");
+        let gate = optimize_run_gates(&small, &baseline, basename, &[]);
+        assert!(gate
+            .get("blocking")
+            .and_then(Value::as_array)
+            .is_some_and(|b| b.is_empty()));
+
+        // Massive padding trips the DOC_BLOAT blocking gate.
+        let padding = "extra padding line that adds nothing of value\n".repeat(120);
+        let bloated = format!("{baseline}\n{padding}");
+        let gate2 = optimize_run_gates(&bloated, &baseline, basename, &[]);
+        assert!(gate2
+            .get("blocking")
+            .and_then(Value::as_array)
+            .is_some_and(|b| b
+                .iter()
+                .any(|x| x.get("code").and_then(Value::as_str) == Some("DOC_BLOAT"))));
+    }
+
+    #[test]
+    fn extract_proposal_requires_markdown_and_improvement() {
+        let ok = json!({
+            "proposedMarkdown": "---\nname: a\n---\nbody",
+            "expectedImprovement": "agent now triggers on X",
+            "verificationPrompts": ["try X", "try Y", "ignored third"]
+        });
+        let (md, imp, prompts) = optimize_extract_proposal(&ok).expect("proposal");
+        assert!(md.starts_with("---"));
+        assert_eq!(imp, "agent now triggers on X");
+        assert_eq!(prompts.len(), 2); // capped at 2
+
+        assert!(optimize_extract_proposal(&json!({ "proposedMarkdown": "x" })).is_none());
+        assert!(optimize_extract_proposal(&Value::Null).is_none());
     }
 }
