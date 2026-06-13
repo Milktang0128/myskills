@@ -267,15 +267,15 @@ function ProposalBody({
         </div>
       )}
 
-      {proposal.gate.warnings.length > 0 && (
-        <ul className="space-y-0.5 pl-3 text-[11px] text-amber-700 dark:text-amber-400">
-          {proposal.gate.warnings.map((w, i) => (
-            <li key={i} className="list-disc">
-              {w.message}
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* gate.warnings intentionally NOT shown here. The rewrite is surgical
+          (it fixes ONE diagnosis finding), but the gate runs the whole-skill
+          quality linter over the result — so its warnings ("add an Inputs
+          section", "add boundaries"…) report the skill's PRE-EXISTING
+          structural gaps, not defects of this rewrite. They're not actionable
+          on an apply/discard screen (the user didn't author the text, the AI
+          did) and read as a wall of errors. Only `blocking` is surfaced — it's
+          the real "this rewrite is unsafe/invalid to write" gate, and the user
+          CAN act on it (discard / regenerate). */}
 
       <div className="flex items-center gap-2 pt-1">
         <Button
