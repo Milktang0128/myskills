@@ -38,7 +38,14 @@ Tool-level failures come back as `isError: true` with an actionable message and 
 machine-readable error code (e.g. `SCENARIO_NOT_FOUND`, `CONFIRM_REQUIRED`,
 `NOT_FOUND`), not as a protocol error.
 
-## Build
+## Where the binary comes from
+
+Released apps **ship `myskills-mcp` inside the bundle**, code-signed and
+notarized (a Tauri `externalBin` sidecar next to the main executable —
+`MySkills.app/Contents/MacOS/myskills-mcp`). The Settings panel shows its exact
+path; you don't build anything.
+
+To build it yourself (dev, or to run it standalone):
 
 ```bash
 cd src-tauri
@@ -145,6 +152,4 @@ protocol works; enable access in Settings to get real data back.
 The current surface is the read/organize/maintain core. Future additions
 (tracked in `docs/design/agent-mcp-surface.md`): a dry-run `align.plan` /
 `align.apply` pair for moving skills into sync, `discover.search` / `install`
-for the skills.sh catalog, and `history.rollback`. Bundling the binary inside
-the packaged app + a Settings panel that reveals its path and a ready-to-paste
-client config is a separate productization step.
+for the skills.sh catalog, and `history.rollback`.
