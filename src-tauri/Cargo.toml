@@ -9,6 +9,12 @@ edition = "2021"
 name = "myskills_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Standalone MCP server. A plain console binary (no Tauri, no GUI subsystem) so
+# an agent can drive the skill library over stdio. Logic lives in the lib.
+[[bin]]
+name = "myskills-mcp"
+path = "src/bin/mcp.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

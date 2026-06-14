@@ -808,7 +808,13 @@ pub fn skills_delete(payload: Option<Value>, state: State<'_, AppState>) -> AppR
         .lock()
         .map_err(|_| AppError::new("SYNC_LOCK_POISONED", "sync lock poisoned"))?;
     let mut db = conn(&state)?;
+    delete_skill_core(&mut db, &skill_id)
+}
 
+/// Tauri-free core of the delete-to-trash flow, shared by the Tauri command
+/// (which wraps it in `sync_lock`) and the MCP server (a separate process).
+/// See `skills_delete` for the safety contract.
+pub(crate) fn delete_skill_core(db: &mut rusqlite::Connection, skill_id: &str) -> AppResult<Value> {
     let name: String = db
         .query_row(
             "SELECT name FROM skills WHERE id = ?1",

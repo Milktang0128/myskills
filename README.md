@@ -95,6 +95,13 @@ What MySkills puts where:
   <img src="docs/screenshots/ai-lens.en.png" width="900" alt="AI Lens — clusters the whole library into named themes; each cluster can be promoted into a real scenario" />
 </p>
 
+### Drive it from an agent (MCP)
+
+- `myskills-mcp` is a standalone [Model Context Protocol](https://modelcontextprotocol.io) server — a plain Rust binary, no Node runtime — that lets an agent (Claude Code, Codex, …) read your skill inventory with per-platform health, organize skills into scenarios, inspect the change ledger, rescan from disk, and delete skills to the trash
+- It backs onto the **same database the app uses**, so with a normal install no configuration is needed
+- Reads are free; the one destructive tool (delete) is gated behind explicit confirmation and stays recoverable from the OS trash
+- See **[docs/mcp.md](docs/mcp.md)** for the tool reference, build, and client setup
+
 ## Privacy
 
 - **All processing happens on your machine.** No telemetry, no analytics, no background phone-home
