@@ -282,6 +282,8 @@ export const en = {
   'optimize.rollbackTitle': 'Restore the version from before this change',
   'optimize.rolledBack': 'Rolled back',
   'detail.section.skillmd': 'SKILL.md',
+  'detail.skillmd.expand': 'Show all ({{count}} more lines)',
+  'detail.skillmd.collapse': 'Show less',
   'detail.delete.heading': 'Danger zone',
   'detail.delete.help': 'Remove this skill from every platform. The files are moved to the system trash (recoverable from Finder → Trash / the Recycle Bin). MySkills keeps no undo record.',
   'detail.delete.button': 'Delete skill',

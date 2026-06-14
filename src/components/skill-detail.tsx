@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Trash2, Loader2, Copy as CopyIcon } from 'lucide-react';
+import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Trash2, Loader2, ChevronDown, ChevronUp, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
   Scenario,
@@ -25,6 +25,10 @@ import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { cn, formatBytes, formatRelative } from '@/lib/utils';
 
+/** SKILL.md collapses past this many lines so the panel's bottom actions
+ * (copy, delete) stay reachable without scrolling the whole body. */
+const SKILLMD_COLLAPSE_LINES = 16;
+
 interface Props {
   skillId: string;
   scenarios: Scenario[];
@@ -44,6 +48,9 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bodyCopied, setBodyCopied] = useState(false);
+  // SKILL.md is collapsed by default so a long body doesn't bury the actions
+  // (copy, and especially the delete danger zone) at the bottom of the panel.
+  const [bodyExpanded, setBodyExpanded] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AiScenarioSuggestion[]>([]);
 
@@ -86,6 +93,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
     let cancelled = false;
     setLoading(true);
     setAiSuggestions([]);
+    setBodyExpanded(false);
     (async () => {
       try {
         const [s, c, ai] = await Promise.all([
@@ -461,9 +469,46 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
                     {bodyCopied ? t('detail.skillmd.copied') : t('detail.skillmd.copy')}
                   </button>
                 </div>
-                <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
-                  {skill.bodyExcerpt}
-                </pre>
+                {(() => {
+                  const lines = (skill.bodyExcerpt ?? '').split('\n');
+                  const isLong = lines.length > SKILLMD_COLLAPSE_LINES;
+                  const collapsed = isLong && !bodyExpanded;
+                  const shown = collapsed
+                    ? lines.slice(0, SKILLMD_COLLAPSE_LINES).join('\n')
+                    : skill.bodyExcerpt;
+                  return (
+                    <>
+                      <div className="relative">
+                        <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
+                          {shown}
+                        </pre>
+                        {collapsed && (
+                          // Fade the cut edge so it reads as "there's more".
+                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 rounded-b-md bg-gradient-to-t from-secondary/40 to-transparent" />
+                        )}
+                      </div>
+                      {isLong && (
+                        <button
+                          type="button"
+                          onClick={() => setBodyExpanded((v) => !v)}
+                          className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:underline"
+                        >
+                          {bodyExpanded ? (
+                            <>
+                              <ChevronUp className="h-3 w-3" />
+                              {t('detail.skillmd.collapse')}
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="h-3 w-3" />
+                              {t('detail.skillmd.expand', { count: lines.length - SKILLMD_COLLAPSE_LINES })}
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </section>
             </>
           )}

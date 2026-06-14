@@ -284,6 +284,8 @@ export const zh: Dict = {
   'optimize.rollbackTitle': '恢复到此改动之前的版本',
   'optimize.rolledBack': '已回滚',
   'detail.section.skillmd': 'SKILL.md',
+  'detail.skillmd.expand': '展开全部(还有 {{count}} 行)',
+  'detail.skillmd.collapse': '收起',
   'detail.delete.heading': '危险操作',
   'detail.delete.help': '把这个技能从所有平台移除,文件会进入系统回收站(可在「访达 → 废纸篓」中恢复)。MySkills 不保留可撤销记录。',
   'detail.delete.button': '删除技能',
