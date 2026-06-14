@@ -51,15 +51,18 @@ jobs:
           - os: macos-latest
             label: macOS (universal)
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            args: --target universal-apple-darwin --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.macos.signing.conf.json --config src-tauri/tauri.updater.conf.json
+            sidecar-triple: universal-apple-darwin
+            args: --target universal-apple-darwin --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.sidecar.conf.json --config src-tauri/tauri.macos.signing.conf.json --config src-tauri/tauri.updater.conf.json
           - os: ubuntu-24.04
             label: Linux
             rust-targets: ''
-            args: --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.updater.conf.json
+            sidecar-triple: x86_64-unknown-linux-gnu
+            args: --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.sidecar.conf.json --config src-tauri/tauri.updater.conf.json
           - os: windows-latest
             label: Windows
             rust-targets: ''
-            args: --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.updater.conf.json --bundles nsis
+            sidecar-triple: x86_64-pc-windows-msvc
+            args: --config src-tauri/tauri.stable.conf.json --config src-tauri/tauri.sidecar.conf.json --config src-tauri/tauri.updater.conf.json --bundles nsis
 
     steps:
       - name: Checkout
@@ -104,6 +107,13 @@ jobs:
             echo "npm ci failed (transient?) — retry $n/3 in 20s…"
             sleep 20
           done
+
+      - name: Build MCP sidecar
+        # Produces src-tauri/binaries/myskills-mcp-<triple>[.exe] so Tauri's
+        # externalBin (tauri.sidecar.conf.json) can bundle + sign it next to the
+        # app binary. macOS builds a universal (lipo'd) sidecar.
+        shell: bash
+        run: node scripts/build-mcp-sidecar.mjs ${{ matrix.sidecar-triple }}
 
       - name: Build, sign, notarize & draft release
         uses: tauri-apps/tauri-action@v0

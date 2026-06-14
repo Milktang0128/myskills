@@ -4,6 +4,9 @@ version = "0.2.5"
 description = "AI Skill Hub"
 authors = ["tangmilk1205@gmail.com"]
 edition = "2021"
+# With a second binary (myskills-mcp), Tauri/Cargo need to be told which one is
+# the app's main binary.
+default-run = "myskills"
 
 [lib]
 name = "myskills_lib"
