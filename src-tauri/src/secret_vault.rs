@@ -263,6 +263,9 @@ fn secure_file_permissions(path: &Path) -> AppResult<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
+    // Windows has no chmod equivalent here; `path` is otherwise unused there.
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -272,6 +275,8 @@ fn secure_dir_permissions(path: &Path) -> AppResult<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
