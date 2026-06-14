@@ -45,6 +45,7 @@ pub fn run() {
             commands::skills_open_location,
             commands::skills_copy_location_path,
             commands::skills_read_location,
+            commands::skills_delete,
             commands::scenarios_list,
             commands::scenarios_create,
             commands::scenarios_update,

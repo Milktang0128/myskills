@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
+import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Trash2, Loader2, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
   Scenario,
@@ -12,6 +12,7 @@ import type {
 } from '@shared/types';
 import { isPlanSafeToAutoApply } from '@shared/types';
 import { Button } from '@/components/ui/button';
+import { confirmAction } from '@/components/ui/confirm-dialog';
 import type { ToastAction } from '@/components/ui/toast';
 import { executePlanWithUndo } from '@/lib/sync-apply';
 import { STATUS_TONE } from '@/lib/status-tones';
@@ -43,6 +44,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bodyCopied, setBodyCopied] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AiScenarioSuggestion[]>([]);
 
   async function fetchAll() {
@@ -177,6 +179,33 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   function onApplied(_result: SyncExecuteResult) {
     onMutated();
     fetchAll();
+  }
+
+  // Delete the whole skill → every install location goes to the OS trash, then
+  // its DB rows are dropped. Recoverable from the system trash, but NOT from
+  // the in-app sync history, so it gets an explicit destructive confirm that
+  // names where the files go and how many platforms are affected.
+  async function handleDelete() {
+    if (!skill) return;
+    const locationCount = skill.locations.length;
+    const ok = await confirmAction({
+      title: t('detail.delete.confirmTitle', { name: skill.name }),
+      description: t('detail.delete.confirmBody', { count: locationCount }),
+      tone: 'destructive',
+      confirmLabel: t('detail.delete.confirm'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      const result = await api.skills.delete(skill.id);
+      onToast(t('detail.delete.done', { name: result.name }));
+      onMutated();
+      onClose();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err));
+      setDeleting(false);
+    }
   }
 
   return (
@@ -438,6 +467,32 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
               </section>
             </>
           )}
+
+          {/* Danger zone — the most destructive action in the app, so it sits
+              alone at the very bottom, fenced off, with its own warning copy. */}
+          <Separator />
+          <section className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-destructive">
+              {t('detail.delete.heading')}
+            </h3>
+            <p className="mb-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              {t('detail.delete.help')}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDelete}
+              disabled={deleting || busy}
+              className="border-destructive/40 text-destructive hover:bg-destructive hover:text-destructive-foreground"
+            >
+              {deleting ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {t('detail.delete.button')}
+            </Button>
+          </section>
         </div>
       </ScrollArea>
 

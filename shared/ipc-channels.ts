@@ -25,6 +25,7 @@ export const IPC = {
     openLocation: 'skills:openLocation',
     copyLocationPath: 'skills:copyLocationPath',
     readLocation: 'skills:readLocation',
+    delete: 'skills:delete',
   },
   scenarios: {
     list: 'scenarios:list',
