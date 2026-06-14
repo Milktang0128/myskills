@@ -786,6 +786,95 @@ pub fn skills_read_location(
     Ok(json!({ "content": content, "path": skill_md.to_string_lossy() }))
 }
 
+/// Delete a skill: move every one of its install locations to the OS trash
+/// (recoverable from Finder / Recycle Bin), then drop the skill's DB rows.
+///
+/// Safety:
+///   - Serialized behind `sync_lock` with all other skill-directory writes.
+///   - Every location path is validated to sit inside its own platform's
+///     registered skills dir before anything is trashed — a corrupt row can
+///     never make this trash an arbitrary path.
+///   - Trash is all-or-nothing for the DB: if ANY location fails to move, the
+///     DB is left untouched and an error is returned (the already-trashed dirs
+///     stay recoverable in the trash, and a rescan reconciles). No silent
+///     partial deletion.
+///   - We trash the install path as-is, so a symlinked location moves the link,
+///     not its target (the real copy is trashed via its own location row).
+#[tauri::command]
+pub fn skills_delete(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let skill_id = required_str(&payload, "skillId")?.to_string();
+    let _lock = state
+        .sync_lock
+        .lock()
+        .map_err(|_| AppError::new("SYNC_LOCK_POISONED", "sync lock poisoned"))?;
+    let mut db = conn(&state)?;
+
+    let name: String = db
+        .query_row(
+            "SELECT name FROM skills WHERE id = ?1",
+            params![skill_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("skill {skill_id}")))?;
+
+    // (install_path, platform skills_dir) for each location.
+    let locations: Vec<(String, String)> = {
+        let mut stmt = db.prepare(
+            "SELECT l.install_path, p.skills_dir
+               FROM skill_locations l JOIN platforms p ON p.id = l.platform_id
+              WHERE l.skill_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![skill_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+
+    // Root check first — abort before touching disk if any path escapes its root.
+    for (install_path, skills_dir) in &locations {
+        let root = expand_home(skills_dir);
+        if !target_inside_platform(Path::new(install_path), &root) {
+            return Err(AppError::detail(
+                "PATH_OUTSIDE_ROOT",
+                format!("refusing to delete a path outside its platform: {install_path}"),
+                json!({ "path": install_path, "root": root }),
+            ));
+        }
+    }
+
+    // Move each location to the trash. Already-gone paths count as done.
+    let mut failed: Vec<Value> = Vec::new();
+    for (install_path, _) in &locations {
+        let path = Path::new(install_path);
+        if !path.exists() && fs::symlink_metadata(path).is_err() {
+            continue;
+        }
+        if let Err(err) = trash::delete(path) {
+            failed.push(json!({ "path": install_path, "message": err.to_string() }));
+        }
+    }
+    if !failed.is_empty() {
+        return Err(AppError::detail(
+            "TRASH_FAILED",
+            "Some locations could not be moved to the trash; nothing was deleted from MySkills."
+                .to_string(),
+            json!({ "failed": failed }),
+        ));
+    }
+
+    // DB cleanup in one transaction. skill_tags has no ON DELETE CASCADE, so it
+    // must go first; deleting the skills row cascades skill_locations,
+    // skill_scenarios, ai_scenario_suggestions, skill_audits, skill_optimizations.
+    let tx = db.transaction()?;
+    tx.execute(
+        "DELETE FROM skill_tags WHERE skill_id = ?1",
+        params![skill_id],
+    )?;
+    tx.execute("DELETE FROM skills WHERE id = ?1", params![skill_id])?;
+    tx.commit()?;
+
+    Ok(json!({ "ok": true, "name": name, "trashed": locations.len() }))
+}
+
 #[tauri::command]
 pub fn scenarios_list(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let _ = payload;

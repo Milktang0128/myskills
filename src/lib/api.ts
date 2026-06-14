@@ -117,6 +117,7 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.skills.openLocation]: 'skills_open_location',
   [IPC.skills.copyLocationPath]: 'skills_copy_location_path',
   [IPC.skills.readLocation]: 'skills_read_location',
+  [IPC.skills.delete]: 'skills_delete',
 
   [IPC.scenarios.list]: 'scenarios_list',
   [IPC.scenarios.create]: 'scenarios_create',
@@ -351,6 +352,14 @@ export const api = {
       bridge().invoke(IPC.skills.copyLocationPath, { locationId, kind }) as Promise<{ ok: true; path: string }>,
     readLocation: (locationId: number) =>
       bridge().invoke(IPC.skills.readLocation, { locationId }) as Promise<{ content: string; path: string }>,
+    /** Move every install location of a skill to the OS trash, then drop its
+     * DB rows. Recoverable from the system trash; not undoable in-app. */
+    delete: (skillId: string) =>
+      bridge().invoke(IPC.skills.delete, { skillId }) as Promise<{
+        ok: true;
+        name: string;
+        trashed: number;
+      }>,
   },
   scenarios: {
     list: () => bridge().invoke(IPC.scenarios.list) as Promise<Scenario[]>,

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Copy as CopyIcon } from 'lucide-react';
+import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Trash2, Loader2, ChevronDown, ChevronUp, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
   Scenario,
@@ -12,6 +12,7 @@ import type {
 } from '@shared/types';
 import { isPlanSafeToAutoApply } from '@shared/types';
 import { Button } from '@/components/ui/button';
+import { confirmAction } from '@/components/ui/confirm-dialog';
 import type { ToastAction } from '@/components/ui/toast';
 import { executePlanWithUndo } from '@/lib/sync-apply';
 import { STATUS_TONE } from '@/lib/status-tones';
@@ -23,6 +24,10 @@ import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
 import { cn, formatBytes, formatRelative } from '@/lib/utils';
+
+/** SKILL.md collapses past this many lines so the panel's bottom actions
+ * (copy, delete) stay reachable without scrolling the whole body. */
+const SKILLMD_COLLAPSE_LINES = 16;
 
 interface Props {
   skillId: string;
@@ -43,6 +48,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   const [planOpen, setPlanOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [bodyCopied, setBodyCopied] = useState(false);
+  // SKILL.md is collapsed by default so a long body doesn't bury the actions
+  // (copy, and especially the delete danger zone) at the bottom of the panel.
+  const [bodyExpanded, setBodyExpanded] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AiScenarioSuggestion[]>([]);
 
   async function fetchAll() {
@@ -84,6 +93,7 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
     let cancelled = false;
     setLoading(true);
     setAiSuggestions([]);
+    setBodyExpanded(false);
     (async () => {
       try {
         const [s, c, ai] = await Promise.all([
@@ -177,6 +187,33 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   function onApplied(_result: SyncExecuteResult) {
     onMutated();
     fetchAll();
+  }
+
+  // Delete the whole skill → every install location goes to the OS trash, then
+  // its DB rows are dropped. Recoverable from the system trash, but NOT from
+  // the in-app sync history, so it gets an explicit destructive confirm that
+  // names where the files go and how many platforms are affected.
+  async function handleDelete() {
+    if (!skill) return;
+    const locationCount = skill.locations.length;
+    const ok = await confirmAction({
+      title: t('detail.delete.confirmTitle', { name: skill.name }),
+      description: t('detail.delete.confirmBody', { count: locationCount }),
+      tone: 'destructive',
+      confirmLabel: t('detail.delete.confirm'),
+      cancelLabel: t('common.cancel'),
+    });
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      const result = await api.skills.delete(skill.id);
+      onToast(t('detail.delete.done', { name: result.name }));
+      onMutated();
+      onClose();
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : String(err));
+      setDeleting(false);
+    }
   }
 
   return (
@@ -432,12 +469,75 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
                     {bodyCopied ? t('detail.skillmd.copied') : t('detail.skillmd.copy')}
                   </button>
                 </div>
-                <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
-                  {skill.bodyExcerpt}
-                </pre>
+                {(() => {
+                  const lines = (skill.bodyExcerpt ?? '').split('\n');
+                  const isLong = lines.length > SKILLMD_COLLAPSE_LINES;
+                  const collapsed = isLong && !bodyExpanded;
+                  const shown = collapsed
+                    ? lines.slice(0, SKILLMD_COLLAPSE_LINES).join('\n')
+                    : skill.bodyExcerpt;
+                  return (
+                    <>
+                      <div className="relative">
+                        <pre className="overflow-x-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
+                          {shown}
+                        </pre>
+                        {collapsed && (
+                          // Fade the cut edge so it reads as "there's more".
+                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 rounded-b-md bg-gradient-to-t from-secondary/40 to-transparent" />
+                        )}
+                      </div>
+                      {isLong && (
+                        <button
+                          type="button"
+                          onClick={() => setBodyExpanded((v) => !v)}
+                          className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:underline"
+                        >
+                          {bodyExpanded ? (
+                            <>
+                              <ChevronUp className="h-3 w-3" />
+                              {t('detail.skillmd.collapse')}
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="h-3 w-3" />
+                              {t('detail.skillmd.expand', { count: lines.length - SKILLMD_COLLAPSE_LINES })}
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
               </section>
             </>
           )}
+
+          {/* Danger zone — the most destructive action in the app, so it sits
+              alone at the very bottom, fenced off, with its own warning copy. */}
+          <Separator />
+          <section className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
+            <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-destructive">
+              {t('detail.delete.heading')}
+            </h3>
+            <p className="mb-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              {t('detail.delete.help')}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDelete}
+              disabled={deleting || busy}
+              className="border-destructive/40 text-destructive hover:bg-destructive hover:text-destructive-foreground"
+            >
+              {deleting ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              {t('detail.delete.button')}
+            </Button>
+          </section>
         </div>
       </ScrollArea>
 
