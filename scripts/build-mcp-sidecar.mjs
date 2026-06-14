@@ -41,27 +41,55 @@ function cargoBuild(target) {
 }
 
 const triple = (process.env.TAURI_ENV_TARGET_TRIPLE || process.argv[2] || hostTriple()).trim();
-const isWindows = triple.includes('windows');
-const ext = isWindows ? '.exe' : '';
-const dest = join(outDir, `myskills-mcp-${triple}${ext}`);
 mkdirSync(outDir, { recursive: true });
 
-if (triple === 'universal-apple-darwin') {
-  // Build both arches and lipo them into one fat binary.
-  const arches = ['aarch64-apple-darwin', 'x86_64-apple-darwin'];
-  const built = arches.map((arch) => {
-    cargoBuild(arch);
-    return join(srcTauri, 'target', arch, 'release', 'myskills-mcp');
-  });
-  run('lipo', ['-create', '-output', dest, ...built]);
-} else if (triple === hostTriple()) {
-  // Host build — no explicit --target so it reuses the main target/ dir.
-  cargoBuild(null);
-  copyFileSync(join(srcTauri, 'target', 'release', `myskills-mcp${ext}`), dest);
-} else {
-  // Cross build for an explicit triple (the rustup target must be installed).
-  cargoBuild(triple);
-  copyFileSync(join(srcTauri, 'target', triple, 'release', `myskills-mcp${ext}`), dest);
+function stage(targetTriple) {
+  const isWindows = targetTriple.includes('windows');
+  const ext = isWindows ? '.exe' : '';
+  const dest = join(outDir, `myskills-mcp-${targetTriple}${ext}`);
+  if (targetTriple === hostTriple()) {
+    // Host build — no explicit --target so it reuses the main target/ dir.
+    cargoBuild(null);
+    copyFileSync(join(srcTauri, 'target', 'release', `myskills-mcp${ext}`), dest);
+  } else {
+    // Cross build for an explicit triple (the rustup target must be installed).
+    cargoBuild(targetTriple);
+    copyFileSync(join(srcTauri, 'target', targetTriple, 'release', `myskills-mcp${ext}`), dest);
+  }
+  console.log(`✓ staged MCP sidecar → ${dest}`);
 }
 
-console.log(`✓ staged MCP sidecar → ${dest}`);
+if (triple === 'universal-apple-darwin') {
+  // Universal builds are finicky (tauri-apps/tauri#8152). Tauri needs the
+  // sidecar in three places:
+  //   1. binaries/myskills-mcp-<arch>      — tauri-build's per-arch externalBin
+  //      existence check (TAURI_ENV_TARGET_TRIPLE is the per-arch triple).
+  //   2. target/<arch>/release/myskills-mcp — Tauri lipo's these two into
+  //      target/universal-apple-darwin/release/myskills-mcp itself, mirroring
+  //      how it lipo's the main binary. So both arches MUST be built with an
+  //      explicit --target (NOT a host-default build into target/release).
+  //   3. binaries/myskills-mcp-universal-apple-darwin — the bundler's copy.
+  const arches = ['aarch64-apple-darwin', 'x86_64-apple-darwin'];
+  const archBins = [];
+  for (const arch of arches) {
+    cargoBuild(arch);
+    const built = join(srcTauri, 'target', arch, 'release', 'myskills-mcp');
+    archBins.push(built);
+    copyFileSync(built, join(outDir, `myskills-mcp-${arch}`));
+  }
+  // The bundler copies the universal externalBin from the universal target's
+  // release dir (it does NOT lipo it for us — tauri-apps/tauri#8152). Create it
+  // there ourselves, plus binaries/...-universal-apple-darwin for good measure.
+  const universalTargetDir = join(srcTauri, 'target', 'universal-apple-darwin', 'release');
+  mkdirSync(universalTargetDir, { recursive: true });
+  run('lipo', ['-create', '-output', join(universalTargetDir, 'myskills-mcp'), ...archBins]);
+  run('lipo', [
+    '-create',
+    '-output',
+    join(outDir, 'myskills-mcp-universal-apple-darwin'),
+    ...archBins,
+  ]);
+  console.log(`✓ staged MCP sidecars (per-arch + universal in binaries/ and target/)`);
+} else {
+  stage(triple);
+}
