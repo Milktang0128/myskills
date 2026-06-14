@@ -98,8 +98,8 @@ What MySkills puts where:
 ### Drive it from an agent (MCP)
 
 - `myskills-mcp` is a standalone [Model Context Protocol](https://modelcontextprotocol.io) server — a plain Rust binary, no Node runtime — that lets an agent (Claude Code, Codex, …) read your skill inventory with per-platform health, organize skills into scenarios, inspect the change ledger, rescan from disk, and delete skills to the trash
-- It backs onto the **same database the app uses**, so with a normal install no configuration is needed
-- Reads are free; the one destructive tool (delete) is gated behind explicit confirmation and stays recoverable from the OS trash
+- It backs onto the **same database the app uses**. Turn it on in **Settings → "Connect your agent (MCP)"** (off by default — you own access even though the agent runs the binary) and copy the paste-ready config it generates
+- Access is opt-in and layered: reads first, and deletes need a *separate* "Allow destructive actions" toggle; the server re-checks both on every call, so flipping them off cuts access immediately
 - See **[docs/mcp.md](docs/mcp.md)** for the tool reference, build, and client setup
 
 ## Privacy

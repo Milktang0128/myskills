@@ -681,6 +681,28 @@ export const en = {
   'settings.network.enabled': 'Network enabled',
   'settings.network.offline': 'Offline mode',
   'settings.network.bodyHelp': 'When off, MySkills works fully offline. Catalog search, AI features, and remote skill content are disabled.',
+  'settings.mcp.header': 'Connect your agent (MCP)',
+  'settings.mcp.intro':
+    'Let an agent (Claude Code, Codex, …) read and organize your skill library through the MySkills MCP server. The agent runs the myskills-mcp binary itself — this switch controls whether it is allowed to.',
+  'settings.mcp.enableLabel': 'Enable MCP access',
+  'settings.mcp.enabledOn': 'MCP access on',
+  'settings.mcp.enabledOff': 'MCP access off',
+  'settings.mcp.enableHelp':
+    'When on, a connected agent can list, read, organize, and rescan your skills. Off by default.',
+  'settings.mcp.destructiveLabel': 'Allow destructive actions',
+  'settings.mcp.destructiveHelp':
+    'Also let the agent delete skills (moved to the OS trash, recoverable). Off by default — leave it off and the agent can only read and organize.',
+  'settings.mcp.setupHelp': 'Add the server to your agent. Paths are pre-filled for this install.',
+  'settings.mcp.binaryLabel': 'Binary path',
+  'settings.mcp.claudeLabel': 'Claude Code (one command)',
+  'settings.mcp.jsonLabel': '.mcp.json',
+  'settings.mcp.codexLabel': 'Codex (~/.codex/config.toml)',
+  'settings.mcp.binaryMissing':
+    "This build doesn't ship the myskills-mcp binary yet. Build it from the repo and it appears beside the app:",
+  'settings.mcp.primerLabel': 'Starter prompt',
+  'settings.mcp.primerHelp': 'Paste this to your agent to orient it and kick off a task.',
+  'settings.mcp.primerText':
+    'You have the MySkills MCP server connected — it manages my AI-agent skills across Claude Code, Codex, and a shared pool. Start by calling skills_inventory to see my library and each skill’s per-platform health, then help me with: <describe your goal>. Use skills_read to inspect a skill, scenarios_list + skills_set_scenarios to organize them, and skills_history to see past changes. Always show me what you plan to change, and ask before deleting anything.',
   'settings.updates.header': 'App updates',
   'settings.updates.help': 'Check the GitHub release channel for a new installer. Updates are downloaded and installed only after you confirm.',
   'settings.updates.currentVersion': 'Current version: {{version}}',

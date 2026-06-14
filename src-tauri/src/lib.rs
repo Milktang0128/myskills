@@ -77,6 +77,7 @@ pub fn run() {
             commands::settings_set,
             commands::settings_stats,
             commands::settings_cleanup_backups,
+            commands::mcp_connection_info,
             commands::llm_get_config,
             commands::llm_set_config,
             commands::llm_set_api_key,

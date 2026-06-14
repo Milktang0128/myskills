@@ -23,6 +23,8 @@ import {
   ShieldCheck,
   Boxes,
   Github,
+  Plug,
+  Copy as CopyIcon,
 } from 'lucide-react';
 import type {
   AppUpdateInfo,
@@ -87,6 +89,32 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   // External-network master toggle.
   const [networkAllowed, setNetworkAllowed] = useState(true);
   const [savingNetwork, setSavingNetwork] = useState(false);
+  // MCP — let an agent drive the library. Both gates default off (opt-in).
+  const [mcpEnabled, setMcpEnabled] = useState(false);
+  const [mcpAllowDestructive, setMcpAllowDestructive] = useState(false);
+  const [savingMcp, setSavingMcp] = useState(false);
+  const [savingMcpDestructive, setSavingMcpDestructive] = useState(false);
+  const [mcpInfo, setMcpInfo] = useState<{
+    binaryName: string;
+    binaryPath: string | null;
+    binaryExists: boolean;
+    dataDir: string;
+  } | null>(null);
+  // Paste-ready client configs. Paths are quoted because the data dir (and, for
+  // the preview build, the binary) can live under "Application Support" — spaces.
+  const mcpConfig = useMemo(() => {
+    const bin = mcpInfo?.binaryPath ?? '';
+    const dataDir = mcpInfo?.dataDir ?? '';
+    return {
+      claude: `claude mcp add myskills --env MYSKILLS_DATA_DIR="${dataDir}" -- "${bin}"`,
+      json: JSON.stringify(
+        { mcpServers: { myskills: { command: bin, env: { MYSKILLS_DATA_DIR: dataDir } } } },
+        null,
+        2,
+      ),
+      codex: `[mcp_servers.myskills]\ncommand = "${bin}"\nenv = { MYSKILLS_DATA_DIR = "${dataDir}" }`,
+    };
+  }, [mcpInfo]);
   // AI integration.
   const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
   const [llmFeatures, setLlmFeatures] = useState<LlmFeatureToggles>({
@@ -124,16 +152,20 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [pls, st, ls, c, cands, netRaw, cfg, feats] = await Promise.all([
-      api.platforms.list(),
-      api.settings.stats(),
-      api.scan.lastResult(),
-      api.settings.get('canonical_platform'),
-      api.platforms.knownCandidates(),
-      api.settings.get('allow_external_network'),
-      api.llm.getConfig(),
-      api.llm.getFeatures(),
-    ]);
+    const [pls, st, ls, c, cands, netRaw, cfg, feats, mcpRaw, mcpDestRaw, mcpConn] =
+      await Promise.all([
+        api.platforms.list(),
+        api.settings.stats(),
+        api.scan.lastResult(),
+        api.settings.get('canonical_platform'),
+        api.platforms.knownCandidates(),
+        api.settings.get('allow_external_network'),
+        api.llm.getConfig(),
+        api.llm.getFeatures(),
+        api.settings.get('mcp_enabled'),
+        api.settings.get('mcp_allow_destructive'),
+        api.mcp.connectionInfo(),
+      ]);
     setPlatforms(pls);
     setStats(st);
     setLastScan(ls);
@@ -141,6 +173,10 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
     setCandidates(cands);
     // netRaw missing → default to allowed (matches the seed default).
     setNetworkAllowed(netRaw === null ? true : netRaw === '1');
+    // MCP gates default off when unset (opt-in access).
+    setMcpEnabled(mcpRaw === '1');
+    setMcpAllowDestructive(mcpDestRaw === '1');
+    setMcpInfo(mcpConn);
     setLlmConfig(cfg);
     setLlmDraft({
       provider: cfg.provider,
@@ -354,6 +390,32 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
       setNetworkAllowed(next);
     } finally {
       setSavingNetwork(false);
+    }
+  }
+
+  async function toggleMcp(next: boolean) {
+    setSavingMcp(true);
+    try {
+      await api.settings.set('mcp_enabled', next ? '1' : '0');
+      setMcpEnabled(next);
+      // Turning MCP off also revokes destructive access, so the agent can't
+      // delete the moment it's re-enabled without re-opting in.
+      if (!next && mcpAllowDestructive) {
+        await api.settings.set('mcp_allow_destructive', '0');
+        setMcpAllowDestructive(false);
+      }
+    } finally {
+      setSavingMcp(false);
+    }
+  }
+
+  async function toggleMcpDestructive(next: boolean) {
+    setSavingMcpDestructive(true);
+    try {
+      await api.settings.set('mcp_allow_destructive', next ? '1' : '0');
+      setMcpAllowDestructive(next);
+    } finally {
+      setSavingMcpDestructive(false);
     }
   }
 
@@ -822,6 +884,74 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                 </p>
               </div>
             </div>
+          </section>
+
+          <Separator />
+
+          <section className="space-y-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Plug className="h-4 w-4" />
+              {t('settings.mcp.header')}
+            </h2>
+            <p className="text-xs text-muted-foreground">{t('settings.mcp.intro')}</p>
+
+            <div className="flex items-start gap-3 rounded-md border bg-card px-3 py-3">
+              <ToggleSwitch
+                checked={mcpEnabled}
+                onChange={toggleMcp}
+                disabled={savingMcp}
+                label={t('settings.mcp.enableLabel')}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">
+                  {mcpEnabled ? t('settings.mcp.enabledOn') : t('settings.mcp.enabledOff')}
+                </div>
+                <p className="text-xs text-muted-foreground">{t('settings.mcp.enableHelp')}</p>
+              </div>
+            </div>
+
+            {mcpEnabled && (
+              <>
+                <div className="flex items-start gap-3 rounded-md border border-amber-300/60 bg-amber-50/40 px-3 py-3 dark:border-amber-500/30 dark:bg-amber-500/10">
+                  <ToggleSwitch
+                    checked={mcpAllowDestructive}
+                    onChange={toggleMcpDestructive}
+                    disabled={savingMcpDestructive}
+                    label={t('settings.mcp.destructiveLabel')}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 text-sm font-medium">
+                      <ShieldCheck className="h-3.5 w-3.5 text-amber-600" />
+                      {t('settings.mcp.destructiveLabel')}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t('settings.mcp.destructiveHelp')}
+                    </p>
+                  </div>
+                </div>
+
+                {mcpInfo?.binaryExists ? (
+                  <div className="space-y-3 rounded-md border bg-card px-3 py-3">
+                    <p className="text-xs text-muted-foreground">{t('settings.mcp.setupHelp')}</p>
+                    <McpCopyRow label={t('settings.mcp.binaryLabel')} text={mcpInfo.binaryPath ?? ''} />
+                    <McpCopyRow label={t('settings.mcp.claudeLabel')} text={mcpConfig.claude} />
+                    <McpCopyRow label={t('settings.mcp.jsonLabel')} text={mcpConfig.json} multiline />
+                    <McpCopyRow label={t('settings.mcp.codexLabel')} text={mcpConfig.codex} multiline />
+                  </div>
+                ) : (
+                  <div className="space-y-2 rounded-md border border-dashed bg-card px-3 py-3">
+                    <p className="text-xs text-muted-foreground">{t('settings.mcp.binaryMissing')}</p>
+                    <McpCopyRow label="" text="cargo build --release --bin myskills-mcp" />
+                  </div>
+                )}
+
+                <div className="space-y-2 rounded-md border bg-card px-3 py-3">
+                  <div className="text-xs font-medium">{t('settings.mcp.primerLabel')}</div>
+                  <p className="text-xs text-muted-foreground">{t('settings.mcp.primerHelp')}</p>
+                  <McpCopyRow label="" text={t('settings.mcp.primerText')} multiline />
+                </div>
+              </>
+            )}
           </section>
 
           <section ref={aiSectionRef} className="scroll-mt-4 space-y-3">
@@ -1329,6 +1459,55 @@ function ErrorIcon({ kind }: { kind: string }) {
   if (kind === 'icloud_evicted') return <CloudOff className="h-3.5 w-3.5 text-blue-600" />;
   if (kind === 'too_large') return <FileX2 className="h-3.5 w-3.5 text-amber-600" />;
   return <FolderSearch className="h-3.5 w-3.5 text-muted-foreground" />;
+}
+
+/** A read-only path / config / prompt with a copy button, for the MCP panel. */
+function McpCopyRow({
+  label,
+  text,
+  multiline,
+}: {
+  label: string;
+  text: string;
+  multiline?: boolean;
+}) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="space-y-1">
+      {label ? <div className="text-xs font-medium text-muted-foreground">{label}</div> : null}
+      <div className="flex items-start gap-2">
+        <code
+          className={`min-w-0 flex-1 overflow-x-auto rounded bg-secondary/40 px-2 py-1.5 font-mono text-[11px] ${
+            multiline ? 'whitespace-pre' : 'break-all'
+          }`}
+        >
+          {text}
+        </code>
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(text)
+              .then(() => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1400);
+              })
+              .catch(() => {});
+          }}
+          title={t('common.copy')}
+          aria-label={t('common.copy')}
+          className="mt-0.5 shrink-0 rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
+        >
+          {copied ? (
+            <Check className="h-3.5 w-3.5 text-emerald-600" />
+          ) : (
+            <CopyIcon className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ToggleSwitch({

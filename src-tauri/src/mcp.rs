@@ -198,6 +198,14 @@ impl Server {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
+        // Authorization gate. The user owns access via MySkills settings even
+        // though the agent owns this process: we re-read the flags from the
+        // shared database on every call, so toggling them in the app takes
+        // effect immediately (no restart). Both default to off.
+        if let Err(err) = self.check_access(name) {
+            return tool_err(&err);
+        }
+
         let outcome = match name {
             "skills_inventory" => self.tool_inventory(&args),
             "skills_read" => self.tool_read(&args),
@@ -216,6 +224,27 @@ impl Server {
             Ok(value) => tool_ok(value),
             Err(err) => tool_err(&err),
         }
+    }
+
+    /// Enforce the user's MySkills settings before running any tool.
+    fn check_access(&self, tool: &str) -> AppResult<()> {
+        let db = self.conn()?;
+        if !bool_setting(&db, "mcp_enabled") {
+            return Err(AppError::new(
+                "MCP_DISABLED",
+                "MCP access is turned off. Enable it in MySkills → Settings → \
+                 \"Connect your agent (MCP)\" to let an agent read and organize your skill library.",
+            ));
+        }
+        if tool == "skills_delete" && !bool_setting(&db, "mcp_allow_destructive") {
+            return Err(AppError::new(
+                "MCP_DESTRUCTIVE_DISABLED",
+                "Deleting skills over MCP is turned off. Turn on \"Allow destructive actions\" in \
+                 MySkills → Settings → \"Connect your agent (MCP)\" first. (You can still delete \
+                 from the app itself.)",
+            ));
+        }
+        Ok(())
     }
 
     // --- read tools -----------------------------------------------------
@@ -647,6 +676,21 @@ impl Server {
 }
 
 // --- shared SQL helpers -------------------------------------------------
+
+/// Read a boolean setting (stored as the string "1"). Absent or anything else
+/// is treated as false, so MCP access is opt-in.
+fn bool_setting(db: &DbConn, key: &str) -> bool {
+    db.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|v| v == "1")
+    .unwrap_or(false)
+}
 
 fn canonical_platform(db: &DbConn) -> AppResult<String> {
     let value: Option<String> = db

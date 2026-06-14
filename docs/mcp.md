@@ -49,6 +49,23 @@ cargo build --release --bin myskills-mcp
 The binary is self-contained (SQLite is bundled via `rusqlite`'s `bundled`
 feature). No further runtime dependencies.
 
+## Turn it on first
+
+MCP access is **off by default** — the agent owns the process, but you own
+access. Open **MySkills → Settings → "Connect your agent (MCP)"** and:
+
+1. Toggle **Enable MCP access** on. (Until you do, every tool call returns
+   `MCP_DISABLED`.)
+2. Optionally toggle **Allow destructive actions** on to let the agent delete
+   skills. Off by default — with it off, `skills_delete` is rejected with
+   `MCP_DESTRUCTIVE_DISABLED` and the agent can only read and organize.
+
+The server re-reads both flags from the database on **every call**, so toggling
+them takes effect immediately — no restart. That panel also shows the binary
+path and generates paste-ready client config (path + `MYSKILLS_DATA_DIR`
+pre-filled) and a starter prompt, so you usually don't need to assemble the
+config below by hand.
+
 ## Configure your agent
 
 ### Claude Code
@@ -119,7 +136,9 @@ printf '%s\n' \
 ```
 
 You should see three JSON-RPC responses: the `initialize` handshake, the tool
-catalog, and an inventory of up to three skills with per-platform health.
+catalog, and the inventory call. If MCP access is off (the default), that third
+response is `isError: true` with `MCP_DISABLED` — which still proves the
+protocol works; enable access in Settings to get real data back.
 
 ## Roadmap
 

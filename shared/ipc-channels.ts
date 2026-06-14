@@ -83,6 +83,10 @@ export const IPC = {
     /** Run the backup retention sweep on demand. */
     cleanupBackups: 'settings:cleanupBackups',
   },
+  mcp: {
+    /** Path + presence of the myskills-mcp binary and the data dir to pin. */
+    connectionInfo: 'mcp:connectionInfo',
+  },
   llm: {
     getConfig: 'llm:getConfig',
     setConfig: 'llm:setConfig',
@@ -159,6 +163,7 @@ export type IpcChannel =
   | typeof IPC.scenarios[keyof typeof IPC.scenarios]
   | typeof IPC.scan[keyof typeof IPC.scan]
   | typeof IPC.settings[keyof typeof IPC.settings]
+  | typeof IPC.mcp[keyof typeof IPC.mcp]
   | typeof IPC.coverage[keyof typeof IPC.coverage]
   | typeof IPC.sync[keyof typeof IPC.sync]
   | typeof IPC.catalog[keyof typeof IPC.catalog]
@@ -175,6 +180,7 @@ export const ALL_INVOKE_CHANNELS: ReadonlySet<string> = new Set<string>([
   ...Object.values(IPC.scenarios),
   ...Object.values(IPC.scan),
   ...Object.values(IPC.settings),
+  ...Object.values(IPC.mcp),
   ...Object.values(IPC.coverage),
   ...Object.values(IPC.sync),
   ...Object.values(IPC.catalog),

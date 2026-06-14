@@ -150,6 +150,8 @@ const COMMANDS: Record<IpcChannel, string> = {
   [IPC.settings.stats]: 'settings_stats',
   [IPC.settings.cleanupBackups]: 'settings_cleanup_backups',
 
+  [IPC.mcp.connectionInfo]: 'mcp_connection_info',
+
   [IPC.llm.getConfig]: 'llm_get_config',
   [IPC.llm.setConfig]: 'llm_set_config',
   [IPC.llm.setApiKey]: 'llm_set_api_key',
@@ -399,6 +401,15 @@ export const api = {
         deletedBytes: number;
         nulledRows: number;
         remainingBytes: number;
+      }>,
+  },
+  mcp: {
+    connectionInfo: () =>
+      bridge().invoke(IPC.mcp.connectionInfo) as Promise<{
+        binaryName: string;
+        binaryPath: string | null;
+        binaryExists: boolean;
+        dataDir: string;
       }>,
   },
   coverage: {
