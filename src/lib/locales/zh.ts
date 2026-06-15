@@ -686,16 +686,18 @@ export const zh: Dict = {
   'settings.mcp.destructiveLabel': '允许破坏性操作',
   'settings.mcp.destructiveHelp':
     '额外允许 agent 删除技能（移入系统回收站，可恢复）。默认关闭 —— 不开启时 agent 只能读取和整理。',
-  'settings.mcp.setupHelp': '把服务添加到你的 agent。路径已按本机安装填好。',
+  'settings.mcp.toAgentLabel': '复制这段给你的 agent',
+  'settings.mcp.toAgentHelp':
+    '适用于任何 agent —— 它会把服务加进自己的配置；之后重启一次会话，工具才会加载。连上后直接对它说你的需求即可。',
+  'settings.mcp.toAgentText':
+    '我在用 MySkills（一个管理我 AI 技能库的桌面 app），想让你通过它的 MCP 服务来帮我管理技能。请把下面这个 MCP 服务加到你的配置里，然后重启本次会话，让工具生效：\n\n• 名称：myskills\n• 启动命令：{{command}}\n• 环境变量：MYSKILLS_DATA_DIR={{dataDir}}\n\n如果你是 Claude Code，可以直接运行：\nclaude mcp add myskills --env MYSKILLS_DATA_DIR="{{dataDir}}" -- "{{command}}"\n\n连接成功后，先调用 skills_inventory 查看我的技能库和每个技能在各平台的健康状况，再问我接下来做什么。任何改动前先告诉我你的计划，删除任何东西前务必征求我同意。',
+  'settings.mcp.manualToggle': '改用手动配置',
+  'settings.mcp.setupHelp': '各客户端配置 —— 路径已按本机安装填好。',
   'settings.mcp.binaryLabel': '二进制路径',
   'settings.mcp.claudeLabel': 'Claude Code（一条命令）',
   'settings.mcp.jsonLabel': '.mcp.json',
   'settings.mcp.codexLabel': 'Codex（~/.codex/config.toml）',
   'settings.mcp.binaryMissing': '当前版本还未随包分发 myskills-mcp 程序。从仓库构建后，它会出现在 app 旁边：',
-  'settings.mcp.primerLabel': '启动提示词',
-  'settings.mcp.primerHelp': '把这段粘贴给你的 agent，让它了解情况并开始任务。',
-  'settings.mcp.primerText':
-    '你已连接 MySkills MCP 服务 —— 它管理我在 Claude Code、Codex 和共享池里的 AI 技能。请先调用 skills_inventory 查看我的技能库以及每个技能在各平台的健康状况，然后帮我：<描述你的目标>。用 skills_read 查看技能内容、scenarios_list + skills_set_scenarios 归类、skills_history 查看历史变更。任何改动前先告诉我你的计划，删除任何东西前务必征求我同意。',
   'settings.updates.header': '版本更新',
   'settings.updates.help': '检查 GitHub 发布通道中的新安装包。更新只会在你确认后下载和安装。',
   'settings.updates.currentVersion': '当前版本：{{version}}',

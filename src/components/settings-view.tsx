@@ -100,6 +100,9 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
     binaryExists: boolean;
     dataDir: string;
   } | null>(null);
+  // The per-client configs are tucked behind a disclosure; the one-paste
+  // to-agent instruction is the default path.
+  const [showMcpManual, setShowMcpManual] = useState(false);
   // Paste-ready client configs. Paths are quoted because the data dir (and, for
   // the preview build, the binary) can live under "Application Support" — spaces.
   const mcpConfig = useMemo(() => {
@@ -879,20 +882,39 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                   </div>
                 </div>
 
-                <div className="space-y-2 rounded-md border bg-card px-3 py-3">
-                  <div className="text-xs font-medium">{t('settings.mcp.primerLabel')}</div>
-                  <p className="text-xs text-muted-foreground">{t('settings.mcp.primerHelp')}</p>
-                  <McpCopyRow label="" text={t('settings.mcp.primerText')} multiline />
-                </div>
-
                 {mcpInfo?.binaryExists ? (
-                  <div className="space-y-3 rounded-md border bg-card px-3 py-3">
-                    <p className="text-xs text-muted-foreground">{t('settings.mcp.setupHelp')}</p>
-                    <McpCopyRow label={t('settings.mcp.binaryLabel')} text={mcpInfo.binaryPath ?? ''} />
-                    <McpCopyRow label={t('settings.mcp.claudeLabel')} text={mcpConfig.claude} />
-                    <McpCopyRow label={t('settings.mcp.jsonLabel')} text={mcpConfig.json} multiline />
-                    <McpCopyRow label={t('settings.mcp.codexLabel')} text={mcpConfig.codex} multiline />
-                  </div>
+                  <>
+                    <div className="space-y-2 rounded-md border bg-card px-3 py-3">
+                      <div className="text-xs font-medium">{t('settings.mcp.toAgentLabel')}</div>
+                      <p className="text-xs text-muted-foreground">{t('settings.mcp.toAgentHelp')}</p>
+                      <McpCopyRow
+                        label=""
+                        multiline
+                        text={t('settings.mcp.toAgentText', {
+                          command: mcpInfo.binaryPath ?? '',
+                          dataDir: mcpInfo.dataDir,
+                        })}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowMcpManual((v) => !v)}
+                      className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    >
+                      {showMcpManual ? '▾ ' : '▸ '}
+                      {t('settings.mcp.manualToggle')}
+                    </button>
+                    {showMcpManual && (
+                      <div className="space-y-3 rounded-md border bg-card px-3 py-3">
+                        <p className="text-xs text-muted-foreground">{t('settings.mcp.setupHelp')}</p>
+                        <McpCopyRow label={t('settings.mcp.binaryLabel')} text={mcpInfo.binaryPath ?? ''} />
+                        <McpCopyRow label={t('settings.mcp.claudeLabel')} text={mcpConfig.claude} />
+                        <McpCopyRow label={t('settings.mcp.jsonLabel')} text={mcpConfig.json} multiline />
+                        <McpCopyRow label={t('settings.mcp.codexLabel')} text={mcpConfig.codex} multiline />
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="space-y-2 rounded-md border border-dashed bg-card px-3 py-3">
                     <p className="text-xs text-muted-foreground">{t('settings.mcp.binaryMissing')}</p>

@@ -688,17 +688,19 @@ export const en = {
   'settings.mcp.destructiveLabel': 'Allow destructive actions',
   'settings.mcp.destructiveHelp':
     'Also let the agent delete skills (moved to the OS trash, recoverable). Off by default — leave it off and the agent can only read and organize.',
-  'settings.mcp.setupHelp': 'Add the server to your agent. Paths are pre-filled for this install.',
+  'settings.mcp.toAgentLabel': 'Paste this to your agent',
+  'settings.mcp.toAgentHelp':
+    'Works with any agent — it adds the server to its own config; restart the session afterward so the tools load. Once connected, just tell it what you need.',
+  'settings.mcp.toAgentText':
+    "I'm using MySkills (a desktop app that manages my AI-skill library) and I'd like you to manage my skills through its MCP server. Please add the MCP server below to your config, then restart this session so the tools load:\n\n• name: myskills\n• command: {{command}}\n• env: MYSKILLS_DATA_DIR={{dataDir}}\n\nIf you're Claude Code you can just run:\nclaude mcp add myskills --env MYSKILLS_DATA_DIR=\"{{dataDir}}\" -- \"{{command}}\"\n\nOnce connected, start by calling skills_inventory to see my library and each skill's per-platform health, then ask me what to do next. Always show me what you plan to change, and ask before deleting anything.",
+  'settings.mcp.manualToggle': 'Set it up manually instead',
+  'settings.mcp.setupHelp': 'Per-client config — paths are pre-filled for this install.',
   'settings.mcp.binaryLabel': 'Binary path',
   'settings.mcp.claudeLabel': 'Claude Code (one command)',
   'settings.mcp.jsonLabel': '.mcp.json',
   'settings.mcp.codexLabel': 'Codex (~/.codex/config.toml)',
   'settings.mcp.binaryMissing':
     "This build doesn't ship the myskills-mcp binary yet. Build it from the repo and it appears beside the app:",
-  'settings.mcp.primerLabel': 'Starter prompt',
-  'settings.mcp.primerHelp': 'Paste this to your agent to orient it and kick off a task.',
-  'settings.mcp.primerText':
-    'You have the MySkills MCP server connected — it manages my AI-agent skills across Claude Code, Codex, and a shared pool. Start by calling skills_inventory to see my library and each skill’s per-platform health, then help me with: <describe your goal>. Use skills_read to inspect a skill, scenarios_list + skills_set_scenarios to organize them, and skills_history to see past changes. Always show me what you plan to change, and ask before deleting anything.',
   'settings.updates.header': 'App updates',
   'settings.updates.help': 'Check the GitHub release channel for a new installer. Updates are downloaded and installed only after you confirm.',
   'settings.updates.currentVersion': 'Current version: {{version}}',
