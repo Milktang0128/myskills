@@ -3,6 +3,30 @@
 
 # Changelog
 
+## 0.3.0 — 2026-06-15
+
+### 新功能
+- feat(mcp): **MCP —— 让 agent 接管技能库**。独立 `myskills-mcp` 服务(stdio
+  JSON-RPC,纯 Rust,无 Node 依赖;随包内置为签名+公证的 sidecar,装好即用),
+  暴露 7 个工具:`skills_inventory`(每平台健康度 synced/source/drifted/broken/
+  disabled + missingOn)、`skills_read`、`scenarios_list`、`skills_set_scenarios`、
+  `skills_history`、`skills_rescan`、`skills_delete`。设置页新增「连接你的 agent
+  (MCP)」面板:一段通用「给 agent 的话」一键接入(任何 agent 通用),Claude Code /
+  .mcp.json / Codex 原始配置收进折叠区。授权闸门 `mcp_enabled` /
+  `mcp_allow_destructive`(默认关、共享 DB 即时生效)。设计立场:agent=大脑,
+  故意不暴露 app 自身的 LLM 功能;DB 是唯一真相源,从不改 SKILL.md。文档见
+  docs/mcp.md (#52)
+- feat(delete): 技能详情面板底部新增**「删除技能」**—— 明确警告 + 二次确认,
+  文件移入系统回收站(可恢复),删前根校验、DB 单事务清理;过长 SKILL.md 折叠
+  以便够到按钮。跨平台(trash crate)(#50)
+
+### 改进
+- ux(settings): 移除「允许外部网络请求」开关 —— 本应用需要外网(目录 + LLM),
+  默认常开,旧版本若关过会在打开设置时自动恢复 (#52)
+- build(mcp): 通过 Tauri `externalBin` 把 sidecar 签名内置进 .app/installer
+  (universal macOS 需 per-arch + lipo'd universal 三件,见 tauri#8152);新增
+  `default-run = "myskills"`(两个 [[bin]]) (#52)
+
 ## 0.2.5 — 2026-06-12
 
 ### 新功能
