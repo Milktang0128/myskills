@@ -15,7 +15,6 @@ import {
   Trash2,
   Check,
   X,
-  Wifi,
   Sparkles,
   RotateCcw,
   KeyRound,
@@ -86,9 +85,10 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
   const [savingCustom, setSavingCustom] = useState(false);
   // Custom-platform form is collapsed by default — most users just add presets.
   const [showCustomForm, setShowCustomForm] = useState(false);
-  // External-network master toggle.
-  const [networkAllowed, setNetworkAllowed] = useState(true);
-  const [savingNetwork, setSavingNetwork] = useState(false);
+  // External network is required by this app (catalog + LLM), so it's always
+  // on and the toggle was removed. Kept as a const so the AI controls below
+  // stay enabled without rewiring their `disabled` checks.
+  const networkAllowed = true;
   // MCP — let an agent drive the library. Both gates default off (opt-in).
   const [mcpEnabled, setMcpEnabled] = useState(false);
   const [mcpAllowDestructive, setMcpAllowDestructive] = useState(false);
@@ -171,8 +171,9 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
     setLastScan(ls);
     if (c) setCanonical(c);
     setCandidates(cands);
-    // netRaw missing → default to allowed (matches the seed default).
-    setNetworkAllowed(netRaw === null ? true : netRaw === '1');
+    // The network toggle was removed (this app needs external network). If an
+    // earlier build left it disabled, re-enable it so AI/catalog keep working.
+    if (netRaw !== '1') void api.settings.set('allow_external_network', '1');
     // MCP gates default off when unset (opt-in access).
     setMcpEnabled(mcpRaw === '1');
     setMcpAllowDestructive(mcpDestRaw === '1');
@@ -380,16 +381,6 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
         tone: 'destructive',
         okLabel: t('common.ok'),
       });
-    }
-  }
-
-  async function toggleNetwork(next: boolean) {
-    setSavingNetwork(true);
-    try {
-      await api.settings.set('allow_external_network', next ? '1' : '0');
-      setNetworkAllowed(next);
-    } finally {
-      setSavingNetwork(false);
     }
   }
 
@@ -846,48 +837,6 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
 
           <Separator />
 
-          <section ref={updateSectionRef} className="scroll-mt-4">
-            <UpdateSection
-              currentVersion={appVersion}
-              update={updateInfo}
-              checking={checkingUpdate}
-              installing={installingUpdate}
-              installed={updateInstalled}
-              progress={updateProgress}
-              error={updateError}
-              onCheck={checkForUpdate}
-              onInstall={installUpdate}
-              onRelaunch={relaunchApp}
-            />
-          </section>
-
-          <Separator />
-
-          <section className="space-y-3">
-            <h2 className="flex items-center gap-2 text-base font-semibold">
-              <Wifi className="h-4 w-4" />
-              {t('settings.network.header')}
-            </h2>
-            <div className="flex items-start gap-3 rounded-md border bg-card px-3 py-3">
-              <ToggleSwitch
-                checked={networkAllowed}
-                onChange={toggleNetwork}
-                disabled={savingNetwork}
-                label={t('settings.network.header')}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">
-                  {networkAllowed ? t('settings.network.enabled') : t('settings.network.offline')}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {t('settings.network.bodyHelp')}
-                </p>
-              </div>
-            </div>
-          </section>
-
-          <Separator />
-
           <section className="space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Plug className="h-4 w-4" />
@@ -930,6 +879,12 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                   </div>
                 </div>
 
+                <div className="space-y-2 rounded-md border bg-card px-3 py-3">
+                  <div className="text-xs font-medium">{t('settings.mcp.primerLabel')}</div>
+                  <p className="text-xs text-muted-foreground">{t('settings.mcp.primerHelp')}</p>
+                  <McpCopyRow label="" text={t('settings.mcp.primerText')} multiline />
+                </div>
+
                 {mcpInfo?.binaryExists ? (
                   <div className="space-y-3 rounded-md border bg-card px-3 py-3">
                     <p className="text-xs text-muted-foreground">{t('settings.mcp.setupHelp')}</p>
@@ -944,15 +899,28 @@ export function SettingsView({ onChanged, onAiChanged, focusSection }: Props) {
                     <McpCopyRow label="" text="cargo build --release --bin myskills-mcp" />
                   </div>
                 )}
-
-                <div className="space-y-2 rounded-md border bg-card px-3 py-3">
-                  <div className="text-xs font-medium">{t('settings.mcp.primerLabel')}</div>
-                  <p className="text-xs text-muted-foreground">{t('settings.mcp.primerHelp')}</p>
-                  <McpCopyRow label="" text={t('settings.mcp.primerText')} multiline />
-                </div>
               </>
             )}
           </section>
+
+          <Separator />
+
+          <section ref={updateSectionRef} className="scroll-mt-4">
+            <UpdateSection
+              currentVersion={appVersion}
+              update={updateInfo}
+              checking={checkingUpdate}
+              installing={installingUpdate}
+              installed={updateInstalled}
+              progress={updateProgress}
+              error={updateError}
+              onCheck={checkForUpdate}
+              onInstall={installUpdate}
+              onRelaunch={relaunchApp}
+            />
+          </section>
+
+          <Separator />
 
           <section ref={aiSectionRef} className="scroll-mt-4 space-y-3">
             <h2 className="flex items-center gap-2 text-base font-semibold">

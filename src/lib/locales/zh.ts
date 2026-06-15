@@ -676,10 +676,6 @@ export const zh: Dict = {
   'settings.back': '返回',
   'settings.canonical.header': '默认来源',
   'settings.canonical.help': '技能来源（真实文件）存放在这里；其他平台的同步副本指向它，所以改一次到处可见。',
-  'settings.network.header': '允许外部网络请求',
-  'settings.network.enabled': '网络已启用',
-  'settings.network.offline': '离线模式',
-  'settings.network.bodyHelp': '关闭后，MySkills 完全离线运行：目录搜索、AI 功能、远程技能内容都不可用。',
   'settings.mcp.header': '连接你的 agent（MCP）',
   'settings.mcp.intro':
     '让 agent（Claude Code、Codex…）通过 MySkills MCP 服务读取和整理你的技能库。agent 会自己运行 myskills-mcp 程序 —— 这个开关决定是否允许它这么做。',

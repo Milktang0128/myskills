@@ -677,10 +677,6 @@ export const en = {
   'settings.back': 'Back',
   'settings.canonical.header': 'Default source',
   'settings.canonical.help': 'The source (real skill files) lives here; other platforms keep synced copies pointing at it, so an edit shows up everywhere.',
-  'settings.network.header': 'Allow external network requests',
-  'settings.network.enabled': 'Network enabled',
-  'settings.network.offline': 'Offline mode',
-  'settings.network.bodyHelp': 'When off, MySkills works fully offline. Catalog search, AI features, and remote skill content are disabled.',
   'settings.mcp.header': 'Connect your agent (MCP)',
   'settings.mcp.intro':
     'Let an agent (Claude Code, Codex, …) read and organize your skill library through the MySkills MCP server. The agent runs the myskills-mcp binary itself — this switch controls whether it is allowed to.',
