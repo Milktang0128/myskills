@@ -1,11 +1,17 @@
 mod commands;
 mod db;
 mod error;
+mod mcp;
 #[allow(dead_code)]
 mod paths;
 mod scanner;
 mod secret_vault;
 mod state;
+
+/// Entry point for the standalone `myskills-mcp` binary (a thin shim in
+/// `src/bin/mcp.rs`). It lives in the library so the MCP server has private
+/// access to the same db/scanner/commands the app uses.
+pub use mcp::run_mcp_server;
 
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension};
@@ -71,6 +77,7 @@ pub fn run() {
             commands::settings_set,
             commands::settings_stats,
             commands::settings_cleanup_backups,
+            commands::mcp_connection_info,
             commands::llm_get_config,
             commands::llm_set_config,
             commands::llm_set_api_key,

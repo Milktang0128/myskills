@@ -677,10 +677,30 @@ export const en = {
   'settings.back': 'Back',
   'settings.canonical.header': 'Default source',
   'settings.canonical.help': 'The source (real skill files) lives here; other platforms keep synced copies pointing at it, so an edit shows up everywhere.',
-  'settings.network.header': 'Allow external network requests',
-  'settings.network.enabled': 'Network enabled',
-  'settings.network.offline': 'Offline mode',
-  'settings.network.bodyHelp': 'When off, MySkills works fully offline. Catalog search, AI features, and remote skill content are disabled.',
+  'settings.mcp.header': 'Connect your agent (MCP)',
+  'settings.mcp.intro':
+    'Let an agent (Claude Code, Codex, …) read and organize your skill library through the MySkills MCP server. The agent runs the myskills-mcp binary itself — this switch controls whether it is allowed to.',
+  'settings.mcp.enableLabel': 'Enable MCP access',
+  'settings.mcp.enabledOn': 'MCP access on',
+  'settings.mcp.enabledOff': 'MCP access off',
+  'settings.mcp.enableHelp':
+    'When on, a connected agent can list, read, organize, and rescan your skills. Off by default.',
+  'settings.mcp.destructiveLabel': 'Allow destructive actions',
+  'settings.mcp.destructiveHelp':
+    'Also let the agent delete skills (moved to the OS trash, recoverable). Off by default — leave it off and the agent can only read and organize.',
+  'settings.mcp.toAgentLabel': 'Paste this to your agent',
+  'settings.mcp.toAgentHelp':
+    'Works with any agent — it adds the server to its own config; restart the session afterward so the tools load. Once connected, just tell it what you need.',
+  'settings.mcp.toAgentText':
+    "I'm using MySkills (a desktop app that manages my AI-skill library) and I'd like you to manage my skills through its MCP server. Please add the MCP server below to your config, then restart this session so the tools load:\n\n• name: myskills\n• command: {{command}}\n• env: MYSKILLS_DATA_DIR={{dataDir}}\n\nIf you're Claude Code you can just run:\nclaude mcp add myskills --env MYSKILLS_DATA_DIR=\"{{dataDir}}\" -- \"{{command}}\"\n\nOnce connected, start by calling skills_inventory to see my library and each skill's per-platform health, then ask me what to do next. Always show me what you plan to change, and ask before deleting anything.",
+  'settings.mcp.manualToggle': 'Set it up manually instead',
+  'settings.mcp.setupHelp': 'Per-client config — paths are pre-filled for this install.',
+  'settings.mcp.binaryLabel': 'Binary path',
+  'settings.mcp.claudeLabel': 'Claude Code (one command)',
+  'settings.mcp.jsonLabel': '.mcp.json',
+  'settings.mcp.codexLabel': 'Codex (~/.codex/config.toml)',
+  'settings.mcp.binaryMissing':
+    "This build doesn't ship the myskills-mcp binary yet. Build it from the repo and it appears beside the app:",
   'settings.updates.header': 'App updates',
   'settings.updates.help': 'Check the GitHub release channel for a new installer. Updates are downloaded and installed only after you confirm.',
   'settings.updates.currentVersion': 'Current version: {{version}}',

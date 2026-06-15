@@ -505,6 +505,35 @@ pub fn settings_stats(payload: Option<Value>, state: State<'_, AppState>) -> App
     settings_stats_response(&db, &state.paths.db_path)
 }
 
+/// Facts the Settings "Connect your agent (MCP)" panel needs: where the
+/// `myskills-mcp` binary is (it sits next to the app executable — beside it in
+/// `target/debug` during dev, and in `Contents/MacOS` once bundled as a
+/// sidecar), whether it's present, and which data directory to pin in the
+/// generated client config (so the binary opens the same database this app
+/// uses, even for the preview build).
+#[tauri::command]
+pub fn mcp_connection_info(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
+    let _ = payload;
+    let bin_name = if cfg!(windows) {
+        "myskills-mcp.exe"
+    } else {
+        "myskills-mcp"
+    };
+    let binary_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(bin_name)));
+    let (path_str, exists) = match &binary_path {
+        Some(p) => (Some(p.to_string_lossy().to_string()), p.exists()),
+        None => (None, false),
+    };
+    Ok(json!({
+        "binaryName": bin_name,
+        "binaryPath": path_str,
+        "binaryExists": exists,
+        "dataDir": state.paths.user_data_dir.to_string_lossy(),
+    }))
+}
+
 fn settings_stats_response(db: &Connection, db_path: &Path) -> AppResult<Value> {
     let total: i64 = db.query_row("SELECT COUNT(*) FROM skills", [], |r| r.get(0))?;
     let scenarios: i64 = db.query_row("SELECT COUNT(*) FROM scenarios", [], |r| r.get(0))?;
@@ -808,7 +837,13 @@ pub fn skills_delete(payload: Option<Value>, state: State<'_, AppState>) -> AppR
         .lock()
         .map_err(|_| AppError::new("SYNC_LOCK_POISONED", "sync lock poisoned"))?;
     let mut db = conn(&state)?;
+    delete_skill_core(&mut db, &skill_id)
+}
 
+/// Tauri-free core of the delete-to-trash flow, shared by the Tauri command
+/// (which wraps it in `sync_lock`) and the MCP server (a separate process).
+/// See `skills_delete` for the safety contract.
+pub(crate) fn delete_skill_core(db: &mut rusqlite::Connection, skill_id: &str) -> AppResult<Value> {
     let name: String = db
         .query_row(
             "SELECT name FROM skills WHERE id = ?1",
