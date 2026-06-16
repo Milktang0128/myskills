@@ -30,6 +30,9 @@ and an auditable change ledger.
 | `skills_history` | read | The `sync_history` ledger, newest-first: every file-level change MySkills made (action, platform, before/after hash, backup path, success, rolled-back). Optional `skillId`, `limit` (default 20, max 200). |
 | `skills_set_scenarios` | write | Assign/unassign a skill to/from **existing** scenarios by key or name. Unknown names are rejected with the list of available keys. Writes only MySkills' database — `SKILL.md` files are never touched. |
 | `skills_rescan` | write* | Rescan the platform skill directories on disk and refresh the database. Read-only with respect to skill files; updates MySkills' cached state. |
+| `align_plan` | read | Dry-run preview of aligning a skill: which drifted/broken copies would be re-linked to the canonical source (`symlink_create`/`symlink_replace`), plus any conflicts. `includeMissing:true` also covers platforms where it's absent. No writes. |
+| `align_apply` | destructive | Execute the alignment (re-derives the plan fresh, then runs it). Each replaced copy is backed up and recorded in history. **Requires `confirm: true`** + "Allow destructive actions". Undoable via `skills_rollback`. |
+| `skills_rollback` | destructive | Undo a previous change by its `sync_history` id (restores the backed-up files for the whole op-group). **Requires `confirm: true`**. |
 | `skills_delete` | destructive | Move a skill's directories to the OS trash and remove it from MySkills. **Requires `confirm: true`** (without it the call is rejected so you can surface the consequence first). Each path is verified to live inside its platform root before anything is touched. Recoverable from the trash. |
 
 Every result includes both a human-readable `content[0].text` (pretty JSON) and
@@ -63,9 +66,10 @@ access. Open **MySkills → Settings → "Connect your agent (MCP)"** and:
 
 1. Toggle **Enable MCP access** on. (Until you do, every tool call returns
    `MCP_DISABLED`.)
-2. Optionally toggle **Allow destructive actions** on to let the agent delete
-   skills. Off by default — with it off, `skills_delete` is rejected with
-   `MCP_DESTRUCTIVE_DISABLED` and the agent can only read and organize.
+2. Optionally toggle **Allow destructive actions** on to let the agent change
+   skill files — `align_apply`, `skills_rollback`, `skills_delete`. Off by
+   default — with it off those are rejected with `MCP_DESTRUCTIVE_DISABLED` and
+   the agent can only read, organize (scenarios), rescan, and *preview* aligns.
 
 The server re-reads both flags from the database on **every call**, so toggling
 them takes effect immediately — no restart. That panel also shows the binary

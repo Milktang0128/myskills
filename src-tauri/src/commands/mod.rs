@@ -1517,6 +1517,58 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
     Ok(finalize_sync_plan("sync_from_canonical", items))
 }
 
+/// Tauri-free plan builder for the MCP `align_plan` / `align_apply` tools.
+/// Aligns a skill's **drifted** and **broken** locations back to the canonical
+/// source (replacing a drifted real copy with a synced symlink, re-linking a
+/// broken one). In-sync and source locations are left alone. With
+/// `include_missing`, also links the skill onto enabled platforms where it is
+/// absent. Returns the same plan shape as `sync_plan` (operation + items).
+pub(crate) fn align_plan_for_skill(
+    db: &Connection,
+    skill_id: &str,
+    include_missing: bool,
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let platform_ids: Vec<String> = platforms.iter().map(|p| p.id.clone()).collect();
+    let canonical = canonical_platform(db, &platform_ids)?;
+    let locs = sync_locations_for_skill(db, skill_id)?;
+    // The canonical source hash = a healthy real copy on the canonical platform.
+    let canonical_hash = locs
+        .iter()
+        .find(|l| {
+            l.platform_id == canonical && !l.is_disabled && !l.is_broken_link && !l.is_symlink
+        })
+        .and_then(|l| l.content_hash.clone());
+
+    let mut targets: Vec<String> = Vec::new();
+    for platform in &platform_ids {
+        if *platform == canonical {
+            continue;
+        }
+        match locs
+            .iter()
+            .find(|l| &l.platform_id == platform && !l.is_disabled)
+        {
+            // broken symlink → re-link to canonical
+            Some(loc) if loc.is_broken_link => targets.push(platform.clone()),
+            // drifted real copy (different hash from canonical) → replace with link
+            Some(loc)
+                if !loc.is_symlink
+                    && canonical_hash.is_some()
+                    && loc.content_hash != canonical_hash =>
+            {
+                targets.push(platform.clone())
+            }
+            // absent on this platform → only when explicitly asked to fill gaps
+            None if include_missing => targets.push(platform.clone()),
+            _ => {}
+        }
+    }
+
+    let request = json!({ "skillId": skill_id, "targetPlatformIds": targets });
+    plan_sync_from_canonical(db, std::slice::from_ref(&request))
+}
+
 fn plan_promote_to_canonical(db: &Connection, requests: &[Value]) -> AppResult<Value> {
     let platforms = sync_platforms(db)?;
     let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
@@ -1919,6 +1971,33 @@ pub fn sync_rollback(payload: Option<Value>, state: State<'_, AppState>) -> AppR
 
 pub(crate) fn rollback_history_group(db: &Connection, op_group_id: &str) -> AppResult<usize> {
     let rows = rollback_rows(db, -1, Some(op_group_id))?;
+    rollback_history_rows(db, &rows, || {})
+}
+
+/// Tauri-free rollback by a single sync_history id (rolls back its whole
+/// op-group), for the MCP `skills_rollback` tool. Mirrors `sync_rollback`'s
+/// guards. Caller is responsible for rescanning afterwards.
+pub(crate) fn rollback_history_by_id(db: &Connection, history_id: i64) -> AppResult<usize> {
+    let target: Option<(i64, Option<String>, i64, Option<i64>)> = db
+        .query_row(
+            "SELECT id, op_group_id, success, rolled_back_at FROM sync_history WHERE id = ?1",
+            params![history_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((id, op_group_id, success, rolled_back_at)) = target else {
+        return Err(AppError::new("NOT_FOUND", format!("history {history_id}")));
+    };
+    if success == 0 {
+        return Err(AppError::new(
+            "INVALID_STATE",
+            "cannot rollback a failed write",
+        ));
+    }
+    if rolled_back_at.is_some() {
+        return Err(AppError::new("INVALID_STATE", "already rolled back"));
+    }
+    let rows = rollback_rows(db, id, op_group_id.as_deref())?;
     rollback_history_rows(db, &rows, || {})
 }
 
@@ -4028,6 +4107,126 @@ mod tests {
             )
             .unwrap();
         assert!(rolled_back.is_some());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn align_plan_and_apply_relink_drifted_then_rollback_restores() {
+        let conn = sync_conn();
+        let root = temp_dir("align-flow");
+        let shared_root = root.join("shared");
+        let claude_root = root.join("claude");
+        let backup_root = root.join("backups");
+        fs::create_dir_all(&shared_root).unwrap();
+        fs::create_dir_all(&claude_root).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir, enabled, sort_order) VALUES
+             ('shared', 'Shared', ?1, 1, 0),
+             ('claude', 'Claude', ?2, 1, 1)",
+            params![shared_root.to_string_lossy(), claude_root.to_string_lossy()],
+        )
+        .unwrap();
+
+        // Canonical real copy on shared (hash A).
+        insert_coverage_skill(&conn, "sk", "demo");
+        let src = write_skill(&shared_root, "demo", "demo-canonical");
+        let src_hash = hash_skill_md(&src).unwrap();
+        insert_coverage_location(
+            &conn,
+            "sk",
+            "shared",
+            &src.to_string_lossy(),
+            &src.to_string_lossy(),
+            false,
+            false,
+            false,
+            Some(&src_hash),
+        );
+        // Drifted real copy on claude (hash B != A).
+        let drift = write_skill(&claude_root, "demo", "demo-DRIFTED");
+        let drift_hash = hash_skill_md(&drift).unwrap();
+        assert_ne!(src_hash, drift_hash);
+        insert_coverage_location(
+            &conn,
+            "sk",
+            "claude",
+            &drift.to_string_lossy(),
+            &drift.to_string_lossy(),
+            false,
+            false,
+            false,
+            Some(&drift_hash),
+        );
+
+        // Plan: targets only the drifted platform, with symlink_replace.
+        let plan = align_plan_for_skill(&conn, "sk", false).unwrap();
+        let items = plan.get("items").and_then(Value::as_array).unwrap().clone();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].get("action").and_then(Value::as_str),
+            Some("symlink_replace")
+        );
+        assert_eq!(
+            items[0].get("targetPlatformId").and_then(Value::as_str),
+            Some("claude")
+        );
+
+        // Apply: claude becomes a symlink to the canonical copy.
+        let result = execute_sync_items(&conn, &backup_root, items, &plan.to_string()).unwrap();
+        assert_eq!(
+            result
+                .get("applied")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            result.get("failed").and_then(Value::as_array).map(Vec::len),
+            Some(0)
+        );
+        let claude_path = claude_root.join("demo");
+        assert!(fs::symlink_metadata(&claude_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::canonicalize(&claude_path).unwrap(),
+            fs::canonicalize(&src).unwrap()
+        );
+
+        // History: before = drift, after = canonical, backup recorded.
+        let hid: i64 = conn
+            .query_row(
+                "SELECT id FROM sync_history WHERE skill_id='sk' AND success=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (before, after, backup): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT before_hash, after_hash, backup_path FROM sync_history WHERE id=?1",
+                params![hid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(before.as_deref(), Some(drift_hash.as_str()));
+        assert_eq!(after.as_deref(), Some(src_hash.as_str()));
+        assert!(backup.is_some());
+
+        // Rollback restores the drifted real copy.
+        assert_eq!(rollback_history_by_id(&conn, hid).unwrap(), 1);
+        let restored = claude_root.join("demo");
+        assert!(!fs::symlink_metadata(&restored)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(hash_skill_md(&restored).unwrap(), drift_hash);
+
         fs::remove_dir_all(root).ok();
     }
 
