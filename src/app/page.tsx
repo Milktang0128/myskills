@@ -154,6 +154,13 @@ export default function Workspace() {
     }
   }, [bridgeReady, effectiveFilter, needsSkillsFetch]);
 
+  // The Coverage matrix keeps its own internal cache (refreshed on scan + its
+  // own writes). External mutations — delete / enable-disable from the detail
+  // panel, a fresh install — must nudge it to re-fetch; bumping this counter is
+  // that signal. See CoverageView's refreshKey prop.
+  const [coverageRefreshKey, setCoverageRefreshKey] = useState(0);
+  const bumpCoverage = useCallback(() => setCoverageRefreshKey((k) => k + 1), []);
+
   const refreshMeta = useCallback(async () => {
     if (!bridgeReady) return;
     try {
@@ -618,6 +625,7 @@ export default function Workspace() {
               onToast={showToast}
               onSelectSkill={setSelectedId}
               selectedSkillId={selectedId}
+              refreshKey={coverageRefreshKey}
               onMutated={refreshMeta}
               onOpenSettings={() => {
                 // Reset any stale deep-link (e.g. a leftover 'ai' focus from
@@ -669,6 +677,7 @@ export default function Workspace() {
               setSelectedId(skillId);
               refreshMeta();
               refreshSkills();
+              bumpCoverage();
             }}
           />
         ) : sidebarView === 'history' ? (
@@ -772,6 +781,7 @@ export default function Workspace() {
           onMutated={() => {
             refreshSkills();
             refreshMeta();
+            bumpCoverage();
           }}
           onToast={showToast}
         />

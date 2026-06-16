@@ -76,9 +76,13 @@ interface Props {
   onSelectDiscover?: () => void;
   /** Trigger a rescan from the empty-state guidance card. */
   onRescan?: () => void;
+  /** Bumped by the workspace after an external mutation (e.g. a skill deleted
+   *  or enabled/disabled from the detail panel, a fresh install) so the matrix
+   *  re-fetches even though that write didn't flow through this component. */
+  refreshKey?: number;
 }
 
-export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated, onOpenSettings, onSelectDiscover, onRescan }: Props) {
+export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkillId, onMutated, onOpenSettings, onSelectDiscover, onRescan, refreshKey }: Props) {
   const t = useT();
   const [matrix, setMatrix] = useState<CoverageMatrix | null>(null);
   const [filter, setFilter] = useState<CoverageFilter>('all');
@@ -216,10 +220,14 @@ export function CoverageView({ outerFilter, onToast, onSelectSkill, selectedSkil
     }
   }
 
+  // Re-fetch on first ready, and again whenever the workspace bumps refreshKey
+  // after a mutation that bypassed this component (delete / enable-disable from
+  // the detail panel, a fresh install). On initial mount refreshKey is 0 and
+  // bridgeReady is false, so refresh() no-ops until the bridge is up.
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridgeReady]);
+  }, [bridgeReady, refreshKey]);
 
   useEffect(() => {
     if (!bridgeReady) return;
