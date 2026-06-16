@@ -3,6 +3,32 @@
 
 # Changelog
 
+## 0.4.0 — 2026-06-16
+
+MCP 第二轮:让 agent 不只能**管理**已有技能库,还能**修复 + 增长**它。新增 7 个 MCP
+工具(都复用 app 已验证的 plan→执行→备份→历史→可回滚引擎,文件改动统一受
+`mcp_allow_destructive` + confirm 双重闸门),MCP 现已覆盖技能库完整生命周期:
+理解 / 整理 / 获取 / 维护 / 修复 / 清理。
+
+### 新功能
+- feat(mcp): **修复(align)** —— `align_plan`(只读预览)→ `align_apply`(confirm)
+  把技能 drifted/坏链的副本重新链回主源(逐个备份、记历史),`skills_rollback`
+  (confirm)按历史 id 撤销任意改动 (#54)
+- feat(mcp): **获取(acquire)** —— `discover_search` 搜 skills.sh 社区目录(公开、
+  免鉴权),`discover_install`(confirm)拉取并安装一个技能(复制到主源 + 软链到
+  各平台,记历史、可回滚) (#54)
+- feat(mcp): **分类法** —— `scenarios_create`(幂等、支持中文 key)让 agent 能建场景
+  而不只是归到已有场景;`skills_set_enabled`(confirm)按平台启用/停用技能(进出
+  `.disabled/`) (#54)
+- feat(mcp): 服务器 `instructions` + 启动提示词改为引导 agent 连上后**主动给出可执行
+  的行动菜单**(归类 / 对齐 / 安装补缺 / 清理),而非开放式提问;并澄清"某平台缺失"
+  只是信息、broken/drifted 才需处理 (#54)
+
+### 其他
+- refactor: 抽出 Tauri-free 的 `align_plan_for_skill` / `catalog_install_plan` /
+  `create_scenario_core` / `toggle_disabled_plan` / `rollback_history_by_id`,
+  MCP 与 Tauri 命令共用同一套引擎,从不在引擎里重跑 LLM (#54)
+
 ## 0.3.0 — 2026-06-15
 
 ### 新功能
