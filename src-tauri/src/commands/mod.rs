@@ -973,6 +973,49 @@ pub fn scenarios_create(payload: Option<Value>, state: State<'_, AppState>) -> A
     scenario_by_id(&db, id)
 }
 
+/// Tauri-free scenario create for the MCP `scenarios_create` tool. Idempotent:
+/// if a scenario with the same key or name already exists, returns it instead
+/// of erroring. Keys may be non-ASCII (e.g. Chinese) — `is_alphanumeric` is
+/// Unicode-aware.
+pub(crate) fn create_scenario_core(
+    db: &Connection,
+    name: &str,
+    key: Option<&str>,
+    description: Option<&str>,
+) -> AppResult<Value> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::new("INVALID_INPUT", "name required"));
+    }
+    let key = key
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| slugify(name));
+    if !valid_scenario_key(&key) {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            format!("cannot derive a valid key from \"{name}\"; pass an explicit kebab-case `key`"),
+        ));
+    }
+    let existing: Option<i64> = db
+        .query_row(
+            "SELECT id FROM scenarios WHERE key = ?1 OR name = ?2 LIMIT 1",
+            params![key, name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        return scenario_by_id(db, id);
+    }
+    db.execute(
+        "INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
+         VALUES (?1, ?2, ?3, NULL, NULL, 999, 0, ?4)",
+        params![key, name, description, now_ms()],
+    )?;
+    scenario_by_id(db, db.last_insert_rowid())
+}
+
 #[tauri::command]
 pub fn scenarios_update(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let p = payload.ok_or_else(|| AppError::new("INVALID_INPUT", "payload required"))?;
@@ -1517,6 +1560,58 @@ fn plan_sync_from_canonical(db: &Connection, requests: &[Value]) -> AppResult<Va
     Ok(finalize_sync_plan("sync_from_canonical", items))
 }
 
+/// Tauri-free plan builder for the MCP `align_plan` / `align_apply` tools.
+/// Aligns a skill's **drifted** and **broken** locations back to the canonical
+/// source (replacing a drifted real copy with a synced symlink, re-linking a
+/// broken one). In-sync and source locations are left alone. With
+/// `include_missing`, also links the skill onto enabled platforms where it is
+/// absent. Returns the same plan shape as `sync_plan` (operation + items).
+pub(crate) fn align_plan_for_skill(
+    db: &Connection,
+    skill_id: &str,
+    include_missing: bool,
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let platform_ids: Vec<String> = platforms.iter().map(|p| p.id.clone()).collect();
+    let canonical = canonical_platform(db, &platform_ids)?;
+    let locs = sync_locations_for_skill(db, skill_id)?;
+    // The canonical source hash = a healthy real copy on the canonical platform.
+    let canonical_hash = locs
+        .iter()
+        .find(|l| {
+            l.platform_id == canonical && !l.is_disabled && !l.is_broken_link && !l.is_symlink
+        })
+        .and_then(|l| l.content_hash.clone());
+
+    let mut targets: Vec<String> = Vec::new();
+    for platform in &platform_ids {
+        if *platform == canonical {
+            continue;
+        }
+        match locs
+            .iter()
+            .find(|l| &l.platform_id == platform && !l.is_disabled)
+        {
+            // broken symlink → re-link to canonical
+            Some(loc) if loc.is_broken_link => targets.push(platform.clone()),
+            // drifted real copy (different hash from canonical) → replace with link
+            Some(loc)
+                if !loc.is_symlink
+                    && canonical_hash.is_some()
+                    && loc.content_hash != canonical_hash =>
+            {
+                targets.push(platform.clone())
+            }
+            // absent on this platform → only when explicitly asked to fill gaps
+            None if include_missing => targets.push(platform.clone()),
+            _ => {}
+        }
+    }
+
+    let request = json!({ "skillId": skill_id, "targetPlatformIds": targets });
+    plan_sync_from_canonical(db, std::slice::from_ref(&request))
+}
+
 fn plan_promote_to_canonical(db: &Connection, requests: &[Value]) -> AppResult<Value> {
     let platforms = sync_platforms(db)?;
     let platform_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
@@ -1711,6 +1806,39 @@ pub fn sync_plan_toggle_disabled(
     let plan = finalize_sync_plan(operation, items);
     store_plan(&state, &plan)?;
     Ok(plan)
+}
+
+/// Tauri-free toggle plan for the MCP `skills_set_enabled` tool: build a
+/// disable/enable plan for one skill on one platform (move to/from `.disabled/`).
+pub(crate) fn toggle_disabled_plan(
+    db: &Connection,
+    skill_id: &str,
+    platform_id: &str,
+    disable: bool,
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let skill = sync_skill(db, skill_id)?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("no skill with id {skill_id}")))?;
+    let loc = sync_location(db, skill_id, platform_id, true)?.ok_or_else(|| {
+        AppError::new(
+            "NO_LOCATION",
+            format!("skill {skill_id} has no location on platform {platform_id}"),
+        )
+    })?;
+    let platform = platforms
+        .iter()
+        .find(|p| p.id == platform_id)
+        .ok_or_else(|| {
+            AppError::new(
+                "UNKNOWN_PLATFORM",
+                format!("unknown platform {platform_id}"),
+            )
+        })?;
+    let item = build_toggle_item(db, &skill, &loc, &platform.skills_dir, disable)?;
+    Ok(finalize_sync_plan(
+        if disable { "disable" } else { "enable" },
+        vec![item],
+    ))
 }
 
 #[tauri::command]
@@ -1919,6 +2047,33 @@ pub fn sync_rollback(payload: Option<Value>, state: State<'_, AppState>) -> AppR
 
 pub(crate) fn rollback_history_group(db: &Connection, op_group_id: &str) -> AppResult<usize> {
     let rows = rollback_rows(db, -1, Some(op_group_id))?;
+    rollback_history_rows(db, &rows, || {})
+}
+
+/// Tauri-free rollback by a single sync_history id (rolls back its whole
+/// op-group), for the MCP `skills_rollback` tool. Mirrors `sync_rollback`'s
+/// guards. Caller is responsible for rescanning afterwards.
+pub(crate) fn rollback_history_by_id(db: &Connection, history_id: i64) -> AppResult<usize> {
+    let target: Option<(i64, Option<String>, i64, Option<i64>)> = db
+        .query_row(
+            "SELECT id, op_group_id, success, rolled_back_at FROM sync_history WHERE id = ?1",
+            params![history_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let Some((id, op_group_id, success, rolled_back_at)) = target else {
+        return Err(AppError::new("NOT_FOUND", format!("history {history_id}")));
+    };
+    if success == 0 {
+        return Err(AppError::new(
+            "INVALID_STATE",
+            "cannot rollback a failed write",
+        ));
+    }
+    if rolled_back_at.is_some() {
+        return Err(AppError::new("INVALID_STATE", "already rolled back"));
+    }
+    let rows = rollback_rows(db, id, op_group_id.as_deref())?;
     rollback_history_rows(db, &rows, || {})
 }
 
@@ -4032,6 +4187,126 @@ mod tests {
     }
 
     #[test]
+    fn align_plan_and_apply_relink_drifted_then_rollback_restores() {
+        let conn = sync_conn();
+        let root = temp_dir("align-flow");
+        let shared_root = root.join("shared");
+        let claude_root = root.join("claude");
+        let backup_root = root.join("backups");
+        fs::create_dir_all(&shared_root).unwrap();
+        fs::create_dir_all(&claude_root).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('canonical_platform', 'shared')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO platforms (id, label, skills_dir, enabled, sort_order) VALUES
+             ('shared', 'Shared', ?1, 1, 0),
+             ('claude', 'Claude', ?2, 1, 1)",
+            params![shared_root.to_string_lossy(), claude_root.to_string_lossy()],
+        )
+        .unwrap();
+
+        // Canonical real copy on shared (hash A).
+        insert_coverage_skill(&conn, "sk", "demo");
+        let src = write_skill(&shared_root, "demo", "demo-canonical");
+        let src_hash = hash_skill_md(&src).unwrap();
+        insert_coverage_location(
+            &conn,
+            "sk",
+            "shared",
+            &src.to_string_lossy(),
+            &src.to_string_lossy(),
+            false,
+            false,
+            false,
+            Some(&src_hash),
+        );
+        // Drifted real copy on claude (hash B != A).
+        let drift = write_skill(&claude_root, "demo", "demo-DRIFTED");
+        let drift_hash = hash_skill_md(&drift).unwrap();
+        assert_ne!(src_hash, drift_hash);
+        insert_coverage_location(
+            &conn,
+            "sk",
+            "claude",
+            &drift.to_string_lossy(),
+            &drift.to_string_lossy(),
+            false,
+            false,
+            false,
+            Some(&drift_hash),
+        );
+
+        // Plan: targets only the drifted platform, with symlink_replace.
+        let plan = align_plan_for_skill(&conn, "sk", false).unwrap();
+        let items = plan.get("items").and_then(Value::as_array).unwrap().clone();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].get("action").and_then(Value::as_str),
+            Some("symlink_replace")
+        );
+        assert_eq!(
+            items[0].get("targetPlatformId").and_then(Value::as_str),
+            Some("claude")
+        );
+
+        // Apply: claude becomes a symlink to the canonical copy.
+        let result = execute_sync_items(&conn, &backup_root, items, &plan.to_string()).unwrap();
+        assert_eq!(
+            result
+                .get("applied")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            result.get("failed").and_then(Value::as_array).map(Vec::len),
+            Some(0)
+        );
+        let claude_path = claude_root.join("demo");
+        assert!(fs::symlink_metadata(&claude_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::canonicalize(&claude_path).unwrap(),
+            fs::canonicalize(&src).unwrap()
+        );
+
+        // History: before = drift, after = canonical, backup recorded.
+        let hid: i64 = conn
+            .query_row(
+                "SELECT id FROM sync_history WHERE skill_id='sk' AND success=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (before, after, backup): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT before_hash, after_hash, backup_path FROM sync_history WHERE id=?1",
+                params![hid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(before.as_deref(), Some(drift_hash.as_str()));
+        assert_eq!(after.as_deref(), Some(src_hash.as_str()));
+        assert!(backup.is_some());
+
+        // Rollback restores the drifted real copy.
+        assert_eq!(rollback_history_by_id(&conn, hid).unwrap(), 1);
+        let restored = claude_root.join("demo");
+        assert!(!fs::symlink_metadata(&restored)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(hash_skill_md(&restored).unwrap(), drift_hash);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn sync_plan_from_canonical_classifies_fixture_targets() {
         let conn = sync_conn();
         let root = temp_dir("sync-plan");
@@ -5829,7 +6104,7 @@ pub async fn catalog_search(
 /// skills.sh search, callable from non-command paths (the optimization
 /// module's benchmark step reuses it). Caller is responsible for the
 /// `require_network` gate.
-fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value> {
+pub(crate) fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value> {
     let limit = limit.to_string();
     let offset = offset.to_string();
     let client = catalog_client()?;
@@ -5987,7 +6262,6 @@ pub async fn catalog_plan_install(
 ) -> AppResult<Value> {
     let source = required_str(&payload, "source")?;
     let skill_id = required_str(&payload, "skillId")?;
-    let skill_name = required_str(&payload, "skillName")?;
     let target_platform_ids = payload
         .as_ref()
         .and_then(|p| p.get("targetPlatformIds"))
@@ -6001,20 +6275,42 @@ pub async fn catalog_plan_install(
         })
         .collect::<AppResult<Vec<_>>>()?;
     let db = conn(&state)?;
-    let raw = catalog_fetch_skill_content(&db, source, skill_id)?;
+    let plan = catalog_install_plan(
+        &db,
+        &state.paths.staging_root,
+        source,
+        skill_id,
+        &target_platform_ids,
+    )?;
+    store_plan(&state, &plan)?;
+    Ok(plan)
+}
+
+/// Tauri-free: fetch a catalog skill's SKILL.md, stage it, and build a
+/// promote-to-canonical install plan (copy to canonical + symlink to the other
+/// targets). Shared by the Tauri install command and the MCP `discover_install`
+/// tool. Does NOT store the plan in the in-memory store — the caller stores it
+/// (Tauri) or executes it directly (MCP).
+pub(crate) fn catalog_install_plan(
+    db: &Connection,
+    staging_root: &Path,
+    source: &str,
+    skill_id: &str,
+    target_platform_ids: &[String],
+) -> AppResult<Value> {
+    let raw = catalog_fetch_skill_content(db, source, skill_id)?;
     let (frontmatter, _) = catalog_parse_markdown(&raw)?;
     let fm_name = frontmatter
         .get("name")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if fm_name.is_none() {
-        return Err(AppError::new(
-            "MISSING_FRONTMATTER",
-            format!("SKILL.md from {source}/{skill_id} has no `name` field - cannot install."),
-        ));
-    }
-    let fm_name = fm_name.unwrap_or(skill_name);
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::new(
+                "MISSING_FRONTMATTER",
+                format!("SKILL.md from {source}/{skill_id} has no `name` field - cannot install."),
+            )
+        })?;
     let basename = sanitize_catalog_basename(skill_id)
         .filter(|name| is_safe_basename(name))
         .ok_or_else(|| {
@@ -6023,7 +6319,7 @@ pub async fn catalog_plan_install(
                 format!("cannot derive safe install basename from \"{skill_id}\""),
             )
         })?;
-    let stage_wrap = state.paths.staging_root.join(Uuid::new_v4().to_string());
+    let stage_wrap = staging_root.join(Uuid::new_v4().to_string());
     let stage_dir = stage_wrap.join(&basename);
     if let Err(err) = (|| -> AppResult<()> {
         fs::create_dir_all(&stage_dir)?;
@@ -6038,14 +6334,13 @@ pub async fn catalog_plan_install(
     }
     let source_hash = hex::encode(sha2::Sha256::digest(raw.as_bytes()));
     match catalog_plan_from_staging(
-        &state,
-        &db,
+        db,
         &stage_dir,
         fm_name,
         &source_hash,
         source,
         skill_id,
-        &target_platform_ids,
+        target_platform_ids,
     ) {
         Ok(plan) => Ok(plan),
         Err(err) => {
@@ -6404,7 +6699,6 @@ fn catalog_write_description_cache(
 
 #[allow(clippy::too_many_arguments)]
 fn catalog_plan_from_staging(
-    state: &State<'_, AppState>,
     db: &Connection,
     staging_dir: &Path,
     skill_name: &str,
@@ -6453,9 +6747,7 @@ fn catalog_plan_from_staging(
             "source_has_symlink",
             &op_group_id,
         ));
-        let plan = finalize_sync_plan("promote_to_canonical", items);
-        store_plan(state, &plan)?;
-        return Ok(plan);
+        return Ok(finalize_sync_plan("promote_to_canonical", items));
     }
     let mut copy_item = build_sync_item(SyncBuildItemArgs {
         skill: &skill,
@@ -6516,9 +6808,7 @@ fn catalog_plan_from_staging(
         }
     }
 
-    let plan = finalize_sync_plan("promote_to_canonical", items);
-    store_plan(state, &plan)?;
-    Ok(plan)
+    Ok(finalize_sync_plan("promote_to_canonical", items))
 }
 
 fn yaml_to_json(yaml: &yaml_rust2::Yaml) -> Value {

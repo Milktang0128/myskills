@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "productName": "MySkills",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.kanbenzhi.myskills.tauri-preview",
   "build": {
     "beforeDevCommand": "npm run dev:next",

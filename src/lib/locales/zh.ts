@@ -690,7 +690,7 @@ export const zh: Dict = {
   'settings.mcp.toAgentHelp':
     '适用于任何 agent —— 它会把服务加进自己的配置；之后重启一次会话，工具才会加载。连上后直接对它说你的需求即可。',
   'settings.mcp.toAgentText':
-    '我在用 MySkills（一个管理我 AI 技能库的桌面 app），想让你通过它的 MCP 服务来帮我管理技能。请把下面这个 MCP 服务加到你的配置里，然后重启本次会话，让工具生效：\n\n• 名称：myskills\n• 启动命令：{{command}}\n• 环境变量：MYSKILLS_DATA_DIR={{dataDir}}\n\n如果你是 Claude Code，可以直接运行：\nclaude mcp add myskills --env MYSKILLS_DATA_DIR="{{dataDir}}" -- "{{command}}"\n\n连接成功后，先调用 skills_inventory 查看我的技能库和每个技能在各平台的健康状况，再问我接下来做什么。任何改动前先告诉我你的计划，删除任何东西前务必征求我同意。',
+    '我在用 MySkills（一个管理我 AI 技能库的桌面 app），想让你通过它的 MCP 服务来帮我管理技能。请把下面这个 MCP 服务加到你的配置里，然后重启本次会话，让工具生效：\n\n• 名称：myskills\n• 启动命令：{{command}}\n• 环境变量：MYSKILLS_DATA_DIR={{dataDir}}\n\n如果你是 Claude Code，可以直接运行：\nclaude mcp add myskills --env MYSKILLS_DATA_DIR="{{dataDir}}" -- "{{command}}"\n\n连接成功后，先调用 skills_inventory 查看我的技能库和每个技能在各平台的健康状况，然后主动给我一份具体可执行的清单（比如：把未归类的技能归到场景、用 align_plan→align_apply 把 drifted/坏链的技能对齐回主源、清理明显没用的），而不是只问我要做什么。任何改动前先给计划，对齐 / 回滚 / 删除前务必征求我同意。',
   'settings.mcp.manualToggle': '改用手动配置',
   'settings.mcp.setupHelp': '各客户端配置 —— 路径已按本机安装填好。',
   'settings.mcp.binaryLabel': '二进制路径',
