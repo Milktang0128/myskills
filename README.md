@@ -27,6 +27,8 @@
 
 A `SKILL.md` is a Markdown file with YAML frontmatter that tools like Claude Code and Codex load as reusable capabilities — prompts, tooling profiles, agent instructions. Once you use more than one of those tools, copies start to drift across folders. MySkills makes that mess legible, and any write is explicit, reviewable, backed up, and recorded.
 
+**Or skip the clicking entirely:** connect your agent over MCP and let it run the whole library in conversation — inventory and read skills, organize them into scenarios, install new ones from the catalog, re-align drifted copies, clean up cruft — with every file change gated, backed up, and reversible. See [Drive it from an agent (MCP)](#drive-it-from-an-agent-mcp).
+
 <p align="center">
   <img src="docs/screenshots/coverage-matrix.en.png" width="900" alt="Coverage matrix view — one row per unique skill, one column per platform; cell colour shows which copies are in sync vs. out of sync" />
 </p>
@@ -97,10 +99,18 @@ What MySkills puts where:
 
 ### Drive it from an agent (MCP)
 
-- `myskills-mcp` is a standalone [Model Context Protocol](https://modelcontextprotocol.io) server — a plain Rust binary, no Node runtime — that lets an agent (Claude Code, Codex, …) read your skill inventory with per-platform health, organize skills into scenarios, inspect the change ledger, rescan from disk, and delete skills to the trash
-- It backs onto the **same database the app uses**. Turn it on in **Settings → "Connect your agent (MCP)"** (off by default — you own access even though the agent runs the binary) and copy the paste-ready config it generates
-- Access is opt-in and layered: reads first, and deletes need a *separate* "Allow destructive actions" toggle; the server re-checks both on every call, so flipping them off cuts access immediately
-- See **[docs/mcp.md](docs/mcp.md)** for the tool reference, build, and client setup
+`myskills-mcp` is a standalone [Model Context Protocol](https://modelcontextprotocol.io) server — a plain Rust binary, no Node runtime, **shipped signed inside the app** — that lets an agent (Claude Code, Codex, …) run your whole skill-library lifecycle in conversation, not by clicking around:
+
+- **Understand** — inventory every skill with per-platform health (`synced` / `source` / `drifted` / `broken` / `disabled`), read any `SKILL.md`, inspect the change ledger
+- **Organize** — create scenarios and sort skills into them
+- **Acquire** — search the skills.sh catalog and install a skill (copied to the source, symlinked across platforms)
+- **Fix** — re-align a skill's drifted/broken copies back to the canonical source, or enable/disable it per platform
+- **Clean up** — delete a skill to the OS trash
+- **Undo anything** — every file change is backed up and recorded; `skills_rollback` reverses it
+
+It backs onto the **same database the app uses**. Turn it on in **Settings → "Connect your agent (MCP)"** (off by default — you own access even though the agent runs the binary) and paste the one-line instruction it generates to your agent. Access is layered: reads + DB organization first; anything that touches files on disk (install / align / enable-disable / delete / rollback) needs a *separate* "Allow destructive actions" toggle, re-checked on **every** call. The app's own LLM features aren't exposed — the agent is the brain; the server is the trustworthy, reversible hands.
+
+See **[docs/mcp.md](docs/mcp.md)** for the full tool reference, build, and client setup.
 
 ## Privacy
 
@@ -179,8 +189,10 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 | Version | Theme | Status |
 |---|---|---|
 | v0.1 | MVP-A — read-only inventory, scenarios, Discover, optional AI | superseded (frozen Electron line) |
-| **v0.2** | Tauri rewrite — cross-platform (macOS / Windows / Linux), Rust backend, in-app auto-update, plus Create Skill | shipping |
-| v0.3+ | Project/plugin-level skill scanning, multi-machine awareness | planned |
+| v0.2 | Tauri rewrite — cross-platform (macOS / Windows / Linux), Rust backend, in-app auto-update, plus Create Skill | shipped |
+| v0.3 | **MCP** — agent-drivable skill library: a bundled, signed `myskills-mcp` server + "Connect your agent" Settings panel, with safe, reversible, audit-ledger writes | shipped |
+| **v0.4** | **MCP "manage + grow"** — the agent can align/fix drift, install from the skills.sh catalog, create scenarios, and enable/disable per platform; all gated + undoable | shipped |
+| next | Agent skill **authoring** (write/improve `SKILL.md` content, behind a hardened security gate); project/plugin-level scanning; multi-machine awareness | planned |
 
 **Not planned:**
 - General-purpose in-app skill editor — Create Skill may generate and install a reviewed `SKILL.md`, but long-form editing stays in your usual editor
@@ -189,12 +201,14 @@ Every successful write records `before_hash`, `after_hash`, `backup_path`, and t
 
 ## Status
 
-Solo personal project. The shipping line is the cross-platform Tauri build
-(`v0.2.x`) — a Rust backend with a Next.js UI, signed and notarized on macOS,
-packaged for Windows and Linux, with in-app auto-update. The older Electron,
-macOS-only `v0.1.x` line is frozen. The Rust backend has unit coverage for the
-scanner and sync invariants, and the release workflow signs and publishes
-macOS / Windows / Linux artifacts on every version tag.
+Solo personal project, actively developed. The shipping line is the
+cross-platform Tauri build (currently **v0.4.0**) — a Rust backend with a
+Next.js UI, signed and notarized on macOS, packaged for Windows and Linux, with
+in-app auto-update. Since v0.3 it also ships `myskills-mcp`, an agent-drivable
+MCP server (bundled + signed). The older Electron, macOS-only `v0.1.x` line is
+frozen. The Rust backend has unit coverage for the scanner and the sync/align
+invariants, and the release workflow signs and publishes macOS / Windows /
+Linux artifacts on every version tag.
 
 ## Contributing
 
