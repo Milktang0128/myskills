@@ -973,6 +973,49 @@ pub fn scenarios_create(payload: Option<Value>, state: State<'_, AppState>) -> A
     scenario_by_id(&db, id)
 }
 
+/// Tauri-free scenario create for the MCP `scenarios_create` tool. Idempotent:
+/// if a scenario with the same key or name already exists, returns it instead
+/// of erroring. Keys may be non-ASCII (e.g. Chinese) — `is_alphanumeric` is
+/// Unicode-aware.
+pub(crate) fn create_scenario_core(
+    db: &Connection,
+    name: &str,
+    key: Option<&str>,
+    description: Option<&str>,
+) -> AppResult<Value> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::new("INVALID_INPUT", "name required"));
+    }
+    let key = key
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| slugify(name));
+    if !valid_scenario_key(&key) {
+        return Err(AppError::new(
+            "INVALID_INPUT",
+            format!("cannot derive a valid key from \"{name}\"; pass an explicit kebab-case `key`"),
+        ));
+    }
+    let existing: Option<i64> = db
+        .query_row(
+            "SELECT id FROM scenarios WHERE key = ?1 OR name = ?2 LIMIT 1",
+            params![key, name],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(id) = existing {
+        return scenario_by_id(db, id);
+    }
+    db.execute(
+        "INSERT INTO scenarios (key, name, description, color, icon, sort_order, is_builtin, created_at)
+         VALUES (?1, ?2, ?3, NULL, NULL, 999, 0, ?4)",
+        params![key, name, description, now_ms()],
+    )?;
+    scenario_by_id(db, db.last_insert_rowid())
+}
+
 #[tauri::command]
 pub fn scenarios_update(payload: Option<Value>, state: State<'_, AppState>) -> AppResult<Value> {
     let p = payload.ok_or_else(|| AppError::new("INVALID_INPUT", "payload required"))?;
@@ -1763,6 +1806,39 @@ pub fn sync_plan_toggle_disabled(
     let plan = finalize_sync_plan(operation, items);
     store_plan(&state, &plan)?;
     Ok(plan)
+}
+
+/// Tauri-free toggle plan for the MCP `skills_set_enabled` tool: build a
+/// disable/enable plan for one skill on one platform (move to/from `.disabled/`).
+pub(crate) fn toggle_disabled_plan(
+    db: &Connection,
+    skill_id: &str,
+    platform_id: &str,
+    disable: bool,
+) -> AppResult<Value> {
+    let platforms = sync_platforms(db)?;
+    let skill = sync_skill(db, skill_id)?
+        .ok_or_else(|| AppError::new("NOT_FOUND", format!("no skill with id {skill_id}")))?;
+    let loc = sync_location(db, skill_id, platform_id, true)?.ok_or_else(|| {
+        AppError::new(
+            "NO_LOCATION",
+            format!("skill {skill_id} has no location on platform {platform_id}"),
+        )
+    })?;
+    let platform = platforms
+        .iter()
+        .find(|p| p.id == platform_id)
+        .ok_or_else(|| {
+            AppError::new(
+                "UNKNOWN_PLATFORM",
+                format!("unknown platform {platform_id}"),
+            )
+        })?;
+    let item = build_toggle_item(db, &skill, &loc, &platform.skills_dir, disable)?;
+    Ok(finalize_sync_plan(
+        if disable { "disable" } else { "enable" },
+        vec![item],
+    ))
 }
 
 #[tauri::command]
@@ -6028,7 +6104,7 @@ pub async fn catalog_search(
 /// skills.sh search, callable from non-command paths (the optimization
 /// module's benchmark step reuses it). Caller is responsible for the
 /// `require_network` gate.
-fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value> {
+pub(crate) fn catalog_search_blocking(q: &str, limit: i64, offset: i64) -> AppResult<Value> {
     let limit = limit.to_string();
     let offset = offset.to_string();
     let client = catalog_client()?;
@@ -6186,7 +6262,6 @@ pub async fn catalog_plan_install(
 ) -> AppResult<Value> {
     let source = required_str(&payload, "source")?;
     let skill_id = required_str(&payload, "skillId")?;
-    let skill_name = required_str(&payload, "skillName")?;
     let target_platform_ids = payload
         .as_ref()
         .and_then(|p| p.get("targetPlatformIds"))
@@ -6200,20 +6275,42 @@ pub async fn catalog_plan_install(
         })
         .collect::<AppResult<Vec<_>>>()?;
     let db = conn(&state)?;
-    let raw = catalog_fetch_skill_content(&db, source, skill_id)?;
+    let plan = catalog_install_plan(
+        &db,
+        &state.paths.staging_root,
+        source,
+        skill_id,
+        &target_platform_ids,
+    )?;
+    store_plan(&state, &plan)?;
+    Ok(plan)
+}
+
+/// Tauri-free: fetch a catalog skill's SKILL.md, stage it, and build a
+/// promote-to-canonical install plan (copy to canonical + symlink to the other
+/// targets). Shared by the Tauri install command and the MCP `discover_install`
+/// tool. Does NOT store the plan in the in-memory store — the caller stores it
+/// (Tauri) or executes it directly (MCP).
+pub(crate) fn catalog_install_plan(
+    db: &Connection,
+    staging_root: &Path,
+    source: &str,
+    skill_id: &str,
+    target_platform_ids: &[String],
+) -> AppResult<Value> {
+    let raw = catalog_fetch_skill_content(db, source, skill_id)?;
     let (frontmatter, _) = catalog_parse_markdown(&raw)?;
     let fm_name = frontmatter
         .get("name")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if fm_name.is_none() {
-        return Err(AppError::new(
-            "MISSING_FRONTMATTER",
-            format!("SKILL.md from {source}/{skill_id} has no `name` field - cannot install."),
-        ));
-    }
-    let fm_name = fm_name.unwrap_or(skill_name);
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::new(
+                "MISSING_FRONTMATTER",
+                format!("SKILL.md from {source}/{skill_id} has no `name` field - cannot install."),
+            )
+        })?;
     let basename = sanitize_catalog_basename(skill_id)
         .filter(|name| is_safe_basename(name))
         .ok_or_else(|| {
@@ -6222,7 +6319,7 @@ pub async fn catalog_plan_install(
                 format!("cannot derive safe install basename from \"{skill_id}\""),
             )
         })?;
-    let stage_wrap = state.paths.staging_root.join(Uuid::new_v4().to_string());
+    let stage_wrap = staging_root.join(Uuid::new_v4().to_string());
     let stage_dir = stage_wrap.join(&basename);
     if let Err(err) = (|| -> AppResult<()> {
         fs::create_dir_all(&stage_dir)?;
@@ -6237,14 +6334,13 @@ pub async fn catalog_plan_install(
     }
     let source_hash = hex::encode(sha2::Sha256::digest(raw.as_bytes()));
     match catalog_plan_from_staging(
-        &state,
-        &db,
+        db,
         &stage_dir,
         fm_name,
         &source_hash,
         source,
         skill_id,
-        &target_platform_ids,
+        target_platform_ids,
     ) {
         Ok(plan) => Ok(plan),
         Err(err) => {
@@ -6603,7 +6699,6 @@ fn catalog_write_description_cache(
 
 #[allow(clippy::too_many_arguments)]
 fn catalog_plan_from_staging(
-    state: &State<'_, AppState>,
     db: &Connection,
     staging_dir: &Path,
     skill_name: &str,
@@ -6652,9 +6747,7 @@ fn catalog_plan_from_staging(
             "source_has_symlink",
             &op_group_id,
         ));
-        let plan = finalize_sync_plan("promote_to_canonical", items);
-        store_plan(state, &plan)?;
-        return Ok(plan);
+        return Ok(finalize_sync_plan("promote_to_canonical", items));
     }
     let mut copy_item = build_sync_item(SyncBuildItemArgs {
         skill: &skill,
@@ -6715,9 +6808,7 @@ fn catalog_plan_from_staging(
         }
     }
 
-    let plan = finalize_sync_plan("promote_to_canonical", items);
-    store_plan(state, &plan)?;
-    Ok(plan)
+    Ok(finalize_sync_plan("promote_to_canonical", items))
 }
 
 fn yaml_to_json(yaml: &yaml_rust2::Yaml) -> Value {

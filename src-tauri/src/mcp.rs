@@ -224,6 +224,10 @@ impl Server {
             "skills_set_scenarios" => self.tool_set_scenarios(&args),
             "skills_history" => self.tool_history(&args),
             "skills_rescan" => self.tool_rescan(&args),
+            "scenarios_create" => self.tool_scenarios_create(&args),
+            "skills_set_enabled" => self.tool_set_enabled(&args),
+            "discover_search" => self.tool_discover_search(&args),
+            "discover_install" => self.tool_discover_install(&args),
             "align_plan" => self.tool_align_plan(&args),
             "align_apply" => self.tool_align_apply(&args),
             "skills_rollback" => self.tool_rollback(&args),
@@ -252,7 +256,14 @@ impl Server {
         }
         // Tools that mutate skill files on disk are gated behind a second,
         // separate opt-in. Read + DB-only organization stay available.
-        let mutates_files = matches!(tool, "skills_delete" | "align_apply" | "skills_rollback");
+        let mutates_files = matches!(
+            tool,
+            "skills_delete"
+                | "align_apply"
+                | "skills_rollback"
+                | "discover_install"
+                | "skills_set_enabled"
+        );
         if mutates_files && !bool_setting(&db, "mcp_allow_destructive") {
             return Err(AppError::new(
                 "MCP_DESTRUCTIVE_DISABLED",
@@ -771,6 +782,139 @@ impl Server {
         Ok(json!({ "ok": true, "historyId": history_id, "rolledBack": rolled_back }))
     }
 
+    // --- acquire (discover / install) -----------------------------------
+
+    fn tool_discover_search(&self, args: &Value) -> AppResult<Value> {
+        let query = required_str(args, "query")?;
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_i64)
+            .unwrap_or(15)
+            .clamp(1, 50);
+        commands::catalog_search_blocking(query, limit, 0)
+    }
+
+    fn tool_discover_install(&self, args: &Value) -> AppResult<Value> {
+        let source = required_str(args, "source")?.to_string();
+        let skill_id = required_str(args, "skillId")?.to_string();
+        let confirm = args
+            .get("confirm")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !confirm {
+            return Err(AppError::new(
+                "CONFIRM_REQUIRED",
+                "Refusing to install without confirm:true. Find the skill with discover_search, \
+                 show the user, then call discover_install with confirm:true. The install is backed \
+                 up + recorded in history and undoable via skills_rollback.",
+            ));
+        }
+        let _lock = self
+            .align_lock
+            .lock()
+            .map_err(|_| AppError::new("ALIGN_LOCK_POISONED", "align lock poisoned"))?;
+        let db = self.conn()?;
+        // Target platforms: explicit, else every enabled platform (copy to the
+        // canonical source + symlink the rest).
+        let targets: Vec<String> = match args.get("targetPlatforms").and_then(Value::as_array) {
+            Some(arr) => arr
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+            None => enabled_platforms(&db)?,
+        };
+        let plan = commands::catalog_install_plan(
+            &db,
+            &self.paths.staging_root,
+            &source,
+            &skill_id,
+            &targets,
+        )?;
+        let items = plan
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let actionable = items
+            .iter()
+            .filter(|i| {
+                !matches!(
+                    i.get("action").and_then(Value::as_str),
+                    Some("skip") | Some("conflict")
+                )
+            })
+            .count();
+        if actionable == 0 {
+            return Ok(json!({
+                "ok": true,
+                "installed": false,
+                "message": "Nothing to install — the skill is already present, or only conflicts remain (see items).",
+                "items": items,
+            }));
+        }
+        let result =
+            commands::execute_sync_items(&db, &self.paths.backup_root, items, &plan.to_string())?;
+        scanner::scan_all(&db)?;
+        Ok(json!({
+            "ok": true,
+            "source": source,
+            "skillId": skill_id,
+            "result": result,
+            "note": "Installed, backed up + recorded in history. Undo with skills_rollback.",
+        }))
+    }
+
+    // --- organize (create scenario) / enable-disable --------------------
+
+    fn tool_scenarios_create(&self, args: &Value) -> AppResult<Value> {
+        let name = required_str(args, "name")?;
+        let key = args.get("key").and_then(Value::as_str);
+        let description = args.get("description").and_then(Value::as_str);
+        let db = self.conn()?;
+        commands::create_scenario_core(&db, name, key, description)
+    }
+
+    fn tool_set_enabled(&self, args: &Value) -> AppResult<Value> {
+        let skill_id = required_str(args, "skillId")?;
+        let platform = required_str(args, "platform")?;
+        let enabled = args
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| AppError::new("INVALID_INPUT", "`enabled` (boolean) is required"))?;
+        let confirm = args
+            .get("confirm")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !confirm {
+            return Err(AppError::new(
+                "CONFIRM_REQUIRED",
+                "Refusing without confirm:true. Enabling/disabling moves the skill to/from a \
+                 `.disabled/` folder on that platform (recorded in history, undoable).",
+            ));
+        }
+        let _lock = self
+            .align_lock
+            .lock()
+            .map_err(|_| AppError::new("ALIGN_LOCK_POISONED", "align lock poisoned"))?;
+        let db = self.conn()?;
+        let plan = commands::toggle_disabled_plan(&db, skill_id, platform, !enabled)?;
+        let items = plan
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if items.is_empty() {
+            return Ok(json!({ "ok": true, "message": "nothing to do" }));
+        }
+        let result =
+            commands::execute_sync_items(&db, &self.paths.backup_root, items, &plan.to_string())?;
+        scanner::scan_all(&db)?;
+        Ok(json!({
+            "ok": true, "skillId": skill_id, "platform": platform, "enabled": enabled, "result": result,
+        }))
+    }
+
     fn tool_delete(&self, args: &Value) -> AppResult<Value> {
         let skill_id = required_str(args, "skillId")?;
         let confirm = args
@@ -992,18 +1136,21 @@ Tools — READ: `skills_inventory` (every skill + per-platform health: synced/so
 disabled, plus `missingOn`. Note: a skill being *missing* on a platform is informational, NOT a \
 problem — only `broken` and `drifted` flag `needsAttention`). `skills_read` (a skill's SKILL.md), \
 `scenarios_list`, `skills_history` (the change ledger). ORGANIZE (database only): \
-`skills_set_scenarios`. MAINTAIN: `skills_rescan`. FIX (gated, file-mutating): `align_plan` \
-(read-only preview) then `align_apply` (confirm:true) re-link a skill's drifted/broken copies back \
-to the canonical source; `skills_rollback` (confirm:true) undoes a prior change from its history \
-id; `skills_delete` (confirm:true) moves a skill to the OS trash.\n\n\
+`scenarios_create` + `skills_set_scenarios`. ACQUIRE (gated): `discover_search` the skills.sh \
+catalog, then `discover_install` to add a skill. MAINTAIN: `skills_rescan`; `skills_set_enabled` \
+(enable/disable a skill on a platform, gated). FIX (gated, file-mutating): `align_plan` (read-only \
+preview) then `align_apply` (confirm:true) re-link a skill's drifted/broken copies back to the \
+canonical source; `skills_rollback` (confirm:true) undoes a prior change from its history id; \
+`skills_delete` (confirm:true) moves a skill to the OS trash.\n\n\
 On first connect, call `skills_inventory`, then DON'T just ask 'what do you want?'. Proactively \
 offer a short, concrete menu of high-value actions grounded in what you found — e.g. organize the \
-unscenarized skills into scenarios; align the drifted/broken ones back to the source (you can \
-actually do this: align_plan → align_apply); clean up obvious cruft (with confirmation). Always \
-show your plan before any write, and get explicit confirmation before aligns, rollbacks, or \
-deletes.\n\n\
-Skill authoring, AI categorization, and optimization are intentionally left to you — this server \
-exposes the inventory and the trustworthy write primitives.";
+unscenarized skills into scenarios (creating scenarios as needed); align the drifted/broken ones \
+back to the source (align_plan → align_apply); install a skill to fill a capability gap \
+(discover_search → discover_install); clean up obvious cruft. Always show your plan before any \
+write, and get explicit confirmation before any install, align, rollback, enable/disable, or \
+delete.\n\n\
+Skill authoring (writing new SKILL.md content) and AI optimization are intentionally left to you \
+— this server exposes the inventory, the catalog, and the trustworthy write primitives.";
 
 // --- tool catalog -------------------------------------------------------
 
@@ -1138,6 +1285,72 @@ back.",
                 "required": ["historyId", "confirm"]
             },
             "annotations": { "title": "Roll back a change", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
+        },
+        {
+            "name": "discover_search",
+            "description": "Search the skills.sh community catalog for installable skills (public, \
+no auth). Returns candidates (name, source 'owner/repo', skillId, description, installs). Use this \
+to fill a capability gap, then discover_install to add one.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search terms." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Max results (default 15)." }
+                },
+                "required": ["query"]
+            },
+            "annotations": { "title": "Search catalog", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true }
+        },
+        {
+            "name": "discover_install",
+            "description": "Install a catalog skill (from discover_search) into the library: fetch its \
+SKILL.md, copy it to the canonical source platform, and symlink it onto the other platforms. \
+Recorded in history and undoable via skills_rollback. Requires confirm:true + \"Allow destructive \
+actions\". By default installs to all enabled platforms; pass targetPlatforms to restrict.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source": { "type": "string", "description": "The catalog 'owner/repo' from discover_search." },
+                    "skillId": { "type": "string", "description": "The catalog skillId from discover_search." },
+                    "targetPlatforms": { "type": "array", "items": { "type": "string" }, "description": "Platform ids to install onto (default: all enabled)." },
+                    "confirm": { "type": "boolean", "description": "Must be true to proceed. Default false." }
+                },
+                "required": ["source", "skillId", "confirm"]
+            },
+            "annotations": { "title": "Install skill", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
+        },
+        {
+            "name": "scenarios_create",
+            "description": "Create a new scenario (taxonomy bucket) so you can organize skills into it \
+with skills_set_scenarios. Idempotent — if one with the same name/key already exists it's returned. \
+Name may be in any language. Writes only MySkills' database.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Display name (any language)." },
+                    "key": { "type": "string", "description": "Optional stable key; derived from name if omitted." },
+                    "description": { "type": "string", "description": "Optional description." }
+                },
+                "required": ["name"]
+            },
+            "annotations": { "title": "Create scenario", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+        },
+        {
+            "name": "skills_set_enabled",
+            "description": "Enable or disable a skill on one platform by moving it to/from a \
+`.disabled/` folder there. Recorded in history, undoable via skills_rollback. Requires confirm:true \
++ \"Allow destructive actions\".",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "skillId": { "type": "string", "description": "The skill id from skills_inventory." },
+                    "platform": { "type": "string", "description": "Platform id (e.g. claude, codex)." },
+                    "enabled": { "type": "boolean", "description": "true to enable, false to disable." },
+                    "confirm": { "type": "boolean", "description": "Must be true to proceed. Default false." }
+                },
+                "required": ["skillId", "platform", "enabled", "confirm"]
+            },
+            "annotations": { "title": "Enable/disable skill", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": true }
         },
         {
             "name": "skills_delete",
