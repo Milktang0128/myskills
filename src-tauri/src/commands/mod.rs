@@ -6091,6 +6091,41 @@ mod tests {
     }
 
     #[test]
+    fn authoring_draft_refuses_when_disabled_slot_occupied() {
+        // A stale `.disabled/<name>` would make the disable move conflict and
+        // silently strand the skill enabled — the pre-check must reject it so
+        // nothing is installed live.
+        let (pool, paths, root) = authoring_test_env();
+        let db = pool.get().expect("conn");
+        let stale = root.join("shared").join(".disabled").join("agent-made");
+        fs::create_dir_all(&stale).expect("stale dir");
+        fs::write(stale.join("SKILL.md"), "stale").expect("stale md");
+
+        let res = authoring_draft_core(
+            &db,
+            &paths.staging_root,
+            &paths.backup_root,
+            "agent-made",
+            AUTHORING_CLEAN_MD,
+            json!({}),
+        );
+        assert!(
+            res.is_err(),
+            "must refuse when the .disabled slot is occupied"
+        );
+        // Nothing landed enabled, and no skill row was created.
+        assert!(!root.join("shared").join("agent-made").exists());
+        let count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM skills WHERE name = 'agent-made'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn create_skill_review_blocks_expanded_private_fields() {
         let review = create_skill_review_markdown(
             "---\nname: unsafe-secret\ndescription: Use when testing secret handling.\n---\n\n# unsafe-secret\n\n## Inputs\n\n- Bearer token: abc\n\n## Workflow\n\n1. Inspect the request.\n\n## Output\n\n- Report.\n\n## Boundaries\n\n- Keep secrets local.\n\n## Quality Bar\n\n- No credentials are exposed.\n",
@@ -11468,6 +11503,30 @@ pub(crate) fn authoring_draft_core(
     let parsed = scanner::parser::parse_skill_markdown(markdown)?;
     let source_hash = parsed.content_hash.clone();
 
+    // Resolve the canonical platform + its source dir up front: we need it both
+    // to build the install plan and to verify the disabled landing.
+    let platforms = sync_platforms(db)?;
+    let enabled_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    let canonical = canonical_platform(db, &enabled_ids)?;
+    let canonical_dir = platforms
+        .iter()
+        .find(|p| p.id == canonical)
+        .map(|p| PathBuf::from(expand_home(&p.skills_dir)))
+        .ok_or_else(|| AppError::new("INVALID_STATE", "canonical platform missing"))?;
+
+    // The skill is installed enabled, then moved into `.disabled/<name>`. If that
+    // slot is already occupied (a stale draft, a delete→re-author cycle), the
+    // disable move would conflict and silently strand the skill ENABLED — reject
+    // up front rather than risk landing a live, agent-authored skill.
+    if path_exists_lstat(&canonical_dir.join(".disabled").join(name)) {
+        let _ = fs::remove_dir_all(&stage_wrap);
+        return Err(AppError::detail(
+            "AUTHORING_CONFLICT",
+            format!("cannot author '{name}': a disabled copy already occupies its .disabled slot"),
+            json!({ "reason": "disabled_slot_occupied" }),
+        ));
+    }
+
     // Canonical-only install plan (no platform symlinks — a freshly authored
     // skill lands inert in the source pool; the human propagates it after
     // enabling). Clean up staging on any early return.
@@ -11503,21 +11562,27 @@ pub(crate) fn authoring_draft_core(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    execute_sync_items(db, backup_root, items, &plan.to_string())?;
+    let install_result = execute_sync_items(db, backup_root, items, &plan.to_string())?;
     scanner::scan_all(db)?;
     let _ = fs::remove_dir_all(&stage_wrap);
 
-    let skill_id = create_skill_find_installed_skill(db, &plan)?.ok_or_else(|| {
-        AppError::new(
-            "INSTALL_FAILED",
-            "could not locate the authored skill after install + scan",
-        )
-    })?;
+    let skill_id = match create_skill_find_installed_skill(db, &plan)? {
+        Some(id) => id,
+        None => {
+            // The copy didn't land where expected — undo it so nothing is stranded.
+            authoring_rollback_install(db, &install_result);
+            let _ = scanner::scan_all(db);
+            return Err(AppError::new(
+                "INSTALL_FAILED",
+                "could not locate the authored skill after install + scan",
+            ));
+        }
+    };
 
-    // Disable it on the canonical platform so it is inert until human review.
-    let platforms = sync_platforms(db)?;
-    let enabled_ids = platforms.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
-    let canonical = canonical_platform(db, &enabled_ids)?;
+    // Move it into `.disabled/` so it is inert, then VERIFY it actually landed
+    // disabled. `execute_sync_items` reports a conflict/skip *inside* Ok(...), so
+    // a silently-failed disable would otherwise leave a live, agent-written skill
+    // claiming to be inert. If it isn't disabled, roll the whole install back.
     let disable_plan = toggle_disabled_plan(db, &skill_id, &canonical, true)?;
     let disable_items = disable_plan
         .get("items")
@@ -11526,6 +11591,25 @@ pub(crate) fn authoring_draft_core(
         .unwrap_or_default();
     execute_sync_items(db, backup_root, disable_items, &disable_plan.to_string())?;
     scanner::scan_all(db)?;
+
+    let landed_disabled = db
+        .query_row(
+            "SELECT is_disabled FROM skill_locations WHERE skill_id = ?1 AND platform_id = ?2",
+            params![skill_id, canonical],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    if !landed_disabled {
+        authoring_rollback_install(db, &install_result);
+        let _ = scanner::scan_all(db);
+        return Err(AppError::new(
+            "AUTHORING_NOT_INERT",
+            "could not land the authored skill disabled, so the install was rolled back. \
+             A leftover .disabled copy or a concurrent change may be to blame — try again.",
+        ));
+    }
 
     // Stamp provenance (DB only — never in SKILL.md, per the CLAUDE.md invariant).
     db.execute(
@@ -11542,6 +11626,21 @@ pub(crate) fn authoring_draft_core(
         "review": review,
         "note": "Authored and installed DISABLED in the source pool. It is inert until a human reviews it in MySkills and enables it.",
     }))
+}
+
+/// Best-effort undo of an authoring install when the inert landing can't be
+/// guaranteed — rolls back each op-group the install recorded so we never leave
+/// a live, agent-authored skill outside human review. Same rollback path
+/// `discover_install` uses (copy_to_canonical is undoable).
+fn authoring_rollback_install(db: &Connection, install_result: &Value) {
+    if let Some(ids) = install_result
+        .get("undoableHistoryIds")
+        .and_then(Value::as_array)
+    {
+        for id in ids.iter().filter_map(Value::as_i64) {
+            let _ = rollback_history_by_id(db, id);
+        }
+    }
 }
 
 /// Tauri-free: an agent proposes a rewrite of an EXISTING skill's SKILL.md (the

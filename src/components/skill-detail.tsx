@@ -110,18 +110,19 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
     setAiSuggestions([]);
     setBodyExpanded(false);
     setAgentRevision(null);
-    void loadAgentRevision();
     (async () => {
       try {
-        const [s, c, ai] = await Promise.all([
+        const [s, c, ai, proposal] = await Promise.all([
           api.skills.get(skillId),
           api.settings.get('canonical_platform'),
           api.ai.getSuggestionsForSkill(skillId).catch(() => [] as AiScenarioSuggestion[]),
+          api.optimize.getProposal(skillId).catch(() => null),
         ]);
         if (cancelled) return;
         setSkill(s);
         if (c) setCanonicalPlatform(c);
         setAiSuggestions(ai);
+        setAgentRevision(proposal && proposal.finding.id === 'agent-revision' ? proposal.finding : null);
       } catch {
         if (!cancelled) setSkill(null);
       } finally {
