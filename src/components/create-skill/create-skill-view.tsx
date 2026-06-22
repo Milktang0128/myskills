@@ -1146,7 +1146,11 @@ function QualityChecklist({
       ok:
         checks == null
           ? true
-          : checks.noSilentNetwork && checks.noSilentOverwrite && checks.noDangerousShellDefault,
+          : checks.noSilentNetwork &&
+            checks.noSilentOverwrite &&
+            checks.noDangerousShellDefault &&
+            // New blocking-level exfil check (normalizer defaults absent → safe).
+            checks.noCommandSubstitutionExfil,
     },
   ];
   const qualityItems = [
@@ -1378,6 +1382,11 @@ function normalizeCreateSkillReview(review: CreateSkillReviewReport): CreateSkil
       noSilentOverwrite: Boolean(checks.noSilentOverwrite),
       noSecretExfiltration: Boolean(checks.noSecretExfiltration),
       noDangerousShellDefault: Boolean(checks.noDangerousShellDefault),
+      // New v0.5 hygiene keys: default an absent key (stale persisted drafts) to
+      // the safe value so the summary doesn't show a spurious red row on upgrade.
+      noPromptInjection: checks.noPromptInjection !== false,
+      noSensitivePath: checks.noSensitivePath !== false,
+      noCommandSubstitutionExfil: checks.noCommandSubstitutionExfil !== false,
     },
   };
 }
