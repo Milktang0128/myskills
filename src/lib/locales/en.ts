@@ -294,6 +294,10 @@ export const en = {
   'detail.section.skillmd': 'SKILL.md',
   'detail.skillmd.expand': 'Show all ({{count}} more lines)',
   'detail.skillmd.collapse': 'Show less',
+  'detail.authoredBy.agent': 'Agent-authored',
+  'detail.authoredBy.agentHelp':
+    'Written by an agent via MCP. It landed disabled and was enabled after your review.',
+  'detail.agentRevision.heading': 'Agent proposed a revision',
   'detail.delete.heading': 'Danger zone',
   'detail.delete.help': 'Remove this skill from every platform. The files are moved to the system trash (recoverable from Finder → Trash / the Recycle Bin). MySkills keeps no undo record.',
   'detail.delete.button': 'Delete skill',

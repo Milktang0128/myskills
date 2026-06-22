@@ -299,4 +299,13 @@ CREATE TABLE IF NOT EXISTS skill_optimizations (
 );
 CREATE INDEX IF NOT EXISTS idx_skill_optimizations_skill ON skill_optimizations(skill_id);
 "#),
+    // Provenance: who authored a skill — 'human' (hand-written or scanner-found,
+    // the default) vs 'agent' (written via the MCP authoring tools). Metadata is
+    // a small JSON blob (tool name, model, timestamp). Lives in the DB only —
+    // never written into the skill directory (see CLAUDE.md invariant).
+    (14, "skill_provenance", r#"
+ALTER TABLE skills ADD COLUMN authored_by TEXT NOT NULL DEFAULT 'human';
+ALTER TABLE skills ADD COLUMN authored_meta TEXT;
+CREATE INDEX IF NOT EXISTS idx_skills_authored_by ON skills(authored_by);
+"#),
 ];

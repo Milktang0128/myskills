@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Crown, Link2, AlertTriangle, Eye, EyeOff, Check, Upload, Sparkles, X, FolderOpen, Trash2, Loader2, ChevronDown, ChevronUp, Copy as CopyIcon } from 'lucide-react';
 import type {
   AiScenarioSuggestion,
+  DiagnosisFinding,
   Scenario,
   Skill,
   SkillLocation,
@@ -20,6 +21,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { PlatformBadge } from './platform-badge';
 import { SkillDiagnosis } from './skill-diagnosis';
+import { OptimizeFix } from './skill-optimize';
 import { SkillTranslate } from './skill-translate';
 import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
@@ -54,6 +56,18 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   const [bodyExpanded, setBodyExpanded] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AiScenarioSuggestion[]>([]);
+  // A pending revision proposed by an agent (via the MCP authoring_revise tool).
+  // It rides the existing optimize proposal pipeline — finding id 'agent-revision'.
+  const [agentRevision, setAgentRevision] = useState<DiagnosisFinding | null>(null);
+
+  async function loadAgentRevision() {
+    try {
+      const p = await api.optimize.getProposal(skillId);
+      setAgentRevision(p && p.finding.id === 'agent-revision' ? p.finding : null);
+    } catch {
+      setAgentRevision(null);
+    }
+  }
 
   async function fetchAll() {
     setLoading(true);
@@ -95,6 +109,8 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
     setLoading(true);
     setAiSuggestions([]);
     setBodyExpanded(false);
+    setAgentRevision(null);
+    void loadAgentRevision();
     (async () => {
       try {
         const [s, c, ai] = await Promise.all([
@@ -257,6 +273,15 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
           <header className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-semibold tracking-tight">{skill.name}</h2>
+              {skill.authoredBy === 'agent' && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/5 px-2 py-0.5 text-[10px] font-semibold text-primary/80"
+                  title={t('detail.authoredBy.agentHelp')}
+                >
+                  <Sparkles className="h-3 w-3" />
+                  {t('detail.authoredBy.agent')}
+                </span>
+              )}
               {Array.from(new Set(skill.locations.map((l) => l.platformId))).map((p) => (
                 <PlatformBadge key={p} platformId={p} />
               ))}
@@ -385,6 +410,31 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
           </section>
 
           <Separator />
+
+          {agentRevision && (
+            <>
+              <section>
+                <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-primary/80">
+                  <Sparkles className="h-3 w-3" />
+                  {t('detail.agentRevision.heading')}
+                </div>
+                <OptimizeFix
+                  skillId={skill.id}
+                  finding={agentRevision}
+                  onApplied={() => {
+                    setAgentRevision(null);
+                    void fetchAll();
+                    onMutated();
+                  }}
+                  onClose={() => {
+                    setAgentRevision(null);
+                    void loadAgentRevision();
+                  }}
+                />
+              </section>
+              <Separator />
+            </>
+          )}
 
           <SkillDiagnosis skillId={skill.id} />
 

@@ -38,6 +38,16 @@ and an auditable change ledger.
 | `align_apply` | destructive | Execute the alignment (re-derives the plan fresh, then runs it). Each replaced copy is backed up and recorded in history. **Requires `confirm: true`** + "Allow destructive actions". Undoable via `skills_rollback`. |
 | `skills_rollback` | destructive | Undo a previous change by its `sync_history` id (restores the backed-up files for the whole op-group). **Requires `confirm: true`**. |
 | `skills_delete` | destructive | Move a skill's directories to the OS trash and remove it from MySkills. **Requires `confirm: true`** (without it the call is rejected so you can surface the consequence first). Each path is verified to live inside its platform root before anything is touched. Recoverable from the trash. |
+| `authoring_draft` | destructive | Author a **new** skill — the agent supplies the full `SKILL.md`. Runs the hardened review gate, then installs it into the source pool **disabled (inert)** and stamps it agent-authored. It does **not** go live: a human reviews it in MySkills and enables it before any agent runs it. **Requires `confirm: true`** + "Allow destructive actions". If the gate blocks the content, nothing is installed. |
+| `authoring_revise` | write | Propose a rewrite of an **existing** skill — the agent supplies the full new `SKILL.md`. Runs the gate and records it as a pending revision (with a diff) on the skill. It **never writes to disk**: a human reviews the diff in MySkills and applies it (backed up + rollback-able). The agent cannot apply it. DB-only, so it needs MCP enabled but not "Allow destructive actions". |
+
+> **The review gate is a content-hygiene check, not an execution sandbox.** It
+> flags injection-shaped text, secret-shaped fields, credential paths, and
+> exfiltration shapes, and blocks the clearly dangerous ones — but it cannot
+> catch a cleverly disguised malicious skill. The real safety boundary is the
+> human: newly authored skills land **disabled** until a person reviews and
+> enables them, and revisions to live skills require a person to apply the diff.
+> Everything is backed up and reversible.
 
 Every result includes both a human-readable `content[0].text` (pretty JSON) and
 `structuredContent` (the raw object) for clients that consume structured output.
