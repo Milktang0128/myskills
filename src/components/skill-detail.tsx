@@ -20,6 +20,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { PlatformBadge } from './platform-badge';
 import { SkillDiagnosis } from './skill-diagnosis';
+import { SkillTranslate } from './skill-translate';
 import { SyncConfirm } from './sync-confirm';
 import { api } from '@/lib/api';
 import { useT } from '@/lib/i18n';
@@ -132,6 +133,13 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
   const inScenarioIds = new Set(skill.scenarios.map((s) => s.id));
   const canonicalLoc = skill.locations.find((l) => l.platformId === canonicalPlatform && !l.isDisabled);
   const canonicalHash = canonicalLoc?.contentHash ?? null;
+  // Location whose SKILL.md the translate panel reads: prefer canonical, else
+  // the first enabled, readable copy. Broken symlinks can't be read.
+  const translateLocationId =
+    canonicalLoc?.id ??
+    skill.locations.find((l) => !l.isBrokenSymlink && !l.isDisabled)?.id ??
+    skill.locations[0]?.id ??
+    null;
 
   async function handleAdopt(loc: SkillLocation) {
     setBusy(true);
@@ -379,6 +387,10 @@ export function SkillDetail({ skillId, scenarios, onClose, onMutated, onToast }:
           <Separator />
 
           <SkillDiagnosis skillId={skill.id} />
+
+          <Separator />
+
+          <SkillTranslate skillId={skill.id} locationId={translateLocationId} />
 
           <Separator />
 
