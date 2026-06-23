@@ -506,6 +506,11 @@ export interface CreateSkillReviewReport {
     noSilentOverwrite: boolean;
     noSecretExfiltration: boolean;
     noDangerousShellDefault: boolean;
+    // Authoring hygiene checks (v0.5): injection / sensitive paths are warning-level;
+    // command-substitution exfil is blocking-level and folds into the safety summary.
+    noPromptInjection: boolean;
+    noSensitivePath: boolean;
+    noCommandSubstitutionExfil: boolean;
   };
 }
 
