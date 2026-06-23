@@ -1,6 +1,6 @@
 {
   "name": "myskills",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "AI Skill Hub — unified management of AI agent skills across Claude, Codex and other platforms",
   "author": "tangmilk1205@gmail.com",
