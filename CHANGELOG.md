@@ -3,6 +3,43 @@
 
 # Changelog
 
+## 0.5.0 — 2026-06-23
+
+MCP 第三轮:让 agent 不只能管理/获取技能,还能**写和改**技能 —— 但"让一个未来
+agent 执行它"必须经过人。同时硬化 create-skill 安全门,并把"审查门是卫生检查、
+不是沙箱"这一立场写进文档。
+
+### 新功能
+- feat(mcp): **authoring** —— `authoring_draft`(destructive + confirm)让 agent
+  写完整 SKILL.md,过硬化审查门后**失活落盘**到主源(`.disabled/`,inert)并标记
+  agent 撰写,人审启用才生效;`authoring_revise`(DB-only)把 agent 对现役技能的
+  改写记成**待人审的 diff 提案**(复用 optimize 的 diff→应用→回滚),agent 不能
+  自行落盘 (#60, #63)
+- feat(authoring): **provenance** —— 迁移 v14 新增 `skills.authored_by` /
+  `authored_meta`(仅 DB,从不写 SKILL.md);技能详情面板新增「agent 撰写」徽标
+  + 待审修订面板 (#63)
+- feat(skills): 技能详情面板新增**「翻译成中文」**只读面板 —— 一键把整份 SKILL.md
+  译成简体中文、可复制,只预览不改原文件,复用现有 LLM 配置(首个社区贡献,
+  感谢 @zhenxishuai)(#59)
+
+### 改进
+- improve(create-skill): 安全门补三个**卫生检查** —— 注入式文案 / 凭据路径 /
+  `$()` 命令替换 exfil(注入与路径为 warning、exfil 为 blocking);并在 docs/mcp.md
+  + SPEC 明确"审查门是内容卫生检查、不是执行沙箱,真正的安全边界是人审 + 可逆"
+  (#60, #63)
+
+### 修复
+- fix(matrix): 删除技能、或在详情面板启用/停用技能后,覆盖矩阵**即时刷新**,
+  不再残留已删除/旧状态的行 (#57)
+
+### CI / 其他
+- ci(release): 发布前 **macOS 签名校验闸** —— 对构建产物跑 `codesign --verify
+  --deep --strict`(含内置 myskills-mcp sidecar)+ `spctl` + `stapler validate`,
+  任一失败即 fail job,签名缺陷无法被推上 `latest`;并 best-effort 给 DMG 订书
+  (回应 #62)(#64)
+- refactor: 抽出 Tauri-free 的 `build_create_install_plan`,authoring 两个核心
+  与 Create Skill 共用安装管道,且**都不在引擎里跑 LLM**(agent 即大脑)(#63)
+
 ## 0.4.0 — 2026-06-16
 
 MCP 第二轮:让 agent 不只能**管理**已有技能库,还能**修复 + 增长**它。新增 7 个 MCP
