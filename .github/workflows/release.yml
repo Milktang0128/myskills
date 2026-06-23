@@ -134,3 +134,50 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Gate: prove the just-built macOS bundle is correctly signed, notarized,
+      # and stapled before anyone publishes the draft. A real signing defect
+      # fails the job here (the same .app/.dmg that tauri-action just uploaded),
+      # so a broken artifact never gets promoted to `latest`. (See issue #62 —
+      # the reported v0.4.0 artifact actually passed all of these; this gate
+      # turns that manual check into a permanent guarantee.)
+      - name: Verify macOS signing (codesign / spctl / staple)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          BUNDLE="src-tauri/target/universal-apple-darwin/release/bundle"
+          APP="$(find "$BUNDLE/macos" -maxdepth 1 -name '*.app' | head -1)"
+          DMG="$(find "$BUNDLE/dmg" -maxdepth 1 -name '*.dmg' | head -1)"
+          echo "App: ${APP:-<none>}"
+          echo "DMG: ${DMG:-<none>}"
+          [ -n "$APP" ] || { echo "::error::no .app bundle found to verify"; exit 1; }
+
+          echo "== identity + hardened runtime =="
+          codesign -dvvv "$APP" 2>&1 | grep -E 'Authority=Developer ID Application|flags=.*runtime|TeamIdentifier=' \
+            || { echo "::error::missing Developer ID / hardened runtime"; exit 1; }
+
+          echo "== codesign --verify --deep --strict (incl. nested myskills-mcp sidecar) =="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "== spctl Gatekeeper assessment (must be Notarized Developer ID) =="
+          spctl -a -t exec -vvv "$APP"
+
+          echo "== stapler: the .app must carry its notarization ticket offline =="
+          xcrun stapler validate "$APP"
+
+          # Belt-and-suspenders: staple the DMG too and re-upload it, so users who
+          # run straight from the mounted image are also covered offline. The .app
+          # staple above is the real guarantee, so this is best-effort.
+          if [ -n "$DMG" ] && [ -n "${RELEASE_TAG:-}" ]; then
+            if xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG"; then
+              echo "Re-uploading stapled DMG to the draft release…"
+              gh release upload "$RELEASE_TAG" "$DMG" --clobber --repo "$GITHUB_REPOSITORY"
+            else
+              echo "DMG stapling skipped (no standalone ticket) — the stapled .app is sufficient."
+            fi
+          fi
+          echo "✅ macOS signing verified (signed · notarized · stapled)"
