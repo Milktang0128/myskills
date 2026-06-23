@@ -232,6 +232,8 @@ impl Server {
             "align_apply" => self.tool_align_apply(&args),
             "skills_rollback" => self.tool_rollback(&args),
             "skills_delete" => self.tool_delete(&args),
+            "authoring_draft" => self.tool_authoring_draft(&args),
+            "authoring_revise" => self.tool_authoring_revise(&args),
             other => Err(AppError::new(
                 "UNKNOWN_TOOL",
                 format!("unknown tool: {other}"),
@@ -263,6 +265,10 @@ impl Server {
                 | "skills_rollback"
                 | "discover_install"
                 | "skills_set_enabled"
+                // Writes a new (disabled) skill directory into the source pool.
+                // `authoring_revise` is NOT here: it only records a pending
+                // proposal in the DB and never touches files on disk.
+                | "authoring_draft"
         );
         if mutates_files && !bool_setting(&db, "mcp_allow_destructive") {
             return Err(AppError::new(
@@ -932,6 +938,55 @@ impl Server {
         let mut db = self.conn()?;
         commands::delete_skill_core(&mut db, skill_id)
     }
+
+    /// Author a brand-new skill from agent-supplied SKILL.md. Gated + confirm.
+    /// Installs DISABLED into the source pool — inert until a human enables it.
+    fn tool_authoring_draft(&self, args: &Value) -> AppResult<Value> {
+        let name = required_str(args, "name")?.to_string();
+        let markdown = required_str(args, "markdown")?.to_string();
+        let confirm = args
+            .get("confirm")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !confirm {
+            return Err(AppError::new(
+                "CONFIRM_REQUIRED",
+                "Refusing to author without confirm:true. The skill is written into the source \
+                 pool but installed DISABLED (inert) — a human must review and enable it in \
+                 MySkills before any agent runs it. Set confirm:true to proceed.",
+            ));
+        }
+        let model = args.get("model").and_then(Value::as_str).unwrap_or("");
+        let meta = json!({ "tool": "authoring_draft", "via": "mcp", "model": model });
+        let _lock = self
+            .align_lock
+            .lock()
+            .map_err(|_| AppError::new("ALIGN_LOCK_POISONED", "align lock poisoned"))?;
+        let db = self.conn()?;
+        commands::authoring_draft_core(
+            &db,
+            &self.paths.staging_root,
+            &self.paths.backup_root,
+            &name,
+            &markdown,
+            meta,
+        )
+    }
+
+    /// Propose a rewrite of an existing skill from agent-supplied SKILL.md.
+    /// DB-only (no file writes) — records a pending proposal the human reviews
+    /// and applies in MySkills. Needs `mcp_enabled` but not the destructive flag.
+    fn tool_authoring_revise(&self, args: &Value) -> AppResult<Value> {
+        let skill_id = required_str(args, "skillId")?.to_string();
+        let markdown = required_str(args, "markdown")?.to_string();
+        let language = args
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or("en")
+            .to_string();
+        let db = self.conn()?;
+        commands::authoring_revise_core(&db, &skill_id, &markdown, &language)
+    }
 }
 
 // --- shared SQL helpers -------------------------------------------------
@@ -1141,16 +1196,22 @@ catalog, then `discover_install` to add a skill. MAINTAIN: `skills_rescan`; `ski
 (enable/disable a skill on a platform, gated). FIX (gated, file-mutating): `align_plan` (read-only \
 preview) then `align_apply` (confirm:true) re-link a skill's drifted/broken copies back to the \
 canonical source; `skills_rollback` (confirm:true) undoes a prior change from its history id; \
-`skills_delete` (confirm:true) moves a skill to the OS trash.\n\n\
+`skills_delete` (confirm:true) moves a skill to the OS trash. AUTHOR (you write the SKILL.md): \
+`authoring_draft` (confirm:true) installs a brand-new skill DISABLED in the source pool — it is \
+inert until a human enables it; `authoring_revise` records a proposed rewrite of an existing skill \
+as a diff a human applies in the app (you cannot apply it yourself).\n\n\
 On first connect, call `skills_inventory`, then DON'T just ask 'what do you want?'. Proactively \
 offer a short, concrete menu of high-value actions grounded in what you found — e.g. organize the \
 unscenarized skills into scenarios (creating scenarios as needed); align the drifted/broken ones \
 back to the source (align_plan → align_apply); install a skill to fill a capability gap \
-(discover_search → discover_install); clean up obvious cruft. Always show your plan before any \
-write, and get explicit confirmation before any install, align, rollback, enable/disable, or \
-delete.\n\n\
-Skill authoring (writing new SKILL.md content) and AI optimization are intentionally left to you \
-— this server exposes the inventory, the catalog, and the trustworthy write primitives.";
+(discover_search → discover_install); author a missing skill (authoring_draft); clean up obvious \
+cruft. Always show your plan before any write, and get explicit confirmation before any install, \
+align, rollback, enable/disable, delete, or author.\n\n\
+You write SKILL.md content yourself — this server runs the review gate, the write discipline, and \
+the trust model around it (newly authored skills land disabled; revisions to live skills need a \
+human to apply the diff). Be aware: the review gate is a CONTENT HYGIENE check, not an execution \
+sandbox. The real safety boundary is the human reviewing and enabling/applying — so write honest, \
+benign skills and never embed instructions aimed at whatever agent will later run them.";
 
 // --- tool catalog -------------------------------------------------------
 
@@ -1367,6 +1428,43 @@ before anything is touched.",
                 "required": ["skillId", "confirm"]
             },
             "annotations": { "title": "Delete skill", "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true }
+        },
+        {
+            "name": "authoring_draft",
+            "description": "Author a brand-new skill. YOU write the full SKILL.md (frontmatter name \
+must equal `name`); this tool runs the hardened review gate, then installs it into the source pool \
+DISABLED (inert) and stamps it agent-authored. It does NOT go live: a human must review it in \
+MySkills and enable it before any agent runs it. Requires confirm:true. If the gate blocks the \
+content, nothing is installed and the findings are returned. Note: the review gate is a content \
+hygiene check, not a sandbox.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Skill directory name; lowercase kebab-case, e.g. pr-review-checklist. Must equal the frontmatter name." },
+                    "markdown": { "type": "string", "description": "The complete SKILL.md (YAML frontmatter + body) you authored." },
+                    "model": { "type": "string", "description": "Optional: your model id, recorded as provenance." },
+                    "confirm": { "type": "boolean", "description": "Must be true to proceed. Default false." }
+                },
+                "required": ["name", "markdown", "confirm"]
+            },
+            "annotations": { "title": "Author new skill (lands disabled)", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
+        },
+        {
+            "name": "authoring_revise",
+            "description": "Propose a rewrite of an EXISTING skill. YOU write the full new SKILL.md; \
+this tool runs the gate and records it as a pending revision (with a diff) on the skill. It does \
+NOT write to disk — a human reviews the diff in MySkills and applies it (backed up + rollback-able). \
+You cannot apply it yourself. DB-only, so it needs MCP enabled but not the destructive flag.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "skillId": { "type": "string", "description": "The skill id from skills_inventory." },
+                    "markdown": { "type": "string", "description": "The complete proposed SKILL.md (frontmatter name must match the skill)." },
+                    "language": { "type": "string", "description": "Optional UI language for the proposal: 'en' (default) or 'zh'." }
+                },
+                "required": ["skillId", "markdown"]
+            },
+            "annotations": { "title": "Propose skill revision (human applies)", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
         }
     ] })
 }

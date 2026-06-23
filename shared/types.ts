@@ -51,6 +51,11 @@ export interface Skill {
   createdAt: number;
   updatedAt: number;
   lastScannedAt: number;
+  /** Provenance: 'human' (hand-written or scanner-discovered) or 'agent'
+   *  (authored via the MCP authoring tools). DB-only; never in SKILL.md. */
+  authoredBy: 'human' | 'agent';
+  /** Small JSON blob for agent-authored skills (tool, model, timestamp). */
+  authoredMeta: Record<string, unknown> | null;
 }
 
 export interface ScenarioRef {
