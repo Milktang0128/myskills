@@ -429,11 +429,19 @@ pub async fn platforms_pick_dir(payload: Option<Value>, app: AppHandle) -> AppRe
 #[tauri::command]
 pub fn platforms_known_candidates(payload: Option<Value>) -> AppResult<Value> {
     let _ = payload;
+    // Keep this in sync with shared/known-platforms.ts (this Rust list is the
+    // runtime source the wizard/settings probe via IPC; the TS file documents
+    // the curation rationale). Only SKILL.md-format tools with a known
+    // user-level skills dir belong here — see that file's header.
     Ok(json!([
-        { "id": "shared", "label": "User Agents Folder", "defaultDir": "~/.agents/skills", "description": "User-scoped folder shared across agent tools" },
+        { "id": "shared", "label": "User Agents Folder", "defaultDir": "~/.agents/skills", "description": "User-scoped folder shared across agent tools — Gemini CLI, OpenCode, Goose and others read it by convention" },
         { "id": "claude", "label": "Claude Code", "defaultDir": "~/.claude/skills", "description": "Anthropic's Claude Code CLI" },
-        { "id": "codex", "label": "Codex", "defaultDir": "~/.codex/skills", "description": "Codex CLI" },
-        { "id": "openclaw", "label": "OpenClaw", "defaultDir": "~/.openclaw/skills", "description": "OpenClaw — open-source Claude-Code-compatible agent" }
+        { "id": "codex", "label": "Codex", "defaultDir": "~/.codex/skills", "description": "OpenAI Codex CLI" },
+        { "id": "openclaw", "label": "OpenClaw", "defaultDir": "~/.openclaw/skills", "description": "OpenClaw — open-source Claude-Code-compatible agent" },
+        { "id": "opencode", "label": "OpenCode", "defaultDir": "~/.config/opencode/skills", "description": "OpenCode — its own global skills dir (also reads ~/.claude and ~/.agents)" },
+        { "id": "gemini", "label": "Gemini CLI", "defaultDir": "~/.gemini/skills", "description": "Google's Gemini CLI (also recognizes the ~/.agents alias)" },
+        { "id": "goose", "label": "Goose", "defaultDir": "~/.config/goose/skills", "description": "Goose by Block — open-source agent" },
+        { "id": "hermes", "label": "Hermes", "defaultDir": "~/.hermes/skills", "description": "Hermes Agent by Nous Research" }
     ]))
 }
 
